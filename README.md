@@ -31,9 +31,14 @@ A Rust LLM agent workspace.
   - `CompositeToolExecutor` (in `oort-agent`) combines servers and local tools with `{server}__{tool}` namespaces
 - [`crates/server`](crates/server) (`oort-server`) + [`web/`](web): debug console (axum + SSE backend, React/Vite frontend)
 
-## Debug console
+## Workbench
 
-The console shows streaming output, thinking and tool blocks, a human-approval card, Send/Steer vs Interrupt vs Compact controls, and a debug panel (state machine phase, per-turn tokens, prefix-cache hit rate, context usage, compaction points, raw history vs active view, event log).
+A local developer workbench (`web/`, React + Vite) with four views:
+
+- **Chat**: sessions (create from a preset or ad hoc, rename, delete, export a JSON trace), streaming Markdown output with highlighted, copyable code blocks, collapsible Thinking / Tool cards (tool name, duration and status visible when collapsed), approval card, Send/Steer vs Interrupt vs Compact, an approval-policy switch in the header, a per-turn debug inspector (TTFT, total time, tokens, cache hit rate, request summary and prefix hashes) and a debug panel (phase, per-turn tokens, context usage, compaction points, raw vs active history, event log). The event stream reconnects by itself and survives page reloads mid-turn.
+- **Providers**: add / edit / test LLM providers (`env:NAME` keys supported, stored keys are never shown).
+- **MCP Servers**: add / edit servers, *Test & Discover* their tools (readOnly badges, schemas) and run any tool directly in the **Tool Playground** (no LLM).
+- **Presets**: provider + model + system prompt + MCP servers + approval policy templates, started with one click.
 
 ### Development (two terminals)
 
