@@ -65,6 +65,13 @@ pub trait LoopHook: Send + Sync {
     }
 
     async fn after_tool(&self, _state: &AgentState, _call: &ToolCall, _result: &mut ToolResult) {}
+
+    /// Runs at the end of every [`crate::Agent::step`], including steps that failed. The state is
+    /// always at a step boundary here (protocol-consistent), which makes it the natural place to
+    /// persist. An `Err` is fatal and surfaces from `step`.
+    async fn after_step(&self, _state: &AgentState) -> Result<(), crate::AgentError> {
+        Ok(())
+    }
 }
 
 /// Ordered list of hooks, combined with "most restrictive wins" semantics.
@@ -118,6 +125,13 @@ impl HookChain {
         for hook in &self.hooks {
             hook.after_tool(state, call, r).await;
         }
+    }
+
+    pub(crate) async fn after_step(&self, state: &AgentState) -> Result<(), crate::AgentError> {
+        for hook in &self.hooks {
+            hook.after_step(state).await?;
+        }
+        Ok(())
     }
 }
 

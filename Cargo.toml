@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/llm", "crates/agent"]
+members = ["crates/llm", "crates/agent", "crates/storage"]
 
 [workspace.package]
 version = "0.1.0"
@@ -26,3 +26,5 @@ mockito = "1.7.2"
 async-trait = "0.1.92"
 tokio-util = "0.7.20"
 tracing = "0.1.44"
+sqlx = { version = "0.8.6", default-features = false, features = ["sqlite", "runtime-tokio", "migrate", "macros"] }
+uuid = { version = "1.29.3", features = ["v7"] }

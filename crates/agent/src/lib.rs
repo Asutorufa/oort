@@ -22,7 +22,10 @@ pub mod hook;
 pub mod io;
 pub mod model;
 pub mod state;
+pub mod store;
 mod stream;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 pub mod tool;
 
 pub use compact::{
@@ -41,7 +44,11 @@ pub use io::{
 pub use model::{ModelClient, RetryingModel};
 /// Unified IR content block (re-exported from `oort-llm`).
 pub use oort_llm::ContentPart as ContentBlock;
-pub use state::{AgentState, CompactionCheckpoint, Phase, ToolDecision, UsageLedger};
+pub use state::{AgentState, CompactionCheckpoint, Phase, StateParts, ToolDecision, UsageLedger};
+pub use store::{
+    NewSession, PendingCalls, PersistenceHook, SessionId, SessionJournal, SessionMeta,
+    SessionSnapshot, SessionStatus, SessionStore, StepDelta, StoreError, StoredSession,
+};
 pub use tool::{
     FrozenToolset, INVALID_ARGUMENTS_KEY, LocalTool, LocalToolExecutor, Tool, ToolContext,
     ToolError, ToolExecutor, ToolOutput,

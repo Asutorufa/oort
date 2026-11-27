@@ -110,6 +110,18 @@ impl AgentState {
         }
     }
 
+    /// Like [`Self::new`], with the tool catalog frozen up front. Useful when the state must be
+    /// stored (to obtain a session id) before the agent that persists it is built.
+    pub fn with_tools(
+        system_prompt: impl Into<String>,
+        initial: Vec<Message>,
+        tools: &crate::tool::FrozenToolset,
+    ) -> Self {
+        let mut state = Self::new(system_prompt, initial);
+        state.tool_snapshot = Some(tools.definitions().to_vec());
+        state
+    }
+
     pub fn system_prompt(&self) -> &str {
         &self.system_prompt
     }
@@ -154,6 +166,55 @@ impl AgentState {
         self.checkpoints.push(checkpoint);
     }
 
+    /// Decomposes the state into its parts (for storage backends).
+    pub fn into_parts(self) -> StateParts {
+        StateParts {
+            system_prompt: self.system_prompt,
+            tool_snapshot: self.tool_snapshot,
+            messages: self.messages,
+            checkpoints: self.checkpoints,
+            phase: self.phase,
+            pending_steers: self.pending_steers,
+            compaction_requested: self.compaction_requested,
+            turn: self.turn,
+            usage: self.usage,
+        }
+    }
+
+    /// Rebuilds a state from stored parts, re-checking every invariant that `push_*` normally
+    /// guarantees: no system messages in history, monotonic checkpoints on turn boundaries,
+    /// and no unresolved tool calls while `Ready`/`Idle`.
+    pub fn from_parts(parts: StateParts) -> Result<Self, AgentError> {
+        let invalid = |m: String| Err(AgentError::InvalidState(m));
+        if let Some(i) = parts.messages.iter().position(|m| m.role == Role::System) {
+            return invalid(format!("message {i} has role system"));
+        }
+        let mut prev = 0;
+        for (epoch, cp) in parts.checkpoints.iter().enumerate() {
+            if cp.up_to_index <= prev || cp.up_to_index > parts.messages.len() {
+                return invalid(format!("checkpoint {epoch} is not monotonic / in range"));
+            }
+            if !crate::compact::is_turn_boundary(&parts.messages, cp.up_to_index) {
+                return invalid(format!("checkpoint {epoch} splits a tool exchange"));
+            }
+            prev = cp.up_to_index;
+        }
+        if matches!(parts.phase, Phase::Ready | Phase::Idle) && has_open_calls(&parts.messages) {
+            return invalid("history has unresolved tool calls".into());
+        }
+        Ok(Self {
+            system_prompt: parts.system_prompt,
+            tool_snapshot: parts.tool_snapshot,
+            messages: parts.messages,
+            checkpoints: parts.checkpoints,
+            phase: parts.phase,
+            pending_steers: parts.pending_steers,
+            compaction_requested: parts.compaction_requested,
+            turn: parts.turn,
+            usage: parts.usage,
+        })
+    }
+
     /// Freezes the tool catalog on first use; afterwards verifies it is unchanged.
     pub(crate) fn bind_tools(&mut self, defs: &[ToolDefinition]) -> Result<(), AgentError> {
         match &self.tool_snapshot {
@@ -169,6 +230,32 @@ impl AgentState {
             ))),
         }
     }
+}
+
+/// All fields of an [`AgentState`], public for storage backends.
+/// Rebuild with [`AgentState::from_parts`], which validates the invariants.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StateParts {
+    pub system_prompt: String,
+    pub tool_snapshot: Option<Vec<ToolDefinition>>,
+    pub messages: Vec<Message>,
+    pub checkpoints: Vec<CompactionCheckpoint>,
+    pub phase: Phase,
+    pub pending_steers: VecDeque<Message>,
+    pub compaction_requested: bool,
+    pub turn: u32,
+    pub usage: UsageLedger,
+}
+
+fn has_open_calls(messages: &[Message]) -> bool {
+    let mut open = std::collections::BTreeSet::new();
+    for m in messages {
+        open.extend(tool_call_ids(m));
+        for id in tool_result_ids(m) {
+            open.remove(id);
+        }
+    }
+    !open.is_empty()
 }
 
 /// Collects tool call ids from a message.
