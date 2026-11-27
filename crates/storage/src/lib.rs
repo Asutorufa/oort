@@ -86,14 +86,15 @@ impl SessionStore for SqliteSessionStore {
 
         let mut tx = self.pool.begin().await.map_err(backend)?;
         sqlx::query(
-            "INSERT INTO sessions (id, title, provider, model, system_prompt, frozen_tools, status, \
-             halt_reason, pending_calls, pending_steers, compaction_requested, turn, usage_json, \
-             created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO sessions (id, title, provider, model, config_json, system_prompt, frozen_tools, \
+             status, halt_reason, pending_calls, pending_steers, compaction_requested, turn, \
+             usage_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(&meta.title)
         .bind(&meta.provider)
         .bind(&meta.model)
+        .bind(to_json(&meta.config))
         .bind(state.system_prompt())
         .bind(canonical_tools_json(tools))
         .bind(snap.status.as_str())
@@ -351,6 +352,7 @@ fn meta_from_row(row: &SqliteRow) -> Result<SessionMeta, StoreError> {
         title: row.get("title"),
         provider: row.get("provider"),
         model: row.get("model"),
+        config: from_json(row.get("config_json"), "config_json")?,
         status: SessionStatus::parse(row.get("status"))?,
         turn: row.get("turn"),
         message_count: row.get::<i64, _>("message_count") as u64,

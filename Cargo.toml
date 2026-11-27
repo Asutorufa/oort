@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/llm", "crates/agent", "crates/storage", "crates/mcp"]
+members = ["crates/llm", "crates/agent", "crates/storage", "crates/mcp", "crates/server"]
 
 [workspace.package]
 version = "0.1.0"
@@ -28,3 +28,6 @@ tokio-util = "0.7.20"
 tracing = "0.1.44"
 sqlx = { version = "0.8.6", default-features = false, features = ["sqlite", "runtime-tokio", "migrate", "macros"] }
 uuid = { version = "1.29.3", features = ["v7"] }
+axum = "0.8.9"
+tower-http = { version = "0.6.11", features = ["fs", "trace"] }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

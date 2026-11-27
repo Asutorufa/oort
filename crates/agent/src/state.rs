@@ -139,6 +139,17 @@ impl AgentState {
         self.checkpoints.last()
     }
 
+    /// The messages the LLM sees: `[latest_summary?, messages[up_to_index..]]`.
+    pub fn active_view(&self) -> Vec<Message> {
+        let (summary, start) = match self.latest_checkpoint() {
+            Some(cp) => (Some(cp.summary_message.clone()), cp.up_to_index),
+            None => (None, 0),
+        };
+        let mut view: Vec<Message> = summary.into_iter().collect();
+        view.extend_from_slice(&self.messages[start..]);
+        view
+    }
+
     pub fn tool_snapshot(&self) -> Option<&[ToolDefinition]> {
         self.tool_snapshot.as_deref()
     }
