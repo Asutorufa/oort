@@ -164,3 +164,51 @@ async fn config_connects_servers_with_namespaces() {
         c.close().await;
     }
 }
+
+fn record(command: &str) -> oort_agent::McpServerRecord {
+    oort_agent::McpServerRecord {
+        id: "s1".into(),
+        name: "mock".into(),
+        transport: oort_agent::McpTransportKind::Stdio,
+        url: None,
+        command: Some(command.into()),
+        args: vec![],
+        env: Default::default(),
+        headers: Default::default(),
+        auth: oort_agent::McpAuth::None,
+        is_enabled: true,
+        created_at: 0,
+        updated_at: 0,
+    }
+}
+
+#[tokio::test]
+async fn probe_stored_record_lists_sorted_tools_and_disconnects() {
+    let rec = record(env!("CARGO_BIN_EXE_oort-mcp-mock"));
+    let p = probe(&rec, ClientOptions::default()).await.unwrap();
+    assert_eq!(p.server.server_info.name, "oort-mcp-mock");
+    let names: Vec<&str> = p.tools.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["alpha_read", "crash", "echo", "fail", "slow", "zeta_write"]
+    );
+
+    // Unresolvable secrets and missing commands are configuration errors, not transport ones.
+    let mut bad = rec.clone();
+    bad.env
+        .insert("TOKEN".into(), "env:OORT_TEST_SURELY_UNSET".into());
+    assert!(matches!(
+        probe(&bad, ClientOptions::default()).await,
+        Err(McpError::Config(m)) if m.contains("OORT_TEST_SURELY_UNSET")
+    ));
+    let mut bad = rec;
+    bad.command = None;
+    assert!(matches!(
+        probe(&bad, ClientOptions::default()).await,
+        Err(McpError::Config(_))
+    ));
+    assert!(matches!(
+        probe(&record("/nonexistent/oort-mcp"), ClientOptions::default()).await,
+        Err(McpError::Transport(_))
+    ));
+}

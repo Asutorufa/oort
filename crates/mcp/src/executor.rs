@@ -125,6 +125,7 @@ impl ToolExecutor for McpToolExecutor {
                 tracing::error!(%server, tool = %call.name, error = %e, "invalid MCP tool result");
                 Err(ToolError::Failed(format!("invalid MCP tool result: {e}")))
             }
+            Err(e @ McpError::Config(_)) => Err(ToolError::Failed(e.to_string())),
         }
     }
 }

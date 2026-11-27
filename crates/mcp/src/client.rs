@@ -23,6 +23,9 @@ pub enum McpError {
     Cancelled,
     #[error("invalid response: {0}")]
     Decode(String),
+    /// The server configuration cannot be used (missing field, unresolved secret, …).
+    #[error("invalid configuration: {0}")]
+    Config(String),
 }
 
 /// Client options.
@@ -122,8 +125,18 @@ impl McpClient {
         arguments: Value,
         cancel: &CancellationToken,
     ) -> Result<CallToolResult, McpError> {
+        decode(self.call_tool_raw(name, arguments, cancel).await?)
+    }
+
+    /// `tools/call` returning the result object verbatim (binary content included).
+    pub async fn call_tool_raw(
+        &self,
+        name: &str,
+        arguments: Value,
+        cancel: &CancellationToken,
+    ) -> Result<Value, McpError> {
         let params = json!({ "name": name, "arguments": arguments });
-        decode(self.call("tools/call", Some(params), cancel).await?)
+        self.call("tools/call", Some(params), cancel).await
     }
 
     pub async fn close(&self) {

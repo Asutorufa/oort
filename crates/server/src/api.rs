@@ -4,33 +4,53 @@ use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use oort_agent::{
-    AgentEvent, AgentState, ApprovalDecision, Phase, SessionMeta, StoreError, ToolDecision,
-    UsageLedger,
+    AgentEvent, AgentState, ApprovalDecision, ApprovalPolicyKind, LlmCallStats, Phase,
+    RequestSummary, SessionMeta, SessionStatus, StoreError, ToolDecision, UsageLedger,
 };
 use oort_llm::{ContentPart, Message, Role, ToolCall, ToolDefinition, Usage};
 use serde::{Deserialize, Serialize};
 
-use crate::config::{ApprovalMode, ProviderKind, SessionConfig};
+use crate::config::SessionConfig;
+use crate::hub::LiveTurn;
 
 // ----- requests ------------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Deserialize)]
+/// `POST /api/sessions`. Fields left out come from the preset (if any), then defaults.
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct CreateSessionRequest {
     #[serde(default)]
     pub title: Option<String>,
-    pub provider: ProviderKind,
-    pub model: String,
     #[serde(default)]
-    pub system_prompt: String,
+    pub preset_id: Option<String>,
+    #[serde(default)]
+    pub provider_id: Option<String>,
+    /// Empty: the preset's model, then the provider's default model.
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub mcp_server_ids: Option<Vec<String>>,
+    #[serde(default)]
+    pub builtin_tools: Option<bool>,
+    #[serde(default)]
+    pub system_prompt: Option<String>,
+    #[serde(default)]
+    pub approval_policy: Option<ApprovalPolicyKind>,
     #[serde(default)]
     pub max_context_tokens: Option<u64>,
     #[serde(default)]
     pub max_tokens: Option<u32>,
-    #[serde(default)]
-    pub approval: ApprovalMode,
     /// Optional first user message (starts the first turn immediately).
     #[serde(default)]
     pub message: Option<String>,
+}
+
+/// `PATCH /api/sessions/:id`.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PatchSessionRequest {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub approval_policy: Option<ApprovalPolicyKind>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -96,6 +116,10 @@ pub struct TurnUsage {
     pub prompt_tokens: u64,
     /// `cache_read_tokens / prompt_tokens`.
     pub cache_hit_rate: f64,
+    /// Time to first streamed content (calls made before metrics existed have none).
+    pub ttft_ms: Option<u64>,
+    pub latency_ms: Option<u64>,
+    pub request: Option<RequestSummary>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -146,6 +170,7 @@ impl SessionDetail {
         settings: SessionConfig,
         state: &AgentState,
         usage: &[Option<Usage>],
+        calls: &[LlmCallStats],
     ) -> Self {
         let policy = settings.policy();
         let raw = state
@@ -168,6 +193,7 @@ impl SessionDetail {
             let c = u.cache_read_tokens.unwrap_or(0);
             cached += c;
             prompt += p;
+            let call = calls.iter().find(|s| s.seq == seq);
             per_turn.push(TurnUsage {
                 turn: per_turn.len() + 1,
                 seq,
@@ -177,6 +203,9 @@ impl SessionDetail {
                 cache_creation_tokens: u.cache_creation_tokens.unwrap_or(0),
                 prompt_tokens: p,
                 cache_hit_rate: ratio(c, p),
+                ttft_ms: call.and_then(|s| s.ttft_ms),
+                latency_ms: call.map(|s| s.latency_ms),
+                request: call.map(|s| s.request.clone()),
             });
         }
 
@@ -237,10 +266,21 @@ fn ratio(a: u64, b: u64) -> f64 {
     if b == 0 { 0.0 } else { a as f64 / b as f64 }
 }
 
-/// One SSE message (`data:` is this JSON; `id:` is `seq`).
+/// One SSE message. `data:` is this JSON; `id:` is `{boot}:{seq}` so a reconnecting client
+/// (`Last-Event-ID`) can resume within the same server process.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Envelope {
+    /// First message of every connection. `resumed`: missed events follow and the client
+    /// keeps its state; otherwise it must refetch the snapshot and adopt `live`.
+    Hello {
+        seq: u64,
+        boot: String,
+        resumed: bool,
+        status: SessionStatus,
+        active: bool,
+        live: LiveTurn,
+    },
     Agent {
         seq: u64,
         event: AgentEvent,
@@ -249,6 +289,16 @@ pub enum Envelope {
     LoopExited {
         seq: u64,
         error: Option<String>,
+    },
+    /// Title or approval policy changed.
+    SessionUpdated {
+        seq: u64,
+        title: String,
+        approval_policy: ApprovalPolicyKind,
+    },
+    /// The session was deleted; the stream ends.
+    Deleted {
+        seq: u64,
     },
     /// The subscriber fell behind and missed events: refetch the snapshot.
     Lagged {
@@ -259,10 +309,39 @@ pub enum Envelope {
 impl Envelope {
     pub fn seq(&self) -> Option<u64> {
         match self {
-            Self::Agent { seq, .. } | Self::LoopExited { seq, .. } => Some(*seq),
+            Self::Hello { seq, .. }
+            | Self::Agent { seq, .. }
+            | Self::LoopExited { seq, .. }
+            | Self::SessionUpdated { seq, .. }
+            | Self::Deleted { seq } => Some(*seq),
             Self::Lagged { .. } => None,
         }
     }
+}
+
+/// `GET /api/sessions/:id/export` (no secrets).
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionExport {
+    pub format: &'static str,
+    pub exported_at: i64,
+    pub meta: SessionMeta,
+    pub settings: SessionConfig,
+    pub provider: Option<ProviderSummary>,
+    pub system_prompt: String,
+    pub frozen_tools: Vec<ToolDefinition>,
+    pub messages: Vec<RawMessage>,
+    pub compactions: Vec<CheckpointView>,
+    pub llm_calls: Vec<LlmCallStats>,
+    pub phase: Phase,
+    pub pending_steers: Vec<Message>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProviderSummary {
+    pub id: String,
+    pub name: String,
+    pub kind: oort_agent::ProviderKind,
+    pub base_url: Option<String>,
 }
 
 // ----- errors --------------------------------------------------------------------------------
@@ -275,6 +354,9 @@ pub enum ApiError {
     BadRequest(String),
     #[error("{0}")]
     Conflict(String),
+    /// An upstream (LLM provider or MCP server) failed.
+    #[error("{0}")]
+    BadGateway(String),
     #[error("{0}")]
     Internal(String),
 }
@@ -295,6 +377,7 @@ impl IntoResponse for ApiError {
             Self::NotFound(_) => StatusCode::NOT_FOUND,
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::Conflict(_) => StatusCode::CONFLICT,
+            Self::BadGateway(_) => StatusCode::BAD_GATEWAY,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (
