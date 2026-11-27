@@ -149,6 +149,10 @@ pub struct NewSession {
     pub title: String,
     pub provider: String,
     pub model: String,
+    /// Immutable, application-defined session configuration (request parameters, policies, …).
+    /// It is part of what keeps a resumed session's requests byte-identical.
+    #[serde(default)]
+    pub config: serde_json::Value,
 }
 
 /// Session metadata (one row of `sessions`).
@@ -158,6 +162,7 @@ pub struct SessionMeta {
     pub title: String,
     pub provider: String,
     pub model: String,
+    pub config: serde_json::Value,
     pub status: SessionStatus,
     pub turn: u32,
     pub message_count: u64,

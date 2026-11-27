@@ -57,12 +57,7 @@ impl DefaultContextManager {
 
 impl ContextManager for DefaultContextManager {
     fn build_request(&self, state: &AgentState, tools: &FrozenToolset) -> ChatRequest {
-        let (summary, start) = match state.latest_checkpoint() {
-            Some(cp) => (Some(cp.summary_message.clone()), cp.up_to_index),
-            None => (None, 0),
-        };
-        let mut messages: Vec<Message> = summary.into_iter().collect();
-        messages.extend_from_slice(&state.messages()[start..]);
+        let messages = state.active_view();
 
         let p = &self.params;
         let system = state.system_prompt();

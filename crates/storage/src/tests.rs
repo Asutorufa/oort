@@ -240,6 +240,7 @@ async fn schema_enforces_append_only_and_frozen_prefix() {
         "UPDATE sessions SET system_prompt = 'changed' WHERE id = ?",
         "UPDATE sessions SET frozen_tools = '[{\"name\":\"x\"}]' WHERE id = ?",
         "DELETE FROM sessions WHERE id = ?",
+        "UPDATE sessions SET config_json = '{}' WHERE id = ?",
     ] {
         let err = sqlx::query(sql)
             .bind(&id)

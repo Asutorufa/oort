@@ -1,0 +1,30 @@
+[package]
+name = "oort-mcp"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Lightweight MCP (Model Context Protocol) client exposed as an oort-agent ToolExecutor"
+
+[[bin]]
+# Tiny stdio MCP server used by tests and the debug console demo.
+name = "oort-mcp-mock"
+path = "src/bin/oort-mcp-mock.rs"
+
+[dependencies]
+oort-agent = { path = "../agent" }
+oort-llm = { path = "../llm" }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+futures-util = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["process", "io-util", "io-std", "sync", "time", "macros", "rt", "rt-multi-thread"] }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+mockito = { workspace = true }
+oort-agent = { path = "../agent", features = ["testing"] }
