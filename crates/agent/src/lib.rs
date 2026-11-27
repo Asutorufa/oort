@@ -15,6 +15,7 @@
 //! - No sliding window: context reduction only happens via epoch compaction.
 
 pub mod compact;
+pub mod composite;
 pub mod context;
 pub mod engine;
 pub mod error;
@@ -32,6 +33,7 @@ pub use compact::{
     CompactionInput, CompactionPolicy, Compactor, LlmCompactor, NoopCompactor, RuleBasedCompactor,
     UsageAccounting,
 };
+pub use composite::{CompositeBuilder, CompositeToolExecutor, Namespace};
 pub use context::{ContextManager, DefaultContextManager, RequestParams};
 pub use engine::{Agent, AgentBuilder, INTERRUPTED_TOOL_RESULT, StepOutcome};
 pub use error::AgentError;
