@@ -14,12 +14,17 @@ pub mod client;
 pub mod config;
 pub mod executor;
 pub mod protocol;
+pub mod record;
 pub mod transport;
 
 pub use client::{ClientOptions, McpClient, McpError};
 pub use config::{McpConfig, ServerEntry};
 pub use executor::{McpToolExecutor, McpToolSpec};
-pub use protocol::{CallToolResult, McpContent, McpTool, RpcError, ToolAnnotations};
+pub use protocol::{
+    CallToolResult, Implementation, InitializeResult, McpContent, McpTool, RpcError,
+    ToolAnnotations,
+};
+pub use record::{Probe, connect_record, probe, transport_for};
 pub use transport::{
     HttpServerConfig, McpTransport, StaticToken, StdioServerConfig, StdioTransport,
     StreamableHttpTransport, TokenProvider, TransportError,

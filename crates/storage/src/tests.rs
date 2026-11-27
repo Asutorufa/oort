@@ -360,3 +360,211 @@ fn canonical_tool_json_is_key_sorted() {
     let json = canonical_tools_json(&[def]);
     assert!(json.find("\"a\"").unwrap() < json.find("\"z\"").unwrap());
 }
+
+// ----- workbench additions ---------------------------------------------------------------
+
+#[tokio::test]
+async fn llm_calls_are_committed_with_their_step() {
+    let h = Harness::new(vec![]).await;
+    let (id, mut state) = h.create(vec![Message::user("hi")]).await;
+    let model = MockModel::new(vec![MockTurn::text("hello", 42)]);
+    let agent = h.agent(model, &id, &state, vec![]);
+    agent
+        .run_loop(&mut state, &mut Inbox::detached())
+        .await
+        .unwrap();
+    let calls = h.store.list_llm_calls(&id).await.unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!((calls[0].turn, calls[0].seq), (1, 1));
+    assert_eq!(calls[0].request.messages, 1);
+    assert_eq!(calls[0].usage.as_ref().unwrap().input_tokens, 42);
+    // Append-only like the rest of the history.
+    let err = sqlx::query("UPDATE llm_calls SET latency_ms = 0")
+        .execute(h.store.pool())
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("append-only"), "{err}");
+}
+
+#[tokio::test]
+async fn title_and_policy_are_mutable_prefix_is_not() {
+    let h = Harness::new(vec![]).await;
+    let (id, _) = h.create(vec![Message::user("hi")]).await;
+    h.store.set_title(&id, "renamed").await.unwrap();
+    h.store
+        .set_approval_policy(&id, ApprovalPolicyKind::AlwaysAsk)
+        .await
+        .unwrap();
+    let meta = h.store.load_state(&id).await.unwrap().meta;
+    assert_eq!(meta.title, "renamed");
+    assert_eq!(meta.approval_policy, ApprovalPolicyKind::AlwaysAsk);
+    assert!(matches!(
+        h.store.set_title("nope", "x").await,
+        Err(StoreError::NotFound(_))
+    ));
+    let err = sqlx::query("UPDATE sessions SET system_prompt = 'x'")
+        .execute(h.store.pool())
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("immutable"));
+}
+
+#[tokio::test]
+async fn delete_session_removes_everything_but_raw_deletes_stay_blocked() {
+    let h = Harness::new(vec![]).await;
+    let (id, mut state) = h.create(vec![Message::user("hi")]).await;
+    let (other, _) = h.create(vec![Message::user("keep")]).await;
+    let agent = h.agent(
+        MockModel::new(vec![MockTurn::text("yo", 5)]),
+        &id,
+        &state,
+        vec![],
+    );
+    agent
+        .run_loop(&mut state, &mut Inbox::detached())
+        .await
+        .unwrap();
+
+    for sql in [
+        "DELETE FROM messages",
+        "DELETE FROM llm_calls",
+        "DELETE FROM sessions",
+    ] {
+        let err = sqlx::query(sql).execute(h.store.pool()).await.unwrap_err();
+        assert!(err.to_string().contains("oort:"), "{sql}: {err}");
+    }
+
+    h.store.delete_session(&id).await.unwrap();
+    assert!(matches!(
+        h.store.load_state(&id).await,
+        Err(StoreError::NotFound(_))
+    ));
+    for table in ["messages", "llm_calls", "compactions"] {
+        let n: i64 = sqlx::query_scalar(&format!(
+            "SELECT COUNT(*) FROM {table} WHERE session_id = ?"
+        ))
+        .bind(&id)
+        .fetch_one(h.store.pool())
+        .await
+        .unwrap();
+        assert_eq!(n, 0, "{table}");
+    }
+    assert_eq!(
+        h.store
+            .load_state(&other)
+            .await
+            .unwrap()
+            .state
+            .messages()
+            .len(),
+        1
+    );
+    assert!(matches!(
+        h.store.delete_session(&id).await,
+        Err(StoreError::NotFound(_))
+    ));
+}
+
+fn provider(id: &str, name: &str) -> ProviderRecord {
+    ProviderRecord {
+        id: id.into(),
+        name: name.into(),
+        kind: ProviderKind::Gemini,
+        base_url: None,
+        api_key: Some("env:GEMINI_API_KEY".into()),
+        default_model: "gemini-2.5-flash".into(),
+        extra_headers: [("x-org".to_string(), "acme".to_string())].into(),
+        is_enabled: true,
+        created_at: 1,
+        updated_at: 1,
+    }
+}
+
+#[tokio::test]
+async fn config_crud_and_reference_checks() {
+    let s = SqliteSessionStore::in_memory().await.unwrap();
+    // Seeded offline provider.
+    let seeded = s.get_provider("mock").await.unwrap();
+    assert_eq!(seeded.kind, ProviderKind::Mock);
+
+    s.create_provider(&provider("p1", "Gemini")).await.unwrap();
+    assert!(matches!(
+        s.create_provider(&provider("p2", "Gemini")).await,
+        Err(StoreError::Conflict(_))
+    ));
+    let mut p = s.get_provider("p1").await.unwrap();
+    assert_eq!(p, provider("p1", "Gemini"));
+    p.default_model = "gemini-2.5-pro".into();
+    p.updated_at = 2;
+    s.update_provider(&p).await.unwrap();
+    assert_eq!(
+        s.get_provider("p1").await.unwrap().default_model,
+        "gemini-2.5-pro"
+    );
+    assert_eq!(s.list_providers().await.unwrap().len(), 2);
+
+    let mcp = McpServerRecord {
+        id: "m1".into(),
+        name: "fs".into(),
+        transport: McpTransportKind::Stdio,
+        url: None,
+        command: Some("mcp-fs".into()),
+        args: vec!["--root".into(), ".".into()],
+        env: [("TOKEN".to_string(), "env:FS_TOKEN".to_string())].into(),
+        headers: Default::default(),
+        auth: McpAuth::None,
+        is_enabled: true,
+        created_at: 1,
+        updated_at: 1,
+    };
+    s.create_mcp_server(&mcp).await.unwrap();
+    assert_eq!(s.get_mcp_server("m1").await.unwrap(), mcp);
+
+    let preset = PresetRecord {
+        id: "r1".into(),
+        name: "coder".into(),
+        description: "d".into(),
+        provider_id: "p1".into(),
+        model: String::new(),
+        system_prompt: "be terse".into(),
+        mcp_server_ids: vec!["m1".into()],
+        builtin_tools: false,
+        approval_policy: ApprovalPolicyKind::AlwaysAsk,
+        created_at: 1,
+        updated_at: 1,
+    };
+    s.create_preset(&preset).await.unwrap();
+    assert_eq!(s.list_presets().await.unwrap(), vec![preset.clone()]);
+
+    // Referenced records cannot be deleted; the error names the preset.
+    for r in [
+        s.delete_provider("p1").await,
+        s.delete_mcp_server("m1").await,
+    ] {
+        match r {
+            Err(StoreError::Conflict(m)) => assert!(m.contains("coder"), "{m}"),
+            other => panic!("{other:?}"),
+        }
+    }
+    // A preset pointing at an unknown provider is rejected by the foreign key.
+    let mut bad = preset.clone();
+    bad.id = "r2".into();
+    bad.name = "bad".into();
+    bad.provider_id = "missing".into();
+    assert!(matches!(
+        s.create_preset(&bad).await,
+        Err(StoreError::Conflict(_))
+    ));
+
+    s.delete_preset("r1").await.unwrap();
+    s.delete_mcp_server("m1").await.unwrap();
+    s.delete_provider("p1").await.unwrap();
+    assert!(matches!(
+        s.get_provider("p1").await,
+        Err(StoreError::NotFound(_))
+    ));
+    assert!(matches!(
+        s.update_preset(&preset).await,
+        Err(StoreError::NotFound(_))
+    ));
+}

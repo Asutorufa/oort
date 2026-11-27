@@ -141,6 +141,88 @@ pub fn exposed_name(ns: &Namespace, name: &str) -> String {
         .collect()
 }
 
+/// A frozen catalog (e.g. a stored session's `frozen_tools`) served by whatever executor is
+/// live now.
+///
+/// The model always sees exactly `pinned`, so a resumed session's tool prefix stays
+/// byte-identical however the live servers changed. Live tools that are not pinned are hidden;
+/// a pinned tool the live executor no longer offers answers with a tool error (an `is_error`
+/// result for the model), never an agent failure. Scheduling (`is_read_only`) follows the live
+/// tool when present and is conservative (sequential) otherwise.
+pub struct PinnedToolExecutor {
+    live: Arc<dyn ToolExecutor>,
+    tools: Vec<Arc<dyn Tool>>,
+    available: BTreeMap<String, bool>,
+}
+
+struct PinnedTool {
+    definition: ToolDefinition,
+    read_only: bool,
+}
+
+impl Tool for PinnedTool {
+    fn definition(&self) -> ToolDefinition {
+        self.definition.clone()
+    }
+    fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+}
+
+impl PinnedToolExecutor {
+    pub fn new(pinned: &[ToolDefinition], live: Arc<dyn ToolExecutor>) -> Self {
+        let live_tools: BTreeMap<String, bool> = live
+            .tools()
+            .iter()
+            .map(|t| (t.definition().name, t.is_read_only()))
+            .collect();
+        let tools = pinned
+            .iter()
+            .map(|d| {
+                Arc::new(PinnedTool {
+                    definition: d.clone(),
+                    read_only: live_tools.get(&d.name).copied().unwrap_or(false),
+                }) as Arc<dyn Tool>
+            })
+            .collect();
+        let available = pinned
+            .iter()
+            .filter_map(|d| live_tools.get(&d.name).map(|ro| (d.name.clone(), *ro)))
+            .collect();
+        Self {
+            live,
+            tools,
+            available,
+        }
+    }
+
+    /// Pinned tool names the live executor does not offer any more.
+    pub fn missing(&self) -> Vec<String> {
+        self.tools
+            .iter()
+            .map(|t| t.definition().name)
+            .filter(|n| !self.available.contains_key(n))
+            .collect()
+    }
+}
+
+#[async_trait]
+impl ToolExecutor for PinnedToolExecutor {
+    fn tools(&self) -> Vec<Arc<dyn Tool>> {
+        self.tools.clone()
+    }
+
+    async fn execute(&self, call: &ToolCall, ctx: ToolContext) -> Result<ToolOutput, ToolError> {
+        if !self.available.contains_key(&call.name) {
+            return Err(ToolError::Failed(format!(
+                "tool `{}` is no longer available (its server was changed or removed after this session started)",
+                call.name
+            )));
+        }
+        self.live.execute(call, ctx).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

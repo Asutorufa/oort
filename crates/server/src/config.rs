@@ -14,7 +14,8 @@ pub struct ServerConfig {
     pub addr: SocketAddr,
     /// `OORT_DB` (default `sqlite://oort.db`).
     pub db_url: String,
-    /// `OORT_MCP_CONFIG`: path to a `{"mcpServers": {...}}` JSON file.
+    /// `OORT_MCP_CONFIG`: `{"mcpServers": {...}}` file imported into the MCP server table at
+    /// startup (servers whose name already exists are left alone).
     pub mcp_config: Option<PathBuf>,
     /// `OORT_WORKSPACE` (default `.`): root for the built-in file tools.
     pub workspace: PathBuf,
@@ -40,63 +41,59 @@ impl ServerConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProviderKind {
-    Anthropic,
-    Openai,
-    OpenaiResponses,
-    Gemini,
-    /// Offline echo model with simulated streaming and cache usage.
-    Mock,
+/// An MCP server attached to a session, with the tool-name prefix it had when the session was
+/// created (renaming the server later must not rename the session's frozen tools).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpBinding {
+    pub id: String,
+    pub prefix: String,
 }
 
-impl ProviderKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Anthropic => "anthropic",
-            Self::Openai => "openai",
-            Self::OpenaiResponses => "openai_responses",
-            Self::Gemini => "gemini",
-            Self::Mock => "mock",
-        }
-    }
-
-    /// Anthropic reports `input_tokens` excluding cache reads/writes; the others include them.
-    pub fn accounting(self) -> UsageAccounting {
-        match self {
-            Self::Anthropic => UsageAccounting::Exclusive,
-            _ => UsageAccounting::Inclusive,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ApprovalMode {
-    /// Tools without `readOnlyHint` / read-only flag need human approval.
-    #[default]
-    Mutating,
-    /// Everything runs without approval.
-    Never,
+fn yes() -> bool {
+    true
 }
 
 /// Immutable per-session configuration (stored in `sessions.config_json`).
+///
+/// Sessions created before the workbench have no `provider_id`; their `provider` is one of the
+/// legacy kinds (`anthropic`, `openai` = Chat Completions, `openai_responses`, `gemini`, `mock`)
+/// and their keys come from the environment.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionConfig {
-    pub provider: ProviderKind,
+    /// Provider kind at creation time.
+    pub provider: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
     pub model: String,
     pub max_context_tokens: u64,
     #[serde(default)]
     pub max_tokens: Option<u32>,
+    #[serde(default = "yes")]
+    pub builtin_tools: bool,
     #[serde(default)]
-    pub approval: ApprovalMode,
+    pub mcp_servers: Vec<McpBinding>,
+    /// Legacy approval mode (`mutating` / `never`); superseded by `sessions.approval_policy`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval: Option<String>,
 }
 
 impl SessionConfig {
+    pub fn is_legacy(&self) -> bool {
+        self.provider_id.is_none()
+    }
+
+    /// Anthropic reports `input_tokens` excluding cache reads/writes; the others include them.
+    pub fn accounting(&self) -> UsageAccounting {
+        if self.provider == "anthropic" {
+            UsageAccounting::Exclusive
+        } else {
+            UsageAccounting::Inclusive
+        }
+    }
+
     pub fn policy(&self) -> CompactionPolicy {
         let mut p = CompactionPolicy::new(self.max_context_tokens);
-        p.accounting = self.provider.accounting();
+        p.accounting = self.accounting();
         p
     }
 
@@ -108,5 +105,20 @@ impl SessionConfig {
             ..Default::default()
         })
         .with_compaction(self.policy())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_config_still_parses() {
+        let raw = r#"{"approval":"never","max_context_tokens":200000,"max_tokens":null,"model":"m","provider":"gemini"}"#;
+        let cfg: SessionConfig = serde_json::from_str(raw).unwrap();
+        assert!(cfg.is_legacy());
+        assert!(cfg.builtin_tools);
+        assert!(cfg.mcp_servers.is_empty());
+        assert_eq!(cfg.approval.as_deref(), Some("never"));
     }
 }
