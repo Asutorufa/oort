@@ -693,3 +693,133 @@ fn test_into_assistant_message_agent_loop_roundtrip_preserves_prefix() {
     assert_json_array_is_prefix(&g1["contents"], &g2["contents"], "Gemini loop t1->t2");
     assert_json_array_is_prefix(&g2["contents"], &g3["contents"], "Gemini loop t2->t3");
 }
+
+#[test]
+fn test_openai_legacy_completion_prefix_cache_stability() {
+    use crate::CompletionRequest;
+
+    let client = OpenAIClient::new("k", "gpt-3.5-turbo-instruct");
+    let cache = PromptCacheConfig::enabled()
+        .with_key("cmpl-session-1")
+        .with_ttl(CacheTtl::TwentyFourHours);
+
+    let req1 = CompletionRequest::new("fn add(a: i32, b: i32) -> i32 {\n")
+        .with_prompt_cache(cache.clone());
+    let req2 = CompletionRequest::new("fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n")
+        .with_temperature(0.3)
+        .with_max_tokens(128)
+        .with_prompt_cache(cache);
+
+    let v1a = serde_json::to_string(&client.build_completion_request_body(&req1, true).unwrap())
+        .unwrap();
+    let v1b = serde_json::to_string(&client.build_completion_request_body(&req1, true).unwrap())
+        .unwrap();
+    assert_eq!(v1a, v1b);
+
+    let j1 = serde_json::to_value(client.build_completion_request_body(&req1, true).unwrap())
+        .unwrap();
+    let j2 = serde_json::to_value(client.build_completion_request_body(&req2, true).unwrap())
+        .unwrap();
+
+    assert_eq!(j1["prompt_cache_key"], "cmpl-session-1");
+    assert_eq!(j1["prompt_cache_retention"], "24h");
+    assert_eq!(j2["prompt_cache_key"], "cmpl-session-1");
+    assert!(
+        j2["prompt"]
+            .as_str()
+            .unwrap()
+            .starts_with(j1["prompt"].as_str().unwrap()),
+        "Extended completion prompt must preserve exact string prefix"
+    );
+}
+
+#[test]
+fn test_multimodal_image_and_pdf_encoding_and_prefix_stability() {
+    let t1_msgs = vec![Message::user_parts(vec![
+        ContentPart::text("Analyze this chart and PDF report."),
+        ContentPart::image_base64("image/png", "iVBORw0KGgo="),
+        ContentPart::image_url("https://example.com/chart.jpg"),
+        ContentPart::pdf_base64("JVBERi0xLjQK", Some("report.pdf")),
+        ContentPart::pdf_url("https://example.com/spec.pdf"),
+        ContentPart::document_file_id("file-abc123", Some("application/pdf")),
+    ])];
+
+    let mut t2_msgs = t1_msgs.clone();
+    t2_msgs.push(Message::assistant("The report shows 20% growth."));
+    t2_msgs.push(Message::user("Extract the Q4 table from page 3."));
+
+    let req1 = ChatRequest::new(t1_msgs)
+        .with_system("Multimodal analyst")
+        .with_prompt_cache(PromptCacheConfig::enabled());
+    let req2 = ChatRequest::new(t2_msgs)
+        .with_system("Multimodal analyst")
+        .with_prompt_cache(PromptCacheConfig::enabled());
+
+    // OpenAI Chat Completions
+    let oa = OpenAIClient::new("k", "gpt-4o");
+    let oa1 = serde_json::to_value(oa.build_request_body(&req1, false).unwrap()).unwrap();
+    let oa2 = serde_json::to_value(oa.build_request_body(&req2, false).unwrap()).unwrap();
+    let oa_parts = oa1["messages"][1]["content"].as_array().unwrap();
+    assert_eq!(oa_parts[1]["type"], "image_url");
+    assert_eq!(oa_parts[1]["image_url"]["url"], "data:image/png;base64,iVBORw0KGgo=");
+    assert_eq!(oa_parts[2]["image_url"]["url"], "https://example.com/chart.jpg");
+    assert_eq!(oa_parts[3]["type"], "file");
+    assert_eq!(oa_parts[3]["file"]["filename"], "report.pdf");
+    assert_eq!(
+        oa_parts[3]["file"]["file_data"],
+        "data:application/pdf;base64,JVBERi0xLjQK"
+    );
+    assert_eq!(oa_parts[5]["file"]["file_id"], "file-abc123");
+    assert_json_array_is_prefix(&oa1["messages"], &oa2["messages"], "OpenAI multimodal t1->t2");
+
+    // OpenAI Responses API
+    let resp = OpenAIResponsesClient::new("k", "gpt-4.1");
+    let r1 = serde_json::to_value(resp.build_request_body(&req1, false).unwrap()).unwrap();
+    let r2 = serde_json::to_value(resp.build_request_body(&req2, false).unwrap()).unwrap();
+    let r_parts = r1["input"][0]["content"].as_array().unwrap();
+    assert_eq!(r_parts[1]["type"], "input_image");
+    assert_eq!(r_parts[3]["type"], "input_file");
+    assert_eq!(r_parts[3]["filename"], "report.pdf");
+    assert_eq!(
+        r_parts[3]["file_data"],
+        "data:application/pdf;base64,JVBERi0xLjQK"
+    );
+    assert_eq!(r_parts[4]["file_url"], "https://example.com/spec.pdf");
+    assert_eq!(r_parts[5]["file_id"], "file-abc123");
+    assert_json_array_is_prefix(&r1["input"], &r2["input"], "OpenAI Responses multimodal t1->t2");
+
+    // Anthropic Messages API
+    let ant = AnthropicClient::new("k", "claude-sonnet-4-20250514");
+    let a1 = serde_json::to_value(ant.build_request_body(&req1, false).unwrap()).unwrap();
+    let a2 = serde_json::to_value(ant.build_request_body(&req2, false).unwrap()).unwrap();
+    let a_parts = a1["messages"][0]["content"].as_array().unwrap();
+    assert_eq!(a_parts[1]["type"], "image");
+    assert_eq!(a_parts[1]["source"]["type"], "base64");
+    assert_eq!(a_parts[2]["source"]["type"], "url");
+    assert_eq!(a_parts[3]["type"], "document");
+    assert_eq!(a_parts[3]["title"], "report.pdf");
+    assert_eq!(a_parts[3]["source"]["media_type"], "application/pdf");
+    assert_eq!(a_parts[3]["source"]["data"], "JVBERi0xLjQK");
+    assert_eq!(a_parts[4]["source"]["type"], "url");
+    assert_eq!(a_parts[5]["source"]["type"], "file");
+    assert_eq!(a_parts[5]["source"]["file_id"], "file-abc123");
+    assert_json_array_is_prefix(
+        &strip_cache_control(&a1["messages"]),
+        &strip_cache_control(&a2["messages"]),
+        "Anthropic multimodal t1->t2",
+    );
+
+    // Gemini API
+    let gem = GeminiClient::new("k", "gemini-2.5-pro");
+    let g1 = serde_json::to_value(gem.build_request_body(&req1).unwrap().1).unwrap();
+    let g2 = serde_json::to_value(gem.build_request_body(&req2).unwrap().1).unwrap();
+    let g_parts = g1["contents"][0]["parts"].as_array().unwrap();
+    assert_eq!(g_parts[1]["inlineData"]["mimeType"], "image/png");
+    assert_eq!(g_parts[2]["fileData"]["fileUri"], "https://example.com/chart.jpg");
+    assert_eq!(g_parts[3]["inlineData"]["mimeType"], "application/pdf");
+    assert_eq!(g_parts[3]["inlineData"]["data"], "JVBERi0xLjQK");
+    assert_eq!(g_parts[4]["fileData"]["mimeType"], "application/pdf");
+    assert_eq!(g_parts[4]["fileData"]["fileUri"], "https://example.com/spec.pdf");
+    assert_eq!(g_parts[5]["fileData"]["fileUri"], "file-abc123");
+    assert_json_array_is_prefix(&g1["contents"], &g2["contents"], "Gemini multimodal t1->t2");
+}

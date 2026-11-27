@@ -11,8 +11,9 @@ use crate::error::extract_error_message_from_value;
 use crate::http::{apply_headers, bytes_stream, ensure_success, insert_header, normalize_base_url};
 use crate::sse::parse_sse_stream;
 use crate::types::{
-    CacheTtl, ChatRequest, ChatResponse, ContentPart, ImageSource, Message, ReasoningEffort, Role,
-    StopReason, StreamEvent, ToolCall, ToolChoice, ToolDefinition, Usage, parse_tool_arguments,
+    CacheTtl, ChatRequest, ChatResponse, ContentPart, DocumentSource, ImageSource, Message,
+    PromptCacheConfig, ReasoningEffort, Role, StopReason, StreamEvent, ToolCall, ToolChoice,
+    ToolDefinition, Usage, parse_tool_arguments,
 };
 use crate::Error;
 
@@ -80,9 +81,110 @@ impl OpenAIClient {
         let base = self.base_url();
         if base.ends_with("/chat/completions") {
             base.to_string()
+        } else if let Some(stripped) = base.strip_suffix("/completions") {
+            format!("{stripped}/chat/completions")
         } else {
             format!("{base}/chat/completions")
         }
+    }
+
+    fn completions_url(&self) -> String {
+        let base = self.base_url();
+        if let Some(stripped) = base.strip_suffix("/chat/completions") {
+            format!("{stripped}/completions")
+        } else if base.ends_with("/completions") {
+            base.to_string()
+        } else {
+            format!("{base}/completions")
+        }
+    }
+
+    /// Sends a non-streaming request to the OpenAI Completions API (`POST /v1/completions`).
+    pub async fn complete(&self, request: CompletionRequest) -> Result<ChatResponse, Error> {
+        let body = self.build_completion_request_body(&request, false)?;
+
+        let mut req_builder = self.http.post(self.completions_url()).json(&body);
+        if !self.api_key.trim().is_empty() {
+            req_builder = req_builder.bearer_auth(&self.api_key);
+        }
+        req_builder = apply_headers(req_builder, &self.extra_headers);
+
+        let resp = ensure_success(req_builder.send().await?).await?;
+        let api_resp: OpenAITextCompletionResponse = resp.json().await?;
+        parse_text_completion_response(api_resp)
+    }
+
+    /// Sends a streaming request to the OpenAI Completions API (`POST /v1/completions`).
+    pub async fn complete_stream(&self, request: CompletionRequest) -> Result<ChatStream, Error> {
+        let body = self.build_completion_request_body(&request, true)?;
+
+        let mut req_builder = self
+            .http
+            .post(self.completions_url())
+            .header("Accept", "text/event-stream")
+            .json(&body);
+        if !self.api_key.trim().is_empty() {
+            req_builder = req_builder.bearer_auth(&self.api_key);
+        }
+        req_builder = apply_headers(req_builder, &self.extra_headers);
+
+        let resp = ensure_success(req_builder.send().await?).await?;
+        let sse = parse_sse_stream(bytes_stream(resp));
+        Ok(Box::pin(openai_completion_sse_to_events(sse)))
+    }
+
+    pub(crate) fn build_completion_request_body(
+        &self,
+        request: &CompletionRequest,
+        stream: bool,
+    ) -> Result<OpenAITextCompletionRequest, Error> {
+        let model = request
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| self.model.trim());
+        if model.is_empty() {
+            return Err(Error::InvalidConfig(
+                "model name must not be empty".to_string(),
+            ));
+        }
+
+        let stop = if request.stop_sequences.is_empty() {
+            None
+        } else {
+            Some(request.stop_sequences.clone())
+        };
+
+        let stream_options = if stream && self.include_stream_usage {
+            Some(OpenAIStreamOptions {
+                include_usage: true,
+            })
+        } else {
+            None
+        };
+
+        let (prompt_cache_key, prompt_cache_retention) =
+            extract_openai_cache_fields(request.prompt_cache.as_ref());
+
+        Ok(OpenAITextCompletionRequest {
+            model: model.to_string(),
+            prompt: request.prompt.clone(),
+            suffix: request.suffix.clone(),
+            max_tokens: request.max_tokens,
+            temperature: request.temperature,
+            top_p: request.top_p,
+            stop,
+            echo: request.echo,
+            presence_penalty: request.presence_penalty,
+            frequency_penalty: request.frequency_penalty,
+            seed: request.seed,
+            user: request.user.clone(),
+            prompt_cache_key,
+            prompt_cache_retention,
+            stream: Some(stream),
+            stream_options,
+        })
     }
 
     pub(crate) fn build_request_body(
@@ -204,6 +306,7 @@ pub(crate) fn openai_models_url(base_url: &str) -> String {
     let base = normalize_base_url(base_url, DEFAULT_OPENAI_BASE_URL);
     let base = base
         .strip_suffix("/chat/completions")
+        .or_else(|| base.strip_suffix("/completions"))
         .or_else(|| base.strip_suffix("/responses"))
         .or_else(|| base.strip_suffix("/models"))
         .unwrap_or(base);
@@ -232,7 +335,144 @@ pub(crate) async fn fetch_openai_models(
         .collect())
 }
 
+/// Request parameters for the OpenAI Completions API (`POST /v1/completions`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CompletionRequest {
+    /// Optional model override; falls back to the client's configured model.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Prompt text to complete.
+    pub prompt: String,
+    /// Optional suffix for Fill-in-the-Middle (FIM) code/text completion.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suffix: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stop_sequences: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub echo: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub presence_penalty: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frequency_penalty: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seed: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_cache: Option<PromptCacheConfig>,
+}
+
+impl CompletionRequest {
+    pub fn new(prompt: impl Into<String>) -> Self {
+        Self {
+            prompt: prompt.into(),
+            ..Default::default()
+        }
+    }
+
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = Some(model.into());
+        self
+    }
+
+    pub fn with_suffix(mut self, suffix: impl Into<String>) -> Self {
+        self.suffix = Some(suffix.into());
+        self
+    }
+
+    pub fn with_max_tokens(mut self, max_tokens: u32) -> Self {
+        self.max_tokens = Some(max_tokens);
+        self
+    }
+
+    pub fn with_temperature(mut self, temperature: f32) -> Self {
+        self.temperature = Some(temperature);
+        self
+    }
+
+    pub fn with_top_p(mut self, top_p: f32) -> Self {
+        self.top_p = Some(top_p);
+        self
+    }
+
+    pub fn with_stop_sequences(mut self, stop_sequences: Vec<String>) -> Self {
+        self.stop_sequences = stop_sequences;
+        self
+    }
+
+    pub fn with_echo(mut self, echo: bool) -> Self {
+        self.echo = Some(echo);
+        self
+    }
+
+    pub fn with_seed(mut self, seed: i64) -> Self {
+        self.seed = Some(seed);
+        self
+    }
+
+    pub fn with_prompt_cache(mut self, prompt_cache: PromptCacheConfig) -> Self {
+        self.prompt_cache = Some(prompt_cache);
+        self
+    }
+}
+
 // --- Wire types ---
+
+#[derive(Debug, Serialize)]
+pub(crate) struct OpenAITextCompletionRequest {
+    model: String,
+    prompt: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    suffix: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top_p: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stop: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    echo: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    presence_penalty: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frequency_penalty: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seed: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_cache_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_cache_retention: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream_options: Option<OpenAIStreamOptions>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAITextCompletionResponse {
+    id: Option<String>,
+    model: Option<String>,
+    #[serde(default)]
+    choices: Vec<OpenAITextCompletionChoice>,
+    usage: Option<OpenAIUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAITextCompletionChoice {
+    #[serde(default)]
+    text: String,
+    finish_reason: Option<String>,
+}
 
 #[derive(Debug, Serialize)]
 pub(crate) struct OpenAIChatRequest {
@@ -455,11 +695,11 @@ fn encode_openai_message(msg: &Message, out: &mut Vec<OpenAIMessage>) {
             }
         }
         Role::User => {
-            let has_image = msg
+            let has_multimodal = msg
                 .content
                 .iter()
-                .any(|p| matches!(p, ContentPart::Image { .. }));
-            if !has_image {
+                .any(|p| matches!(p, ContentPart::Image { .. } | ContentPart::Document { .. }));
+            if !has_multimodal {
                 out.push(OpenAIMessage {
                     role: "user".to_string(),
                     content: Some(Value::String(msg.text())),
@@ -484,6 +724,44 @@ fn encode_openai_message(msg: &Message, out: &mut Vec<OpenAIMessage>) {
                             parts.push(json!({
                                 "type": "image_url",
                                 "image_url": { "url": url }
+                            }));
+                        }
+                        ContentPart::Document { source, filename } => {
+                            let file_obj = match source {
+                                DocumentSource::Base64 { media_type, data } => {
+                                    let name = filename.clone().unwrap_or_else(|| {
+                                        if media_type == "application/pdf" {
+                                            "document.pdf".to_string()
+                                        } else {
+                                            "document".to_string()
+                                        }
+                                    });
+                                    json!({
+                                        "filename": name,
+                                        "file_data": format!("data:{media_type};base64,{data}")
+                                    })
+                                }
+                                DocumentSource::FileId { file_id, .. } => {
+                                    json!({ "file_id": file_id })
+                                }
+                                DocumentSource::Url { url, .. } => {
+                                    let mut obj = serde_json::Map::new();
+                                    if let Some(name) = filename {
+                                        obj.insert(
+                                            "filename".to_string(),
+                                            Value::String(name.clone()),
+                                        );
+                                    }
+                                    obj.insert(
+                                        "file_data".to_string(),
+                                        Value::String(url.clone()),
+                                    );
+                                    Value::Object(obj)
+                                }
+                            };
+                            parts.push(json!({
+                                "type": "file",
+                                "file": file_obj
                             }));
                         }
                         _ => {}
@@ -768,6 +1046,135 @@ fn flush_openai_end<S>(st: &mut OpenAIStreamState<S>) {
     }));
 }
 
+fn parse_text_completion_response(
+    resp: OpenAITextCompletionResponse,
+) -> Result<ChatResponse, Error> {
+    let Some(choice) = resp.choices.into_iter().next() else {
+        return Err(Error::api(
+            "OpenAI completions response contained no choices",
+        ));
+    };
+
+    Ok(ChatResponse {
+        id: resp.id,
+        model: resp.model,
+        content: choice.text,
+        thinking: None,
+        thinking_signature: None,
+        tool_calls: Vec::new(),
+        stop_reason: choice
+            .finish_reason
+            .as_deref()
+            .map(map_openai_finish_reason),
+        usage: resp.usage.map(map_openai_usage),
+    })
+}
+
+struct OpenAICompletionStreamState<S> {
+    sse: S,
+    queue: VecDeque<Result<StreamEvent, Error>>,
+    started: bool,
+    finish_reason: Option<StopReason>,
+    done: bool,
+}
+
+fn openai_completion_sse_to_events<S>(
+    sse: S,
+) -> impl Stream<Item = Result<StreamEvent, Error>> + Send + 'static
+where
+    S: Stream<Item = Result<crate::sse::SseEvent, Error>> + Send + Unpin + 'static,
+{
+    let state = OpenAICompletionStreamState {
+        sse,
+        queue: VecDeque::new(),
+        started: false,
+        finish_reason: None,
+        done: false,
+    };
+
+    futures_util::stream::unfold(state, |mut st| async move {
+        loop {
+            if let Some(item) = st.queue.pop_front() {
+                return Some((item, st));
+            }
+            if st.done {
+                return None;
+            }
+
+            match st.sse.next().await {
+                Some(Ok(event)) => {
+                    let data = event.data.trim();
+                    if data.is_empty() {
+                        continue;
+                    }
+                    if data == "[DONE]" {
+                        st.done = true;
+                        st.queue.push_back(Ok(StreamEvent::Done {
+                            stop_reason: st.finish_reason.take(),
+                        }));
+                        continue;
+                    }
+
+                    let raw: Value = match serde_json::from_str(data) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            st.done = true;
+                            return Some((Err(Error::Serialization(e)), st));
+                        }
+                    };
+
+                    if raw.get("error").is_some() {
+                        let msg = extract_error_message_from_value(&raw)
+                            .unwrap_or_else(|| "OpenAI completion stream error".to_string());
+                        st.done = true;
+                        return Some((Err(Error::api(msg)), st));
+                    }
+
+                    let chunk: OpenAITextCompletionResponse = match serde_json::from_value(raw) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            st.done = true;
+                            return Some((Err(Error::Serialization(e)), st));
+                        }
+                    };
+
+                    if !st.started && (chunk.id.is_some() || chunk.model.is_some()) {
+                        st.started = true;
+                        st.queue.push_back(Ok(StreamEvent::MessageStart {
+                            id: chunk.id,
+                            model: chunk.model,
+                        }));
+                    }
+
+                    if let Some(choice) = chunk.choices.into_iter().next() {
+                        if !choice.text.is_empty() {
+                            st.queue.push_back(Ok(StreamEvent::TextDelta(choice.text)));
+                        }
+                        if let Some(reason) = choice.finish_reason {
+                            st.finish_reason = Some(map_openai_finish_reason(&reason));
+                        }
+                    }
+
+                    if let Some(usage) = chunk.usage {
+                        st.queue
+                            .push_back(Ok(StreamEvent::Usage(map_openai_usage(usage))));
+                    }
+                }
+                Some(Err(err)) => {
+                    st.done = true;
+                    return Some((Err(err), st));
+                }
+                None => {
+                    st.done = true;
+                    st.queue.push_back(Ok(StreamEvent::Done {
+                        stop_reason: st.finish_reason.take(),
+                    }));
+                }
+            }
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -966,5 +1373,102 @@ mod tests {
         assert_eq!(body["messages"][1]["tool_calls"][0]["function"]["name"], "inspect");
         assert_eq!(body["messages"][2]["role"], "tool");
         assert_eq!(body["messages"][2]["tool_call_id"], "call_1");
+    }
+
+    #[tokio::test]
+    async fn test_openai_legacy_completion_and_fim_suffix() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/completions")
+            .match_header("authorization", "Bearer sk-cmpl")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                    "id": "cmpl-1",
+                    "object": "text_completion",
+                    "model": "gpt-3.5-turbo-instruct",
+                    "choices": [{
+                        "text": "    println!(\"hello\");\n",
+                        "index": 0,
+                        "finish_reason": "stop"
+                    }],
+                    "usage": {
+                        "prompt_tokens": 10,
+                        "completion_tokens": 6,
+                        "total_tokens": 16,
+                        "prompt_tokens_details": { "cached_tokens": 4 }
+                    }
+                }"#,
+            )
+            .create_async()
+            .await;
+
+        let client = OpenAIClient::new("sk-cmpl", "gpt-3.5-turbo-instruct")
+            .with_base_url(server.url());
+        let req = CompletionRequest::new("fn main() {\n")
+            .with_suffix("}\n")
+            .with_max_tokens(64)
+            .with_temperature(0.0)
+            .with_stop_sequences(vec!["}".to_string()])
+            .with_seed(42);
+
+        let resp = client.complete(req).await.unwrap();
+        mock.assert_async().await;
+
+        assert_eq!(resp.id.as_deref(), Some("cmpl-1"));
+        assert_eq!(resp.model.as_deref(), Some("gpt-3.5-turbo-instruct"));
+        assert_eq!(resp.content, "    println!(\"hello\");\n");
+        assert_eq!(resp.stop_reason, Some(StopReason::EndTurn));
+        let usage = resp.usage.unwrap();
+        assert_eq!(usage.input_tokens, 10);
+        assert_eq!(usage.output_tokens, 6);
+        assert_eq!(usage.cache_read_tokens, Some(4));
+    }
+
+    #[tokio::test]
+    async fn test_openai_legacy_completion_stream_and_error() {
+        let mut server = Server::new_async().await;
+        let sse_body = concat!(
+            "data: {\"id\":\"cmpl-s1\",\"model\":\"gpt-3.5-turbo-instruct\",\"choices\":[{\"text\":\"Hello\",\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"cmpl-s1\",\"model\":\"gpt-3.5-turbo-instruct\",\"choices\":[{\"text\":\" world!\",\"finish_reason\":\"length\"}]}\n\n",
+            "data: {\"id\":\"cmpl-s1\",\"model\":\"gpt-3.5-turbo-instruct\",\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2,\"total_tokens\":7}}\n\n",
+            "data: [DONE]\n\n"
+        );
+
+        let mock = server
+            .mock("POST", "/completions")
+            .match_header("accept", "text/event-stream")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse_body)
+            .create_async()
+            .await;
+
+        let client = OpenAIClient::new("sk-cmpl", "gpt-3.5-turbo-instruct")
+            .with_base_url(server.url());
+        let stream = client
+            .complete_stream(CompletionRequest::new("Say hello"))
+            .await
+            .unwrap();
+        let resp = collect_stream(stream).await.unwrap();
+        mock.assert_async().await;
+
+        assert_eq!(resp.id.as_deref(), Some("cmpl-s1"));
+        assert_eq!(resp.content, "Hello world!");
+        assert_eq!(resp.stop_reason, Some(StopReason::MaxTokens));
+        assert_eq!(resp.usage.unwrap().total_tokens, Some(7));
+
+        // Verify URL normalization when base_url already has /chat/completions
+        let chat_url_client =
+            OpenAIClient::new("k", "m").with_base_url("https://example.com/v1/chat/completions");
+        assert_eq!(
+            chat_url_client.completions_url(),
+            "https://example.com/v1/completions"
+        );
+        assert_eq!(
+            openai_models_url("https://example.com/v1/completions"),
+            "https://example.com/v1/models"
+        );
     }
 }

@@ -11,8 +11,8 @@ use crate::error::extract_error_message_from_value;
 use crate::http::{apply_headers, bytes_stream, ensure_success, insert_header, normalize_base_url};
 use crate::sse::parse_sse_stream;
 use crate::types::{
-    ChatRequest, ChatResponse, ContentPart, ImageSource, Message, ReasoningEffort, Role,
-    StopReason, StreamEvent, ToolCall, ToolChoice, ToolDefinition, Usage,
+    ChatRequest, ChatResponse, ContentPart, DocumentSource, ImageSource, Message, ReasoningEffort,
+    Role, StopReason, StreamEvent, ToolCall, ToolChoice, ToolDefinition, Usage,
 };
 use crate::Error;
 
@@ -624,6 +624,38 @@ fn encode_gemini_message(
                         file_data: Some(GeminiFileData {
                             mime_type: None,
                             file_uri: url.clone(),
+                        }),
+                        ..Default::default()
+                    });
+                }
+            },
+            ContentPart::Document { source, .. } => match source {
+                DocumentSource::Base64 { media_type, data } => {
+                    parts.push(GeminiPart {
+                        inline_data: Some(GeminiBlob {
+                            mime_type: media_type.clone(),
+                            data: data.clone(),
+                        }),
+                        ..Default::default()
+                    });
+                }
+                DocumentSource::Url { url, media_type } => {
+                    parts.push(GeminiPart {
+                        file_data: Some(GeminiFileData {
+                            mime_type: media_type.clone(),
+                            file_uri: url.clone(),
+                        }),
+                        ..Default::default()
+                    });
+                }
+                DocumentSource::FileId {
+                    file_id,
+                    media_type,
+                } => {
+                    parts.push(GeminiPart {
+                        file_data: Some(GeminiFileData {
+                            mime_type: media_type.clone(),
+                            file_uri: file_id.clone(),
                         }),
                         ..Default::default()
                     });

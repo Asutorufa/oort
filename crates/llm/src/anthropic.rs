@@ -11,8 +11,8 @@ use crate::error::extract_error_message_from_value;
 use crate::http::{apply_headers, bytes_stream, ensure_success, insert_header, normalize_base_url};
 use crate::sse::parse_sse_stream;
 use crate::types::{
-    CacheTtl, ChatRequest, ChatResponse, ContentPart, ImageSource, Message, PromptCacheConfig,
-    Role, StopReason, StreamEvent, ToolCall, ToolChoice, ToolDefinition, Usage,
+    CacheTtl, ChatRequest, ChatResponse, ContentPart, DocumentSource, ImageSource, Message,
+    PromptCacheConfig, Role, StopReason, StreamEvent, ToolCall, ToolChoice, ToolDefinition, Usage,
 };
 use crate::Error;
 
@@ -434,6 +434,30 @@ fn encode_anthropic_message(msg: &Message) -> (&'static str, Vec<Value>) {
                     }));
                 }
             },
+            ContentPart::Document { source, filename } => {
+                let source_val = match source {
+                    DocumentSource::Base64 { media_type, data } => json!({
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": data,
+                    }),
+                    DocumentSource::Url { url, .. } => json!({
+                        "type": "url",
+                        "url": url,
+                    }),
+                    DocumentSource::FileId { file_id, .. } => json!({
+                        "type": "file",
+                        "file_id": file_id,
+                    }),
+                };
+                let mut obj = serde_json::Map::new();
+                obj.insert("type".to_string(), Value::String("document".to_string()));
+                obj.insert("source".to_string(), source_val);
+                if let Some(title) = filename {
+                    obj.insert("title".to_string(), Value::String(title.clone()));
+                }
+                blocks.push(Value::Object(obj));
+            }
             ContentPart::Thinking {
                 thinking,
                 signature,

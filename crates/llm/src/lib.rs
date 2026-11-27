@@ -21,12 +21,12 @@ pub use anthropic::AnthropicClient;
 pub use client::{ChatStream, LlmClient, Provider, collect_stream};
 pub use error::Error;
 pub use gemini::GeminiClient;
-pub use openai::OpenAIClient;
+pub use openai::{CompletionRequest, OpenAIClient};
 pub use openai_responses::OpenAIResponsesClient;
 pub use types::{
-    CacheTtl, ChatRequest, ChatResponse, ContentPart, ImageSource, Message, PromptCacheConfig,
-    ReasoningEffort, Role, StopReason, StreamCollector, StreamEvent, ThinkingConfig, ToolCall,
-    ToolChoice, ToolDefinition, ToolResult, Usage,
+    CacheTtl, ChatRequest, ChatResponse, ContentPart, DocumentSource, ImageSource, Message,
+    PromptCacheConfig, ReasoningEffort, Role, StopReason, StreamCollector, StreamEvent,
+    ThinkingConfig, ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
 };
 
 #[cfg(test)]

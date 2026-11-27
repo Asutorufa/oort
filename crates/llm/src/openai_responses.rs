@@ -14,8 +14,8 @@ use crate::openai::{
 };
 use crate::sse::parse_sse_stream;
 use crate::types::{
-    ChatRequest, ChatResponse, ContentPart, ImageSource, Message, Role, StopReason, StreamEvent,
-    ToolCall, ToolChoice, ToolDefinition, Usage, parse_tool_arguments,
+    ChatRequest, ChatResponse, ContentPart, DocumentSource, ImageSource, Message, Role, StopReason,
+    StreamEvent, ToolCall, ToolChoice, ToolDefinition, Usage, parse_tool_arguments,
 };
 use crate::Error;
 
@@ -314,6 +314,34 @@ fn encode_responses_input(msg: &Message, out: &mut Vec<Value>) {
                             "image_url": url
                         }));
                     }
+                    ContentPart::Document { source, filename } => match source {
+                        DocumentSource::Base64 { media_type, data } => {
+                            let name = filename.clone().unwrap_or_else(|| {
+                                if media_type == "application/pdf" {
+                                    "document.pdf".to_string()
+                                } else {
+                                    "document".to_string()
+                                }
+                            });
+                            content.push(json!({
+                                "type": "input_file",
+                                "filename": name,
+                                "file_data": format!("data:{media_type};base64,{data}")
+                            }));
+                        }
+                        DocumentSource::Url { url, .. } => {
+                            content.push(json!({
+                                "type": "input_file",
+                                "file_url": url
+                            }));
+                        }
+                        DocumentSource::FileId { file_id, .. } => {
+                            content.push(json!({
+                                "type": "input_file",
+                                "file_id": file_id
+                            }));
+                        }
+                    },
                     _ => {}
                 }
             }

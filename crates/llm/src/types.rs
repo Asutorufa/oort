@@ -25,6 +25,26 @@ pub enum ImageSource {
     Base64 { media_type: String, data: String },
 }
 
+/// Document / PDF payload for multimodal prompts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum DocumentSource {
+    /// Base64-encoded raw document bytes with its MIME media type (e.g. `"application/pdf"`).
+    Base64 { media_type: String, data: String },
+    /// Remote HTTP(S) URL or GCS/Files URI.
+    Url {
+        url: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        media_type: Option<String>,
+    },
+    /// Provider-hosted file identifier (e.g. OpenAI `file-...`, Anthropic `file_...`, Gemini `files/...`).
+    FileId {
+        file_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        media_type: Option<String>,
+    },
+}
+
 /// A single function/tool invocation requested by the model.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolCall {
@@ -101,6 +121,11 @@ pub enum ContentPart {
     Image {
         source: ImageSource,
     },
+    Document {
+        source: DocumentSource,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        filename: Option<String>,
+    },
     Thinking {
         thinking: String,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -127,6 +152,63 @@ impl ContentPart {
                 media_type: media_type.into(),
                 data: data.into(),
             },
+        }
+    }
+
+    pub fn pdf_base64(data: impl Into<String>, filename: Option<impl Into<String>>) -> Self {
+        Self::Document {
+            source: DocumentSource::Base64 {
+                media_type: "application/pdf".to_string(),
+                data: data.into(),
+            },
+            filename: filename.map(Into::into),
+        }
+    }
+
+    pub fn pdf_url(url: impl Into<String>) -> Self {
+        Self::Document {
+            source: DocumentSource::Url {
+                url: url.into(),
+                media_type: Some("application/pdf".to_string()),
+            },
+            filename: None,
+        }
+    }
+
+    pub fn document_base64(
+        media_type: impl Into<String>,
+        data: impl Into<String>,
+        filename: Option<impl Into<String>>,
+    ) -> Self {
+        Self::Document {
+            source: DocumentSource::Base64 {
+                media_type: media_type.into(),
+                data: data.into(),
+            },
+            filename: filename.map(Into::into),
+        }
+    }
+
+    pub fn document_url(url: impl Into<String>, media_type: Option<impl Into<String>>) -> Self {
+        Self::Document {
+            source: DocumentSource::Url {
+                url: url.into(),
+                media_type: media_type.map(Into::into),
+            },
+            filename: None,
+        }
+    }
+
+    pub fn document_file_id(
+        file_id: impl Into<String>,
+        media_type: Option<impl Into<String>>,
+    ) -> Self {
+        Self::Document {
+            source: DocumentSource::FileId {
+                file_id: file_id.into(),
+                media_type: media_type.map(Into::into),
+            },
+            filename: None,
         }
     }
 
