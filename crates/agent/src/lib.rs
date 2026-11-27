@@ -15,6 +15,7 @@
 //! - No sliding window: context reduction only happens via epoch compaction.
 
 pub mod compact;
+pub mod composite;
 pub mod context;
 pub mod engine;
 pub mod error;
@@ -22,13 +23,17 @@ pub mod hook;
 pub mod io;
 pub mod model;
 pub mod state;
+pub mod store;
 mod stream;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 pub mod tool;
 
 pub use compact::{
     CompactionInput, CompactionPolicy, Compactor, LlmCompactor, NoopCompactor, RuleBasedCompactor,
     UsageAccounting,
 };
+pub use composite::{CompositeBuilder, CompositeToolExecutor, Namespace};
 pub use context::{ContextManager, DefaultContextManager, RequestParams};
 pub use engine::{Agent, AgentBuilder, INTERRUPTED_TOOL_RESULT, StepOutcome};
 pub use error::AgentError;
@@ -41,7 +46,11 @@ pub use io::{
 pub use model::{ModelClient, RetryingModel};
 /// Unified IR content block (re-exported from `oort-llm`).
 pub use oort_llm::ContentPart as ContentBlock;
-pub use state::{AgentState, CompactionCheckpoint, Phase, ToolDecision, UsageLedger};
+pub use state::{AgentState, CompactionCheckpoint, Phase, StateParts, ToolDecision, UsageLedger};
+pub use store::{
+    NewSession, PendingCalls, PersistenceHook, SessionId, SessionJournal, SessionMeta,
+    SessionSnapshot, SessionStatus, SessionStore, StepDelta, StoreError, StoredSession,
+};
 pub use tool::{
     FrozenToolset, INVALID_ARGUMENTS_KEY, LocalTool, LocalToolExecutor, Tool, ToolContext,
     ToolError, ToolExecutor, ToolOutput,

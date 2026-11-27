@@ -140,11 +140,7 @@ impl Agent {
 
     /// Creates a session state with this agent's tool catalog frozen into it.
     pub fn new_state(&self, system_prompt: impl Into<String>, initial: Vec<Message>) -> AgentState {
-        let mut state = AgentState::new(system_prompt, initial);
-        state
-            .bind_tools(self.tools.definitions())
-            .expect("fresh state accepts any catalog");
-        state
+        AgentState::with_tools(system_prompt, initial, &self.tools)
     }
 
     /// Drives `step` for the lifetime of the session. Waits on the inbox while idle or awaiting
@@ -215,7 +211,16 @@ impl Agent {
         // Whatever happened (including errors), buffered steers/compaction requests are moved
         // into the serializable state so they survive a persist/resume.
         absorb_controls(state, inbox);
-        outcome
+        let persisted = self.hooks.after_step(state).await;
+        match (outcome, persisted) {
+            (Ok(o), Ok(())) => Ok(o),
+            (Ok(_), Err(e)) => Err(e),
+            (Err(e), Ok(())) => Err(e),
+            (Err(e), Err(hook_err)) => {
+                tracing::error!(error = %hook_err, "after_step hook failed after a step error");
+                Err(e)
+            }
+        }
     }
 
     // ----- phases -----------------------------------------------------------------------

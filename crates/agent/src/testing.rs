@@ -1,4 +1,5 @@
-//! Scripted mocks for the LLM and tool boundaries.
+//! Scripted mocks for the LLM and tool boundaries (enable the `testing` feature to use them
+//! from other crates).
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};

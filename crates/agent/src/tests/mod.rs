@@ -1,7 +1,5 @@
 //! Scenario tests for the agent loop using scripted mocks.
 
-mod mock;
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -10,7 +8,7 @@ use oort_llm::{ChatRequest, ContentPart, Message, PromptCacheConfig, Role, ToolR
 use tokio::sync::{Barrier, Notify, mpsc};
 use tokio::task::JoinHandle;
 
-use self::mock::{Behavior, FailingModel, Gate, MockModel, MockTool, MockTurn, executor};
+use crate::testing::{Behavior, FailingModel, Gate, MockModel, MockTool, MockTurn, executor};
 use crate::*;
 
 const SYSTEM: &str = "You are a careful coding agent.";

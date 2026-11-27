@@ -26,4 +26,12 @@ pub enum AgentError {
     /// Invalid configuration (e.g. duplicate tool names).
     #[error("invalid configuration: {0}")]
     InvalidConfig(String),
+
+    /// A restored state violates an invariant (e.g. checkpoint not on a turn boundary).
+    #[error("invalid state: {0}")]
+    InvalidState(String),
+
+    /// Persistence backend failure (raised by hooks such as `PersistenceHook`).
+    #[error("storage error: {0}")]
+    Storage(String),
 }
