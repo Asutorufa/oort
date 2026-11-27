@@ -62,6 +62,9 @@ pub struct SessionManager {
     active: Arc<Mutex<BTreeMap<String, ActiveSession>>>,
     hubs: Mutex<BTreeMap<String, Arc<Hub>>>,
     generation: AtomicU64,
+    /// Cancelled by [`SessionManager::shutdown`]; ends open SSE streams so the HTTP server
+    /// can finish its graceful shutdown.
+    closing: CancellationToken,
 }
 
 impl SessionManager {
@@ -72,6 +75,7 @@ impl SessionManager {
             active: Arc::default(),
             hubs: Mutex::default(),
             generation: AtomicU64::new(0),
+            closing: CancellationToken::new(),
         })
     }
 
@@ -172,10 +176,16 @@ impl SessionManager {
 
     /// Cancels every loop (their state is already persisted) and closes MCP connections.
     pub async fn shutdown(&self) {
+        self.closing.cancel();
         for a in self.active.lock().await.values() {
             a.cancel.cancel();
         }
         self.factory.close().await;
+    }
+
+    /// Resolves once [`SessionManager::shutdown`] has started.
+    pub fn closing(&self) -> CancellationToken {
+        self.closing.clone()
     }
 
     async fn hub(&self, id: &str) -> Arc<Hub> {

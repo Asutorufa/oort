@@ -342,3 +342,24 @@ async fn errors_are_json() {
     assert_eq!(r.status(), 400);
     s.stop().await;
 }
+
+#[tokio::test]
+async fn shutdown_ends_open_sse_streams() {
+    let store = Arc::new(SqliteSessionStore::in_memory().await.unwrap());
+    let s = Server::start(store, &workspace()).await;
+    let id = s.create("hi").await;
+    let resp = reqwest::get(format!("{}/sessions/{id}/events", s.base))
+        .await
+        .unwrap();
+    let mut body = resp.bytes_stream();
+    s.manager.shutdown().await;
+    // Without this, axum's graceful shutdown would wait on the stream forever.
+    let end = tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(chunk) = body.next().await {
+            chunk.unwrap();
+        }
+    })
+    .await;
+    assert!(end.is_ok(), "SSE stream stayed open after shutdown");
+    s.task.abort();
+}

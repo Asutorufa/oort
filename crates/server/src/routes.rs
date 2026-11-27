@@ -9,7 +9,7 @@ use axum::extract::{Json, Path, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::{get, post};
-use futures_util::Stream;
+use futures_util::{Stream, StreamExt};
 use tokio::sync::broadcast::error::RecvError;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
@@ -84,6 +84,7 @@ async fn session_events(
     Path(id): Path<String>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
     let rx = m.subscribe(&id).await?;
+    let closing = m.closing();
     let stream = futures_util::stream::unfold(rx, |mut rx| async move {
         let env = match rx.recv().await {
             Ok(env) => env,
@@ -95,6 +96,8 @@ async fn session_events(
             ev = ev.id(seq.to_string());
         }
         Some((Ok(ev), rx))
-    });
+    })
+    // Long-lived streams would otherwise block the server's graceful shutdown forever.
+    .take_until(closing.cancelled_owned());
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }

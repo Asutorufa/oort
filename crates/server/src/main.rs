@@ -22,11 +22,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let listener = tokio::net::TcpListener::bind(cfg.addr).await?;
     tracing::info!(addr = %cfg.addr, db = %cfg.db_url, "oort-server listening");
+    let on_signal = manager.clone();
     axum::serve(listener, app)
-        .with_graceful_shutdown(async {
+        .with_graceful_shutdown(async move {
             let _ = tokio::signal::ctrl_c().await;
+            tracing::info!("shutting down (press Ctrl+C again to force)");
+            // A second Ctrl+C exits immediately instead of being swallowed by the handler.
+            tokio::spawn(async {
+                let _ = tokio::signal::ctrl_c().await;
+                tracing::warn!("forced exit");
+                std::process::exit(130);
+            });
+            // Cancels the loops and ends SSE streams so open connections can drain.
+            on_signal.shutdown().await;
         })
         .await?;
-    manager.shutdown().await;
     Ok(())
 }
