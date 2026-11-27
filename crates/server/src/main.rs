@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use oort_server::{AgentFactory, ServerConfig, SessionManager, router};
+use oort_server::{Registry, ServerConfig, SessionManager, router};
 use oort_storage::SqliteSessionStore;
 use tracing_subscriber::EnvFilter;
 
@@ -15,9 +15,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let cfg = ServerConfig::from_env()?;
     let store = Arc::new(SqliteSessionStore::connect(&cfg.db_url).await?);
-    let factory = Arc::new(AgentFactory::from_config(&cfg).await?);
-    tracing::info!(tools = ?factory.frozen().definitions().iter().map(|t| &t.name).collect::<Vec<_>>(), "tool catalog frozen");
-    let manager = SessionManager::new(store, factory);
+    let builtin = Arc::new(oort_server::tools::builtin_executor(&cfg.workspace));
+    let registry = Arc::new(Registry::new(store.clone(), builtin));
+    if let Some(path) = &cfg.mcp_config {
+        let raw = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let imported = registry
+            .import_mcp_config(&raw)
+            .await
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        if !imported.is_empty() {
+            tracing::info!(?imported, "imported MCP servers from OORT_MCP_CONFIG");
+        }
+    }
+    let manager = SessionManager::new(store, registry);
     let app = router(manager.clone(), cfg.web_dist.as_deref());
 
     let listener = tokio::net::TcpListener::bind(cfg.addr).await?;

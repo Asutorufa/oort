@@ -141,86 +141,6 @@ pub fn exposed_name(ns: &Namespace, name: &str) -> String {
         .collect()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::testing::{Behavior, MockTool, executor};
-    use tokio_util::sync::CancellationToken;
-
-    fn ctx() -> ToolContext {
-        ToolContext {
-            call_id: "1".into(),
-            cancel: CancellationToken::new(),
-        }
-    }
-
-    #[tokio::test]
-    async fn routes_by_namespaced_name_and_restores_original() {
-        let local = executor(&[MockTool::new("read", true, Behavior::Ok("local".into()))]);
-        let gh = executor(&[
-            MockTool::new("read", true, Behavior::Ok("github".into())),
-            MockTool::new("create.issue", false, Behavior::Ok("issue".into())),
-        ]);
-        let c = CompositeToolExecutor::builder()
-            .add(Namespace::None, local)
-            .add(Namespace::Prefix("github".into()), gh)
-            .build()
-            .unwrap();
-        let names: Vec<String> = c.tools().iter().map(|t| t.definition().name).collect();
-        assert_eq!(names, ["github__create_issue", "github__read", "read"]);
-        assert!(c.tools()[1].is_read_only());
-
-        let call = |n: &str| ToolCall::new("1", n, serde_json::json!({}));
-        assert!(
-            c.execute(&call("read"), ctx())
-                .await
-                .unwrap()
-                .content
-                .starts_with("local")
-        );
-        assert!(
-            c.execute(&call("github__read"), ctx())
-                .await
-                .unwrap()
-                .content
-                .starts_with("github")
-        );
-        assert!(
-            c.execute(&call("github__create_issue"), ctx())
-                .await
-                .unwrap()
-                .content
-                .starts_with("issue")
-        );
-        assert!(matches!(
-            c.execute(&call("nope"), ctx()).await,
-            Err(ToolError::NotFound(_))
-        ));
-    }
-
-    #[test]
-    fn collisions_are_rejected_and_names_are_sanitized() {
-        let a = executor(&[MockTool::new("read", true, Behavior::Ok("".into()))]);
-        let b = executor(&[MockTool::new("read", true, Behavior::Ok("".into()))]);
-        assert!(
-            CompositeToolExecutor::builder()
-                .add(Namespace::None, a)
-                .add(Namespace::None, b)
-                .build()
-                .is_err()
-        );
-        let long = "x".repeat(100);
-        assert_eq!(
-            exposed_name(&Namespace::Prefix("my server".into()), "a/b"),
-            "my_server__a_b"
-        );
-        assert_eq!(
-            exposed_name(&Namespace::None, &long).len(),
-            MAX_TOOL_NAME_LEN
-        );
-    }
-}
-
 /// A frozen catalog (e.g. a stored session's `frozen_tools`) served by whatever executor is
 /// live now.
 ///
@@ -300,5 +220,85 @@ impl ToolExecutor for PinnedToolExecutor {
             )));
         }
         self.live.execute(call, ctx).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testing::{Behavior, MockTool, executor};
+    use tokio_util::sync::CancellationToken;
+
+    fn ctx() -> ToolContext {
+        ToolContext {
+            call_id: "1".into(),
+            cancel: CancellationToken::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn routes_by_namespaced_name_and_restores_original() {
+        let local = executor(&[MockTool::new("read", true, Behavior::Ok("local".into()))]);
+        let gh = executor(&[
+            MockTool::new("read", true, Behavior::Ok("github".into())),
+            MockTool::new("create.issue", false, Behavior::Ok("issue".into())),
+        ]);
+        let c = CompositeToolExecutor::builder()
+            .add(Namespace::None, local)
+            .add(Namespace::Prefix("github".into()), gh)
+            .build()
+            .unwrap();
+        let names: Vec<String> = c.tools().iter().map(|t| t.definition().name).collect();
+        assert_eq!(names, ["github__create_issue", "github__read", "read"]);
+        assert!(c.tools()[1].is_read_only());
+
+        let call = |n: &str| ToolCall::new("1", n, serde_json::json!({}));
+        assert!(
+            c.execute(&call("read"), ctx())
+                .await
+                .unwrap()
+                .content
+                .starts_with("local")
+        );
+        assert!(
+            c.execute(&call("github__read"), ctx())
+                .await
+                .unwrap()
+                .content
+                .starts_with("github")
+        );
+        assert!(
+            c.execute(&call("github__create_issue"), ctx())
+                .await
+                .unwrap()
+                .content
+                .starts_with("issue")
+        );
+        assert!(matches!(
+            c.execute(&call("nope"), ctx()).await,
+            Err(ToolError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn collisions_are_rejected_and_names_are_sanitized() {
+        let a = executor(&[MockTool::new("read", true, Behavior::Ok("".into()))]);
+        let b = executor(&[MockTool::new("read", true, Behavior::Ok("".into()))]);
+        assert!(
+            CompositeToolExecutor::builder()
+                .add(Namespace::None, a)
+                .add(Namespace::None, b)
+                .build()
+                .is_err()
+        );
+        let long = "x".repeat(100);
+        assert_eq!(
+            exposed_name(&Namespace::Prefix("my server".into()), "a/b"),
+            "my_server__a_b"
+        );
+        assert_eq!(
+            exposed_name(&Namespace::None, &long).len(),
+            MAX_TOOL_NAME_LEN
+        );
     }
 }

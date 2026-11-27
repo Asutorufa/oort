@@ -313,7 +313,11 @@ impl Agent {
             request,
         };
         self.hooks.on_llm_call(&stats).await;
-        self.events.emit(AgentEvent::LlmCall { stats }).await;
+        self.events
+            .emit(AgentEvent::LlmCall {
+                stats: Box::new(stats),
+            })
+            .await;
 
         let calls = response.tool_calls.clone();
         let action = self.hooks.after_llm(state, &response).await;

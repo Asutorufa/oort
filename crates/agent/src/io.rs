@@ -95,7 +95,7 @@ pub enum AgentEvent {
     },
     /// Timing and request summary of a completed LLM call.
     LlmCall {
-        stats: LlmCallStats,
+        stats: Box<LlmCallStats>,
     },
     PhaseChanged {
         phase: PhaseKind,

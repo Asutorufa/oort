@@ -47,7 +47,9 @@ cd web && npm install && npm run dev
 
 Open the URL Vite prints (default http://localhost:5173). Vite proxies `/api` to `http://127.0.0.1:3000` (override with `OORT_BACKEND`).
 
-The `mock` provider works without API keys (keywords: `time`, `list`, `read <path>`, `note <text>`, `think`, `slow`, or any tool name). For real providers, set `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `GEMINI_API_KEY` (optional `*_BASE_URL`) before starting the server.
+LLM providers, MCP servers and presets are managed in the workbench (stored in the same SQLite database). A `Mock (offline)` provider is built in and needs no key (keywords: `time`, `list`, `read <path>`, `note <text>`, `think`, `slow`, or any tool name).
+
+API keys, header values, stdio `env` values and bearer tokens may be written as `env:NAME`: they are resolved from the server's environment when used, so the secret never has to be stored. Literal secrets are stored as given and always returned masked (`AIza…9x2Q`); sending back an empty or masked value keeps the stored one.
 
 ### Single process (built frontend)
 
@@ -60,23 +62,36 @@ cd web && npm run build && cd .. && OORT_WEB_DIST=web/dist cargo run -p oort-ser
 | Variable | Default | Meaning |
 |---|---|---|
 | `OORT_ADDR` | `127.0.0.1:3000` | Listen address |
-| `OORT_DB` | `sqlite://oort.db` | Session database |
-| `OORT_MCP_CONFIG` | — | JSON file `{"mcpServers": {"name": {"command": "...", "args": []} \| {"url": "...", "headers": {}, "bearerToken": "..."}}}` |
+| `OORT_DB` | `sqlite://oort.db` | Database (sessions and configuration) |
+| `OORT_MCP_CONFIG` | — | Optional `{"mcpServers": {"name": {"command": "...", "args": []} \| {"url": "...", "headers": {}, "bearerToken": "..."}}}` file, imported into the MCP server list at startup (existing names are left alone) |
 | `OORT_WORKSPACE` | `.` | Root directory for the built-in `list_dir` / `read_file` / `write_note` tools |
 | `OORT_WEB_DIST` | — | Serve the built frontend from this directory |
 
-Try MCP with the bundled mock server: build it with `cargo build -p oort-mcp`, then point `OORT_MCP_CONFIG` at `{"mcpServers": {"mock": {"command": "target/debug/oort-mcp-mock"}}}`.
+Try MCP with the bundled mock server: `cargo build -p oort-mcp`, then add a `stdio` server with command `target/debug/oort-mcp-mock` and press *Test & Discover*.
 
-The tool catalog is frozen at startup. A stored session can only resume with the same catalog (otherwise the provider prefix cache would break), so changing MCP servers makes older sessions fail with a catalog-mismatch error.
+Sessions created before the workbench keep working with `*_API_KEY` / `*_BASE_URL` environment variables.
+
+### Frozen tools and configuration changes
+
+A session's system prompt and tool catalog are frozen (sorted) when it is created, and never derived again, so the provider prefix cache stays valid. Editing, renaming or deleting an MCP server only affects new sessions: an existing session always sends its frozen catalog, served by whatever connection is live; a tool that no longer exists answers with an error result. Deleting a provider makes its sessions read-only (they cannot run again).
 
 ### API
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /api/sessions` | Create (`provider`, `model`, `system_prompt`, `max_context_tokens`, `approval`, `message`) |
+| `GET / POST /api/providers`, `GET / PUT / DELETE /api/providers/:id` | Provider CRUD (`kind`: `openai` = Responses API, `openai_compatible` = Chat Completions with `base_url`, `anthropic`, `gemini`, `mock`) |
+| `POST /api/providers/:id/test`, `POST /api/providers/test` | Connectivity test (`list_models`; `{"ping": true}` adds a 1-token chat). Body may carry unsaved changes. → `{ok, latency_ms, model_checked, model_found, models, error}` |
+| `GET / POST /api/mcp-servers`, `GET / PUT / DELETE /api/mcp-servers/:id` | MCP server CRUD (`streamable_http` with `url`/`headers`/`auth`, or `stdio` with `command`/`args`/`env`) |
+| `POST /api/mcp-servers/:id/test`, `POST /api/mcp-servers/test` | Fresh connection: `initialize` + `tools/list` → `{ok, latency_ms, server_info, tools: [{name, description, read_only, input_schema}], error}` |
+| `POST /api/mcp-servers/:id/tools/call` | Tool playground, no LLM: `{tool_name, arguments, timeout_ms?}` → `{ok, latency_ms, is_error, content, structured_content, text, error}` |
+| `GET / POST /api/presets`, `GET / PUT / DELETE /api/presets/:id` | Agent templates (provider, model, system prompt, MCP servers, built-in tools, approval policy) |
+| `POST /api/sessions` | Create from `preset_id` and/or `provider_id`, `model`, `mcp_server_ids`, `builtin_tools`, `system_prompt`, `approval_policy` (`auto_all` / `auto_readonly` / `always_ask`), `max_context_tokens`, `max_tokens`, `title`, `message` |
 | `GET /api/sessions` | List sessions |
-| `GET /api/sessions/:id` | Snapshot: raw history, active view, checkpoints, usage, pending approvals |
-| `GET /api/sessions/:id/events` | SSE stream of `{"kind":"agent","seq":n,"event":AgentEvent}` / `loop_exited` / `lagged` |
+| `GET /api/sessions/:id` | Snapshot: raw history, active view, checkpoints, pending approvals, usage with per-call `ttft_ms`, `latency_ms` and a request summary (sizes and prefix hashes) |
+| `PATCH /api/sessions/:id` | `{title?, approval_policy?}` (applies to a running loop immediately) |
+| `DELETE /api/sessions/:id` | Stop the loop and delete the session with its history |
+| `GET /api/sessions/:id/export` | Debug JSON: metadata, settings, frozen prompt and tools, raw history, compactions, LLM call metrics (no secrets) |
+| `GET /api/sessions/:id/events` | SSE: `hello` (status + in-progress turn), then `agent` / `loop_exited` / `session_updated` / `deleted` / `lagged`. Ids are `{boot}:{seq}`; reconnecting with `Last-Event-ID` replays missed events (`hello.resumed`), otherwise the client refetches the snapshot |
 | `POST /api/sessions/:id/input` | `{"type":"steer"\|"interrupt","text"}`, `{"type":"approval","call_id","decision":"approve"\|"deny","reason"?}`, `{"type":"compact"}` |
 | `POST /api/sessions/:id/cancel` | Stop the background loop (state is kept and can be resumed) |
 
