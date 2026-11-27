@@ -1,59 +1,38 @@
-import { useCallback, useEffect, useState } from "react";
-import { api } from "./api";
-import { ApprovalCard, Composer } from "./components/Controls";
-import { DebugPanel } from "./components/DebugPanel";
-import { NewSessionForm, SessionList } from "./components/Sessions";
-import { Transcript } from "./components/Transcript";
-import { useSession } from "./hooks/useSession";
-import type { SessionSummary } from "./types";
+import { href, useHashRoute, type View } from "./hooks/useHashRoute";
+import { ChatView } from "./views/ChatView";
+import { McpView } from "./views/McpView";
+import { PresetsView } from "./views/PresetsView";
+import { ProvidersView } from "./views/ProvidersView";
 
-/** The selected session lives in the URL hash (`#/s/<id>`) so a reload restores it. */
-function useHashSession(): [string | null, (id: string) => void] {
-  const read = () => window.location.hash.match(/^#\/s\/(.+)$/)?.[1] ?? null;
-  const [id, setId] = useState(read);
-  useEffect(() => {
-    const onHash = () => setId(read());
-    window.addEventListener("hashchange", onHash);
-    return () => window.removeEventListener("hashchange", onHash);
-  }, []);
-  return [id, (next) => (window.location.hash = `/s/${next}`)];
-}
+const NAV: { view: View; label: string; icon: string }[] = [
+  { view: "chat", label: "Chat", icon: "💬" },
+  { view: "providers", label: "Providers", icon: "🔌" },
+  { view: "mcp", label: "MCP", icon: "🧰" },
+  { view: "presets", label: "Presets", icon: "📋" },
+];
 
+/** Workbench shell: a navigation rail and one view; the route lives in the URL hash. */
 export function App() {
-  const [selected, select] = useHashSession();
-  const [sessions, setSessions] = useState<SessionSummary[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const { detail, live, log, connected, error: loadError } = useSession(selected);
-
-  const reloadList = useCallback(() => api.listSessions().then(setSessions).catch((e) => setError(String(e))), []);
-  useEffect(() => {
-    reloadList();
-    const t = window.setInterval(reloadList, 3000);
-    return () => window.clearInterval(t);
-  }, [reloadList]);
-
+  const { view, id } = useHashRoute();
   return (
-    <div className="layout">
-      <aside className="left">
-        <h2>oort</h2>
-        <NewSessionForm onCreated={(id) => { select(id); reloadList(); }} onError={setError} />
-        <SessionList sessions={sessions} selected={selected} onSelect={select} />
-      </aside>
-      <main>
-        {(error || loadError) && (
-          <div className="error-bar" onClick={() => setError(null)}>{error ?? loadError} (click to dismiss)</div>
-        )}
-        {detail ? (
-          <>
-            <Transcript detail={detail} live={live} />
-            <ApprovalCard detail={detail} onError={setError} />
-            <Composer detail={detail} onError={setError} />
-          </>
-        ) : (
-          <div className="empty muted">{selected ? "Loading…" : "Select or create a session."}</div>
-        )}
-      </main>
-      <aside className="right">{detail && <DebugPanel detail={detail} log={log} connected={connected} />}</aside>
+    <div className="app">
+      <nav className="rail">
+        <div className="logo" title="oort workbench">
+          oort
+        </div>
+        {NAV.map((n) => (
+          <a key={n.view} href={href(n.view)} className={view === n.view ? "active" : ""} title={n.label}>
+            <span className="icon">{n.icon}</span>
+            <span className="label">{n.label}</span>
+          </a>
+        ))}
+      </nav>
+      <div className="view">
+        {view === "chat" && <ChatView selected={id} />}
+        {view === "providers" && <ProvidersView selected={id} />}
+        {view === "mcp" && <McpView selected={id} />}
+        {view === "presets" && <PresetsView selected={id} />}
+      </div>
     </div>
   );
 }
