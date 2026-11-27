@@ -6,7 +6,9 @@ import { MessageView } from "./Blocks";
 /** Raw history with compaction markers, followed by the live (uncommitted) turn. */
 export function Transcript({ detail, live }: { detail: SessionDetail; live: Live }) {
   const end = useRef<HTMLDivElement>(null);
-  useEffect(() => end.current?.scrollIntoView({ block: "end" }), [detail.raw.length, live.text.length]);
+  useEffect(() => {
+    end.current?.scrollIntoView({ block: "end" });
+  }, [detail.raw.length, live.text.length]);
   const cutAt = new Map(detail.checkpoints.map((c) => [c.up_to_seq, c.epoch]));
 
   return (
