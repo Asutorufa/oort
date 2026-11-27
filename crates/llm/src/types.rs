@@ -431,6 +431,20 @@ impl PromptCacheConfig {
     }
 }
 
+/// Provider-agnostic prompt cache boundary.
+///
+/// Adapters that support explicit breakpoints (Anthropic `cache_control`) translate these into
+/// provider markers; adapters with implicit/automatic prefix caching (OpenAI, Gemini) ignore them.
+/// When [`ChatRequest::cache_breakpoints`] is empty, adapters fall back to their default placement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum CacheBreakpoint {
+    /// End of the static prefix: tool definitions and the system prompt.
+    ToolsAndSystem,
+    /// End of `messages[index]` (index into [`ChatRequest::messages`]).
+    AfterMessage { index: usize },
+}
+
 /// Provider-agnostic chat completion request.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ChatRequest {
@@ -459,6 +473,9 @@ pub struct ChatRequest {
     pub thinking: Option<ThinkingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_cache: Option<PromptCacheConfig>,
+    /// Explicit, provider-agnostic cache boundaries (only honored when `prompt_cache` is enabled).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cache_breakpoints: Vec<CacheBreakpoint>,
 }
 
 impl ChatRequest {
@@ -521,6 +538,11 @@ impl ChatRequest {
 
     pub fn with_prompt_cache(mut self, prompt_cache: PromptCacheConfig) -> Self {
         self.prompt_cache = Some(prompt_cache);
+        self
+    }
+
+    pub fn with_cache_breakpoints(mut self, breakpoints: Vec<CacheBreakpoint>) -> Self {
+        self.cache_breakpoints = breakpoints;
         self
     }
 

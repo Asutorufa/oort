@@ -11,7 +11,7 @@ use crate::error::extract_error_message_from_value;
 use crate::http::{apply_headers, bytes_stream, ensure_success, insert_header, normalize_base_url};
 use crate::sse::parse_sse_stream;
 use crate::types::{
-    CacheTtl, ChatRequest, ChatResponse, ContentPart, DocumentSource, ImageSource, Message,
+    CacheBreakpoint, CacheTtl, ChatRequest, ChatResponse, ContentPart, DocumentSource, ImageSource, Message,
     PromptCacheConfig, Role, StopReason, StreamEvent, ToolCall, ToolChoice, ToolDefinition, Usage,
 };
 use crate::Error;
@@ -20,6 +20,8 @@ pub const DEFAULT_ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com";
 pub const DEFAULT_ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_MAX_TOKENS: u32 = 4096;
 const DEFAULT_THINKING_BUDGET_TOKENS: u32 = 1024;
+/// Hard upper bound on `cache_control` blocks per Anthropic request.
+const ANTHROPIC_MAX_CACHE_BREAKPOINTS: usize = 4;
 
 /// HTTP client for the Anthropic Messages API (`/v1/messages`, `/v1/models`).
 #[derive(Debug, Clone)]
@@ -102,7 +104,7 @@ impl AnthropicClient {
         stream: bool,
     ) -> Result<AnthropicMessagesRequest, Error> {
         let model = request.resolve_model(&self.model)?.to_string();
-        let (system_text, non_system) = request.split_system_messages();
+        let (system_text, _) = request.split_system_messages();
         let cache_control = build_cache_control(request.prompt_cache.as_ref());
 
         // Tools: preserve exact order; attach cache_control to the last tool when caching is enabled.
@@ -117,7 +119,15 @@ impl AnthropicClient {
                     .collect::<Vec<_>>(),
             )
         };
-        if let (Some(cc), Some(tool_list)) = (&cache_control, tools.as_mut())
+        // Explicit breakpoints override the default placement (last tool + system + latest tail).
+        let explicit = !request.cache_breakpoints.is_empty();
+        let static_breakpoint = !explicit
+            || request
+                .cache_breakpoints
+                .contains(&CacheBreakpoint::ToolsAndSystem);
+
+        if static_breakpoint
+            && let (Some(cc), Some(tool_list)) = (&cache_control, tools.as_mut())
             && let Some(last_tool) = tool_list.last_mut()
             && let Some(obj) = last_tool.as_object_mut()
         {
@@ -125,8 +135,9 @@ impl AnthropicClient {
         }
 
         // System: use block array with cache_control when caching is enabled; otherwise plain string.
+        let system_has_breakpoint = static_breakpoint && system_text.is_some();
         let system = system_text.map(|text| {
-            if let Some(cc) = &cache_control {
+            if let (Some(cc), true) = (&cache_control, static_breakpoint) {
                 json!([{
                     "type": "text",
                     "text": text,
@@ -138,8 +149,13 @@ impl AnthropicClient {
         });
 
         // Messages: merge consecutive same-role turns (Anthropic requires alternating user/assistant).
+        // `block_pos[i]` records where `request.messages[i]` ends: (merged message index, block index).
         let mut messages: Vec<AnthropicMessage> = Vec::new();
-        for msg in non_system {
+        let mut block_pos: Vec<Option<(usize, usize)>> = vec![None; request.messages.len()];
+        for (orig_idx, msg) in request.messages.iter().enumerate() {
+            if msg.role == Role::System {
+                continue;
+            }
             let (role, blocks) = encode_anthropic_message(msg);
             if blocks.is_empty() {
                 continue;
@@ -154,16 +170,50 @@ impl AnthropicClient {
                     content: blocks,
                 });
             }
+            let m = messages.len() - 1;
+            block_pos[orig_idx] = Some((m, messages[m].content.len() - 1));
         }
 
-        // Rolling conversation prefix cache breakpoint on the last content block of the latest message.
-        // Total breakpoints: at most 3 (last tool + system + latest message tail), strictly <= Anthropic's limit of 4.
-        if let Some(cc) = &cache_control
-            && let Some(last_msg) = messages.last_mut()
-            && let Some(last_block) = last_msg.content.last_mut()
-            && let Some(obj) = last_block.as_object_mut()
-        {
-            obj.insert("cache_control".to_string(), cc.clone());
+        if let Some(cc) = &cache_control {
+            let targets: Vec<(usize, usize)> = if explicit {
+                // Anthropic allows at most 4 breakpoints; keep the latest message boundaries.
+                let used = if static_breakpoint {
+                    usize::from(tools.is_some()) + usize::from(system_has_breakpoint)
+                } else {
+                    0
+                };
+                let mut idxs: Vec<usize> = request
+                    .cache_breakpoints
+                    .iter()
+                    .filter_map(|bp| match bp {
+                        CacheBreakpoint::AfterMessage { index } => Some(*index),
+                        CacheBreakpoint::ToolsAndSystem => None,
+                    })
+                    .collect();
+                idxs.sort_unstable();
+                idxs.dedup();
+                let mut pos: Vec<(usize, usize)> = idxs
+                    .into_iter()
+                    .filter_map(|i| block_pos.get(i).copied().flatten())
+                    .collect();
+                pos.dedup();
+                let keep = ANTHROPIC_MAX_CACHE_BREAKPOINTS.saturating_sub(used);
+                let skip = pos.len().saturating_sub(keep);
+                pos.into_iter().skip(skip).collect()
+            } else {
+                // Rolling conversation prefix breakpoint on the last block of the latest message.
+                // Total: at most 3 (last tool + system + latest tail) <= Anthropic's limit of 4.
+                messages
+                    .last()
+                    .map(|m| (messages.len() - 1, m.content.len() - 1))
+                    .into_iter()
+                    .collect()
+            };
+            for (m, b) in targets {
+                if let Some(obj) = messages[m].content[b].as_object_mut() {
+                    obj.insert("cache_control".to_string(), cc.clone());
+                }
+            }
         }
 
         let tool_choice = if tools.is_some() {
