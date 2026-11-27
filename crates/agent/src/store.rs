@@ -15,8 +15,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::Mutex;
 
+use crate::config_store::ApprovalPolicyKind;
 use crate::error::AgentError;
 use crate::hook::LoopHook;
+use crate::metrics::LlmCallStats;
 use crate::state::{
     AgentState, CompactionCheckpoint, Phase, StateParts, ToolDecision, UsageLedger,
 };
@@ -153,6 +155,9 @@ pub struct NewSession {
     /// It is part of what keeps a resumed session's requests byte-identical.
     #[serde(default)]
     pub config: serde_json::Value,
+    /// Mutable later via [`SessionStore::set_approval_policy`].
+    #[serde(default)]
+    pub approval_policy: ApprovalPolicyKind,
 }
 
 /// Session metadata (one row of `sessions`).
@@ -163,6 +168,7 @@ pub struct SessionMeta {
     pub provider: String,
     pub model: String,
     pub config: serde_json::Value,
+    pub approval_policy: ApprovalPolicyKind,
     pub status: SessionStatus,
     pub turn: u32,
     pub message_count: u64,
@@ -189,6 +195,8 @@ pub struct StepDelta {
     /// 1-based epoch of `checkpoints[0]`.
     pub first_epoch: u32,
     pub checkpoints: Vec<CompactionCheckpoint>,
+    /// Measurements of the LLM calls made in this step (keyed by the produced message's seq).
+    pub llm_calls: Vec<LlmCallStats>,
     pub snapshot: SessionSnapshot,
 }
 
@@ -269,6 +277,24 @@ pub trait SessionStore: Send + Sync {
         snapshot: &SessionSnapshot,
     ) -> Result<(), StoreError>;
 
+    /// Appends the measurements of one LLM call (its assistant message must be stored).
+    async fn save_llm_call(&self, id: &str, stats: &LlmCallStats) -> Result<(), StoreError>;
+
+    /// LLM call measurements in seq order.
+    async fn list_llm_calls(&self, id: &str) -> Result<Vec<LlmCallStats>, StoreError>;
+
+    async fn set_title(&self, id: &str, title: &str) -> Result<(), StoreError>;
+
+    /// The approval policy is not part of the request prefix, so it may change at any time.
+    async fn set_approval_policy(
+        &self,
+        id: &str,
+        policy: ApprovalPolicyKind,
+    ) -> Result<(), StoreError>;
+
+    /// Removes the session and all its logs. The only way history is ever deleted.
+    async fn delete_session(&self, id: &str) -> Result<(), StoreError>;
+
     /// Applies a whole step. Backends with transactions should override this to make it atomic.
     async fn commit_step(&self, id: &str, delta: &StepDelta) -> Result<(), StoreError> {
         for (i, (msg, usage)) in delta.messages.iter().enumerate() {
@@ -278,6 +304,9 @@ pub trait SessionStore: Send + Sync {
         for (i, cp) in delta.checkpoints.iter().enumerate() {
             self.save_compaction(id, delta.first_epoch + i as u32, cp)
                 .await?;
+        }
+        for stats in &delta.llm_calls {
+            self.save_llm_call(id, stats).await?;
         }
         self.update_session_status(id, &delta.snapshot).await
     }
@@ -366,6 +395,7 @@ impl SessionJournal {
             messages,
             first_epoch: self.checkpoints as u32 + 1,
             checkpoints: new_cps.to_vec(),
+            llm_calls: Vec::new(),
             snapshot,
         })
     }
@@ -380,6 +410,8 @@ pub struct PersistenceHook {
     store: Arc<dyn SessionStore>,
     session_id: SessionId,
     journal: Mutex<SessionJournal>,
+    /// LLM calls observed since the last commit (written with the step that made them).
+    calls: Mutex<Vec<LlmCallStats>>,
 }
 
 impl PersistenceHook {
@@ -389,16 +421,24 @@ impl PersistenceHook {
             store,
             session_id,
             journal: Mutex::new(SessionJournal::new(state)),
+            calls: Mutex::default(),
         }
     }
 }
 
 #[async_trait]
 impl LoopHook for PersistenceHook {
+    async fn on_llm_call(&self, stats: &LlmCallStats) {
+        self.calls.lock().await.push(stats.clone());
+    }
+
     async fn after_step(&self, state: &AgentState) -> Result<(), AgentError> {
         let mut journal = self.journal.lock().await;
-        if let Some(delta) = journal.delta(state) {
+        if let Some(mut delta) = journal.delta(state) {
+            let mut calls = self.calls.lock().await;
+            delta.llm_calls = calls.clone();
             self.store.commit_step(&self.session_id, &delta).await?;
+            calls.clear();
             journal.mark_committed(state);
         }
         Ok(())

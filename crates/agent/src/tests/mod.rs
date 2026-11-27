@@ -829,3 +829,80 @@ async fn max_turns_and_budget_hooks_halt() {
     // Halting after a tool-call response still answers every call.
     assert_protocol_valid(state.messages());
 }
+
+#[tokio::test]
+async fn pinned_catalog_survives_live_changes() {
+    // Session started with {grep, write}; the live server now has {grep, new_tool}.
+    let grep = MockTool::new("grep", true, Behavior::Ok("hit".into()));
+    let write = MockTool::new("write", false, Behavior::Ok("w".into()));
+    let pinned = FrozenToolset::freeze(executor(&[grep.clone(), write]).as_ref()).unwrap();
+    let new_tool = MockTool::new("new_tool", true, Behavior::Ok("n".into()));
+    let live = executor(&[grep.clone(), new_tool]);
+    let ex = Arc::new(PinnedToolExecutor::new(pinned.definitions(), live));
+    assert_eq!(ex.missing(), ["write"]);
+
+    let model = MockModel::new(vec![
+        MockTurn::tools(&[("c1", "grep", "{}"), ("c2", "write", "{}")], 10),
+        MockTurn::text("ok", 10),
+    ]);
+    let agent = Agent::builder(model.clone(), ex)
+        .context_manager(Arc::new(cached_context()))
+        .build()
+        .unwrap();
+    let mut state = AgentState::with_tools(SYSTEM, vec![Message::user("go")], &pinned);
+    agent
+        .run_loop(&mut state, &mut Inbox::detached())
+        .await
+        .unwrap();
+
+    // The model saw exactly the pinned catalog; the vanished tool answered with an error.
+    let req = &model.requests.lock().unwrap()[0];
+    let names: Vec<&str> = req.tools.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(names, ["grep", "write"]);
+    assert!(!results(&state.messages()[2])[0].is_error);
+    let gone = results(&state.messages()[3])[0];
+    assert!(
+        gone.is_error && gone.content.contains("no longer available"),
+        "{}",
+        gone.content
+    );
+    assert_eq!(state.phase, Phase::Idle);
+}
+
+#[tokio::test]
+async fn llm_calls_report_timing_and_request_summary() {
+    let model = MockModel::new(vec![MockTurn::text("one", 10), MockTurn::text("two", 20)]);
+    let (ev_tx, mut ev_rx) = mpsc::channel(64);
+    let agent = build(model, &[]).events(ev_tx).build().unwrap();
+    let mut state = agent.new_state(SYSTEM, vec![Message::user("a")]);
+    agent
+        .step(&mut state, &mut Inbox::detached())
+        .await
+        .unwrap();
+    state.push_message(Message::user("b"));
+    state.phase = Phase::Ready;
+    agent
+        .step(&mut state, &mut Inbox::detached())
+        .await
+        .unwrap();
+    drop(agent);
+
+    let mut stats = Vec::new();
+    while let Some(ev) = ev_rx.recv().await {
+        if let AgentEvent::LlmCall { stats: s } = ev {
+            stats.push(s);
+        }
+    }
+    assert_eq!(stats.len(), 2);
+    assert_eq!((stats[0].turn, stats[0].seq), (1, 1));
+    assert_eq!((stats[1].turn, stats[1].seq), (2, 3));
+    assert!(stats[0].ttft_ms.is_some());
+    assert_eq!(stats[1].request.messages, 3);
+    // Same system prompt and tools → same prefix hashes; history grew.
+    assert_eq!(stats[0].request.hash.system, stats[1].request.hash.system);
+    assert_eq!(stats[0].request.hash.tools, stats[1].request.hash.tools);
+    assert_ne!(
+        stats[0].request.hash.messages,
+        stats[1].request.hash.messages
+    );
+}

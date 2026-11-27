@@ -12,6 +12,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures_util::StreamExt;
 use oort_llm::{
@@ -19,6 +20,7 @@ use oort_llm::{
 };
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::compact::{CompactionInput, Compactor};
@@ -26,6 +28,7 @@ use crate::context::{ContextManager, DefaultContextManager};
 use crate::error::AgentError;
 use crate::hook::{BeforeLlm, HookAction, HookChain, LoopHook};
 use crate::io::{AgentEvent, ApprovalDecision, EventSink, Inbox, InterruptPoint, PhaseKind};
+use crate::metrics::{LlmCallStats, RequestSummary};
 use crate::model::ModelClient;
 use crate::state::{AgentState, CompactionCheckpoint, Phase, ToolDecision};
 use crate::stream::TurnAccumulator;
@@ -49,6 +52,13 @@ pub enum StepOutcome {
 }
 
 /// The agent engine. Stateless across sessions: all session data lives in [`AgentState`].
+/// Timing of one streamed LLM call.
+#[derive(Debug, Clone, Copy)]
+struct StreamTiming {
+    ttft_ms: Option<u64>,
+    latency_ms: u64,
+}
+
 pub struct Agent {
     model: Arc<dyn ModelClient>,
     executor: Arc<dyn ToolExecutor>,
@@ -252,8 +262,9 @@ impl Agent {
             .emit(AgentEvent::TurnStarted { turn: state.turn })
             .await;
         let request = self.context.build_request(state, &self.tools);
+        let summary = RequestSummary::of(&request);
 
-        let Some(response) = self.stream_turn(request, inbox, turn_cancel).await? else {
+        let Some((response, timing)) = self.stream_turn(request, inbox, turn_cancel).await? else {
             // Interrupted mid-stream: the partial assistant output is discarded (never committed).
             if self.session_cancel.is_cancelled() {
                 return Err(AgentError::Cancelled);
@@ -267,7 +278,8 @@ impl Agent {
             return Ok(StepOutcome::Continue);
         };
 
-        self.commit_response(state, inbox, response).await
+        self.commit_response(state, inbox, response, summary, timing)
+            .await
     }
 
     async fn commit_response(
@@ -275,6 +287,8 @@ impl Agent {
         state: &mut AgentState,
         inbox: &mut Inbox,
         response: ChatResponse,
+        request: RequestSummary,
+        timing: StreamTiming,
     ) -> Result<StepOutcome, AgentError> {
         state.usage.llm_calls += 1;
         if let Some(usage) = &response.usage {
@@ -290,6 +304,16 @@ impl Agent {
         self.events
             .emit(AgentEvent::AssistantMessage { message })
             .await;
+        let stats = LlmCallStats {
+            turn: state.turn,
+            seq: state.messages().len() - 1,
+            ttft_ms: timing.ttft_ms,
+            latency_ms: timing.latency_ms,
+            usage: response.usage.clone(),
+            request,
+        };
+        self.hooks.on_llm_call(&stats).await;
+        self.events.emit(AgentEvent::LlmCall { stats }).await;
 
         let calls = response.tool_calls.clone();
         let action = self.hooks.after_llm(state, &response).await;
@@ -410,7 +434,9 @@ impl Agent {
         request: ChatRequest,
         inbox: &mut Inbox,
         turn_cancel: &CancellationToken,
-    ) -> Result<Option<ChatResponse>, AgentError> {
+    ) -> Result<Option<(ChatResponse, StreamTiming)>, AgentError> {
+        let started = Instant::now();
+        let mut first_content: Option<Duration> = None;
         let open = self.model.stream(request);
         tokio::pin!(open);
         let mut stream = loop {
@@ -432,6 +458,14 @@ impl Agent {
                     None => break,
                     Some(Err(e)) => return Err(e.into()),
                     Some(Ok(event)) => {
+                        if first_content.is_none() && matches!(
+                            event,
+                            StreamEvent::TextDelta(_)
+                                | StreamEvent::ThinkingDelta(_)
+                                | StreamEvent::ToolCallStart { .. }
+                        ) {
+                            first_content = Some(started.elapsed());
+                        }
                         match &event {
                             StreamEvent::TextDelta(d) => {
                                 self.events.emit(AgentEvent::TextDelta { delta: d.clone() }).await
@@ -446,7 +480,11 @@ impl Agent {
                 },
             }
         }
-        Ok(Some(acc.finish()))
+        let timing = StreamTiming {
+            ttft_ms: first_content.map(|d| d.as_millis() as u64),
+            latency_ms: started.elapsed().as_millis() as u64,
+        };
+        Ok(Some((acc.finish(), timing)))
     }
 
     // ----- tools -----------------------------------------------------------------------

@@ -1,5 +1,6 @@
 //! Bidirectional channel boundary: [`LoopInput`] in (via [`Inbox`]), [`AgentEvent`] out (via [`EventSink`]).
 
+use crate::metrics::LlmCallStats;
 use oort_llm::{Message, ToolCall, ToolResult, Usage};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
@@ -91,6 +92,10 @@ pub enum AgentEvent {
     },
     Usage {
         usage: Usage,
+    },
+    /// Timing and request summary of a completed LLM call.
+    LlmCall {
+        stats: LlmCallStats,
     },
     PhaseChanged {
         phase: PhaseKind,

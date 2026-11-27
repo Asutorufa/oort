@@ -9,6 +9,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use oort_llm::{ChatResponse, Message, ToolCall, ToolResult};
 
+use crate::metrics::LlmCallStats;
 use crate::state::{AgentState, ToolDecision};
 
 /// Flow control returned by LLM-level hooks.
@@ -65,6 +66,10 @@ pub trait LoopHook: Send + Sync {
     }
 
     async fn after_tool(&self, _state: &AgentState, _call: &ToolCall, _result: &mut ToolResult) {}
+
+    /// Observes timing and a request summary of every completed LLM call (right after the
+    /// assistant message is committed, before [`LoopHook::after_llm`]).
+    async fn on_llm_call(&self, _stats: &LlmCallStats) {}
 
     /// Runs at the end of every [`crate::Agent::step`], including steps that failed. The state is
     /// always at a step boundary here (protocol-consistent), which makes it the natural place to
@@ -124,6 +129,12 @@ impl HookChain {
     pub(crate) async fn after_tool(&self, state: &AgentState, call: &ToolCall, r: &mut ToolResult) {
         for hook in &self.hooks {
             hook.after_tool(state, call, r).await;
+        }
+    }
+
+    pub(crate) async fn on_llm_call(&self, stats: &LlmCallStats) {
+        for hook in &self.hooks {
+            hook.on_llm_call(stats).await;
         }
     }
 

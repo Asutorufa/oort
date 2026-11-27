@@ -16,12 +16,15 @@
 
 pub mod compact;
 pub mod composite;
+pub mod config_store;
 pub mod context;
 pub mod engine;
 pub mod error;
 pub mod hook;
 pub mod io;
+pub mod metrics;
 pub mod model;
+pub mod secret;
 pub mod state;
 pub mod store;
 mod stream;
@@ -33,7 +36,11 @@ pub use compact::{
     CompactionInput, CompactionPolicy, Compactor, LlmCompactor, NoopCompactor, RuleBasedCompactor,
     UsageAccounting,
 };
-pub use composite::{CompositeBuilder, CompositeToolExecutor, Namespace};
+pub use composite::{CompositeBuilder, CompositeToolExecutor, Namespace, PinnedToolExecutor};
+pub use config_store::{
+    ApprovalPolicyKind, ConfigStore, McpAuth, McpServerRecord, McpTransportKind, PresetRecord,
+    ProviderKind, ProviderRecord,
+};
 pub use context::{ContextManager, DefaultContextManager, RequestParams};
 pub use engine::{Agent, AgentBuilder, INTERRUPTED_TOOL_RESULT, StepOutcome};
 pub use error::AgentError;
@@ -43,6 +50,7 @@ pub use hook::{
 pub use io::{
     AgentEvent, ApprovalDecision, EventSink, Inbox, InterruptPoint, LoopInput, PhaseKind,
 };
+pub use metrics::{LlmCallStats, RequestHashes, RequestSummary};
 pub use model::{ModelClient, RetryingModel};
 /// Unified IR content block (re-exported from `oort-llm`).
 pub use oort_llm::ContentPart as ContentBlock;

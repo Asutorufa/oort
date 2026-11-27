@@ -1,0 +1,187 @@
+//! Database-agnostic storage of workbench configuration: LLM providers, MCP servers and
+//! presets (agent templates).
+//!
+//! The engine never reads this. Applications resolve a record into a `ModelClient` /
+//! `ToolExecutor` when a session is created or resumed. Editing or deleting a record never
+//! touches existing sessions: their system prompt and tool catalog are frozen in the session
+//! store.
+//!
+//! Secret fields (`api_key`, header values, stdio env values, bearer tokens) are stored as given:
+//! either a literal or an `env:NAME` reference (see [`crate::secret`]).
+
+use std::collections::BTreeMap;
+
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+
+use crate::store::StoreError;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderKind {
+    /// OpenAI (Responses API).
+    Openai,
+    Anthropic,
+    Gemini,
+    /// Any server implementing OpenAI Chat Completions (`base_url` required).
+    OpenaiCompatible,
+    /// Offline echo model (for trying the workbench without keys).
+    Mock,
+}
+
+impl ProviderKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Openai => "openai",
+            Self::Anthropic => "anthropic",
+            Self::Gemini => "gemini",
+            Self::OpenaiCompatible => "openai_compatible",
+            Self::Mock => "mock",
+        }
+    }
+
+    pub fn parse(s: &str) -> Result<Self, StoreError> {
+        serde_json::from_value(serde_json::Value::String(s.to_string()))
+            .map_err(|_| StoreError::Corrupt(format!("unknown provider kind {s:?}")))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderRecord {
+    pub id: String,
+    pub name: String,
+    pub kind: ProviderKind,
+    pub base_url: Option<String>,
+    pub api_key: Option<String>,
+    pub default_model: String,
+    pub extra_headers: BTreeMap<String, String>,
+    pub is_enabled: bool,
+    /// Unix milliseconds.
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpTransportKind {
+    StreamableHttp,
+    Stdio,
+}
+
+impl McpTransportKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::StreamableHttp => "streamable_http",
+            Self::Stdio => "stdio",
+        }
+    }
+
+    pub fn parse(s: &str) -> Result<Self, StoreError> {
+        serde_json::from_value(serde_json::Value::String(s.to_string()))
+            .map_err(|_| StoreError::Corrupt(format!("unknown MCP transport {s:?}")))
+    }
+}
+
+/// Authentication of a Streamable HTTP server. `OAuth` is a reserved extension point: its
+/// fields are stored verbatim until a flow is implemented.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum McpAuth {
+    #[default]
+    None,
+    Bearer {
+        token: String,
+    },
+    #[serde(rename = "oauth")]
+    OAuth {
+        #[serde(flatten)]
+        config: BTreeMap<String, serde_json::Value>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpServerRecord {
+    pub id: String,
+    /// Also the tool-name prefix (`{name}__{tool}`) inside sessions.
+    pub name: String,
+    pub transport: McpTransportKind,
+    pub url: Option<String>,
+    pub command: Option<String>,
+    pub args: Vec<String>,
+    pub env: BTreeMap<String, String>,
+    pub headers: BTreeMap<String, String>,
+    pub auth: McpAuth,
+    pub is_enabled: bool,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// Which tool calls need a human decision. Not part of the request prefix, so it may change
+/// during a session.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalPolicyKind {
+    /// Everything runs without asking.
+    AutoAll,
+    /// Read-only tools run; others ask.
+    #[default]
+    AutoReadonly,
+    /// Every tool call asks.
+    AlwaysAsk,
+}
+
+impl ApprovalPolicyKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AutoAll => "auto_all",
+            Self::AutoReadonly => "auto_readonly",
+            Self::AlwaysAsk => "always_ask",
+        }
+    }
+
+    pub fn parse(s: &str) -> Result<Self, StoreError> {
+        serde_json::from_value(serde_json::Value::String(s.to_string()))
+            .map_err(|_| StoreError::Corrupt(format!("unknown approval policy {s:?}")))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PresetRecord {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub provider_id: String,
+    /// Empty: the provider's default model.
+    pub model: String,
+    pub system_prompt: String,
+    pub mcp_server_ids: Vec<String>,
+    /// Include the server's built-in local tools.
+    pub builtin_tools: bool,
+    pub approval_policy: ApprovalPolicyKind,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// Configuration persistence. `create_*` fails with `Conflict` on a duplicate id or name,
+/// `update_*` with `NotFound` for an unknown id, and `delete_*` with `Conflict` while a preset
+/// still references the record.
+#[async_trait]
+pub trait ConfigStore: Send + Sync {
+    async fn list_providers(&self) -> Result<Vec<ProviderRecord>, StoreError>;
+    async fn get_provider(&self, id: &str) -> Result<ProviderRecord, StoreError>;
+    async fn create_provider(&self, rec: &ProviderRecord) -> Result<(), StoreError>;
+    async fn update_provider(&self, rec: &ProviderRecord) -> Result<(), StoreError>;
+    async fn delete_provider(&self, id: &str) -> Result<(), StoreError>;
+
+    async fn list_mcp_servers(&self) -> Result<Vec<McpServerRecord>, StoreError>;
+    async fn get_mcp_server(&self, id: &str) -> Result<McpServerRecord, StoreError>;
+    async fn create_mcp_server(&self, rec: &McpServerRecord) -> Result<(), StoreError>;
+    async fn update_mcp_server(&self, rec: &McpServerRecord) -> Result<(), StoreError>;
+    async fn delete_mcp_server(&self, id: &str) -> Result<(), StoreError>;
+
+    async fn list_presets(&self) -> Result<Vec<PresetRecord>, StoreError>;
+    async fn get_preset(&self, id: &str) -> Result<PresetRecord, StoreError>;
+    async fn create_preset(&self, rec: &PresetRecord) -> Result<(), StoreError>;
+    async fn update_preset(&self, rec: &PresetRecord) -> Result<(), StoreError>;
+    async fn delete_preset(&self, id: &str) -> Result<(), StoreError>;
+}

@@ -10,8 +10,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use oort_agent::store::{assemble_state, canonical_tools_json};
 use oort_agent::{
-    AgentState, CompactionCheckpoint, NewSession, SessionId, SessionMeta, SessionSnapshot,
-    SessionStatus, SessionStore, StepDelta, StoreError, StoredSession,
+    AgentState, ApprovalPolicyKind, CompactionCheckpoint, LlmCallStats, NewSession, SessionId,
+    SessionMeta, SessionSnapshot, SessionStatus, SessionStore, StepDelta, StoreError,
+    StoredSession,
 };
 use oort_llm::{ContentPart, Message, Role, Usage};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow};
@@ -19,7 +20,9 @@ use sqlx::{Row, SqliteConnection, SqlitePool};
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
-/// `SessionStore` backed by a SQLite database.
+mod config;
+
+/// [`SessionStore`] and [`oort_agent::ConfigStore`] backed by one SQLite database.
 #[derive(Debug, Clone)]
 pub struct SqliteSessionStore {
     pool: SqlitePool,
@@ -86,15 +89,17 @@ impl SessionStore for SqliteSessionStore {
 
         let mut tx = self.pool.begin().await.map_err(backend)?;
         sqlx::query(
-            "INSERT INTO sessions (id, title, provider, model, config_json, system_prompt, frozen_tools, \
-             status, halt_reason, pending_calls, pending_steers, compaction_requested, turn, \
-             usage_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO sessions (id, title, provider, model, config_json, approval_policy, system_prompt, \
+             frozen_tools, status, halt_reason, pending_calls, pending_steers, compaction_requested, \
+             turn, usage_json, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(&meta.title)
         .bind(&meta.provider)
         .bind(&meta.model)
         .bind(to_json(&meta.config))
+        .bind(meta.approval_policy.as_str())
         .bind(state.system_prompt())
         .bind(canonical_tools_json(tools))
         .bind(snap.status.as_str())
@@ -244,9 +249,123 @@ impl SessionStore for SqliteSessionStore {
         for (i, cp) in delta.checkpoints.iter().enumerate() {
             insert_compaction(&mut tx, id, delta.first_epoch + i as u32, cp).await?;
         }
+        for stats in &delta.llm_calls {
+            insert_llm_call(&mut tx, id, stats).await?;
+        }
         update_status(&mut tx, id, &delta.snapshot).await?;
         tx.commit().await.map_err(backend)
     }
+
+    async fn save_llm_call(&self, id: &str, stats: &LlmCallStats) -> Result<(), StoreError> {
+        let mut conn = self.pool.acquire().await.map_err(backend)?;
+        insert_llm_call(&mut conn, id, stats).await
+    }
+
+    async fn list_llm_calls(&self, id: &str) -> Result<Vec<LlmCallStats>, StoreError> {
+        let rows = sqlx::query(
+            "SELECT seq, turn, ttft_ms, latency_ms, usage_json, request_json FROM llm_calls \
+             WHERE session_id = ? ORDER BY seq",
+        )
+        .bind(id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend)?;
+        rows.iter()
+            .map(|r| {
+                Ok(LlmCallStats {
+                    turn: r.get::<i64, _>("turn") as u32,
+                    seq: r.get::<i64, _>("seq") as usize,
+                    ttft_ms: r.get::<Option<i64>, _>("ttft_ms").map(|v| v as u64),
+                    latency_ms: r.get::<i64, _>("latency_ms") as u64,
+                    usage: from_json_opt(r.get("usage_json"), "llm_calls.usage_json")?,
+                    request: from_json(r.get("request_json"), "llm_calls.request_json")?,
+                })
+            })
+            .collect()
+    }
+
+    async fn set_title(&self, id: &str, title: &str) -> Result<(), StoreError> {
+        let done = sqlx::query("UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?")
+            .bind(title)
+            .bind(now_ms())
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(classify)?;
+        found(done.rows_affected(), id)
+    }
+
+    async fn set_approval_policy(
+        &self,
+        id: &str,
+        policy: ApprovalPolicyKind,
+    ) -> Result<(), StoreError> {
+        let done =
+            sqlx::query("UPDATE sessions SET approval_policy = ?, updated_at = ? WHERE id = ?")
+                .bind(policy.as_str())
+                .bind(now_ms())
+                .bind(id)
+                .execute(&self.pool)
+                .await
+                .map_err(classify)?;
+        found(done.rows_affected(), id)
+    }
+
+    /// Marks the row `deleting` (which the delete triggers require) and removes everything in
+    /// one transaction.
+    async fn delete_session(&self, id: &str) -> Result<(), StoreError> {
+        let mut tx = self.pool.begin().await.map_err(backend)?;
+        let done = sqlx::query("UPDATE sessions SET deleting = 1 WHERE id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(classify)?;
+        found(done.rows_affected(), id)?;
+        for table in ["llm_calls", "compactions", "messages"] {
+            sqlx::query(&format!("DELETE FROM {table} WHERE session_id = ?"))
+                .bind(id)
+                .execute(&mut *tx)
+                .await
+                .map_err(classify)?;
+        }
+        sqlx::query("DELETE FROM sessions WHERE id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(classify)?;
+        tx.commit().await.map_err(backend)
+    }
+}
+
+pub(crate) fn found(rows: u64, id: &str) -> Result<(), StoreError> {
+    if rows == 0 {
+        Err(StoreError::NotFound(id.to_string()))
+    } else {
+        Ok(())
+    }
+}
+
+async fn insert_llm_call(
+    conn: &mut SqliteConnection,
+    id: &str,
+    stats: &LlmCallStats,
+) -> Result<(), StoreError> {
+    sqlx::query(
+        "INSERT INTO llm_calls (session_id, seq, turn, ttft_ms, latency_ms, usage_json, request_json, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(id)
+    .bind(stats.seq as i64)
+    .bind(i64::from(stats.turn))
+    .bind(stats.ttft_ms.map(|v| v as i64))
+    .bind(stats.latency_ms as i64)
+    .bind(stats.usage.as_ref().map(to_json))
+    .bind(to_json(&stats.request))
+    .bind(now_ms())
+    .execute(conn)
+    .await
+    .map_err(classify)?;
+    Ok(())
 }
 
 // ----- SQL helpers ---------------------------------------------------------------------------
@@ -353,6 +472,7 @@ fn meta_from_row(row: &SqliteRow) -> Result<SessionMeta, StoreError> {
         provider: row.get("provider"),
         model: row.get("model"),
         config: from_json(row.get("config_json"), "config_json")?,
+        approval_policy: ApprovalPolicyKind::parse(row.get("approval_policy"))?,
         status: SessionStatus::parse(row.get("status"))?,
         turn: row.get("turn"),
         message_count: row.get::<i64, _>("message_count") as u64,
@@ -363,11 +483,14 @@ fn meta_from_row(row: &SqliteRow) -> Result<SessionMeta, StoreError> {
 
 // ----- conversions ---------------------------------------------------------------------------
 
-fn to_json<T: serde::Serialize + ?Sized>(v: &T) -> String {
+pub(crate) fn to_json<T: serde::Serialize + ?Sized>(v: &T) -> String {
     serde_json::to_string(v).expect("agent types are always serializable")
 }
 
-fn from_json<T: serde::de::DeserializeOwned>(raw: String, column: &str) -> Result<T, StoreError> {
+pub(crate) fn from_json<T: serde::de::DeserializeOwned>(
+    raw: String,
+    column: &str,
+) -> Result<T, StoreError> {
     serde_json::from_str(&raw).map_err(|e| StoreError::Corrupt(format!("{column}: {e}")))
 }
 
@@ -378,19 +501,19 @@ fn from_json_opt<T: serde::de::DeserializeOwned>(
     raw.map(|r| from_json(r, column)).transpose()
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or_default()
 }
 
-fn backend(e: impl std::fmt::Display) -> StoreError {
+pub(crate) fn backend(e: impl std::fmt::Display) -> StoreError {
     StoreError::Backend(e.to_string())
 }
 
 /// Trigger aborts (`oort: …`) and key violations are conflicts, not backend failures.
-fn classify(e: sqlx::Error) -> StoreError {
+pub(crate) fn classify(e: sqlx::Error) -> StoreError {
     if let sqlx::Error::Database(db) = &e {
         let msg = db.message();
         if msg.starts_with("oort:") || db.is_unique_violation() || db.is_foreign_key_violation() {
