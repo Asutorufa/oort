@@ -823,3 +823,52 @@ fn test_multimodal_image_and_pdf_encoding_and_prefix_stability() {
     assert_eq!(g_parts[5]["fileData"]["fileUri"], "file-abc123");
     assert_json_array_is_prefix(&g1["contents"], &g2["contents"], "Gemini multimodal t1->t2");
 }
+
+#[test]
+fn test_anthropic_explicit_cache_breakpoints_map_through_merged_messages() {
+    use crate::CacheBreakpoint;
+    let client = AnthropicClient::new("k", "claude-sonnet-4-20250514");
+    // messages[1] (tool result) and messages[2] (user) are merged into one Anthropic user turn.
+    let msgs = vec![
+        Message::assistant_parts(vec![ContentPart::ToolCall(ToolCall::new(
+            "c1",
+            "zebra_read_file",
+            json!({"path": "a"}),
+        ))]),
+        Message::tool_result("c1", Some("zebra_read_file"), "ok", false),
+        Message::user("next"),
+    ];
+    let mut all = vec![Message::user("start")];
+    all.extend(msgs);
+    let req = ChatRequest::new(all)
+        .with_system("sys")
+        .with_tools(sample_tools())
+        .with_prompt_cache(PromptCacheConfig::enabled())
+        .with_cache_breakpoints(vec![
+            CacheBreakpoint::ToolsAndSystem,
+            CacheBreakpoint::AfterMessage { index: 2 },
+            CacheBreakpoint::AfterMessage { index: 3 },
+        ]);
+    let body = serde_json::to_value(client.build_request_body(&req, false).unwrap()).unwrap();
+    assert_eq!(count_cache_control(&body), 4);
+    let merged = body["messages"][2]["content"].as_array().unwrap();
+    assert_eq!(merged.len(), 2);
+    assert!(
+        merged[0].get("cache_control").is_some(),
+        "after tool result"
+    );
+    assert!(
+        merged[1].get("cache_control").is_some(),
+        "after latest user text"
+    );
+
+    // Without ToolsAndSystem only message boundaries get markers; limit of 4 is respected.
+    let req2 = req.clone().with_cache_breakpoints(
+        (0..6)
+            .map(|index| CacheBreakpoint::AfterMessage { index })
+            .collect(),
+    );
+    let body2 = serde_json::to_value(client.build_request_body(&req2, false).unwrap()).unwrap();
+    assert_eq!(count_cache_control(&body2), 4);
+    assert!(body2["system"].is_string());
+}

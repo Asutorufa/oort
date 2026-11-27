@@ -24,7 +24,7 @@ pub use gemini::GeminiClient;
 pub use openai::{CompletionRequest, OpenAIClient};
 pub use openai_responses::OpenAIResponsesClient;
 pub use types::{
-    CacheTtl, ChatRequest, ChatResponse, ContentPart, DocumentSource, ImageSource, Message,
+    CacheBreakpoint, CacheTtl, ChatRequest, ChatResponse, ContentPart, DocumentSource, ImageSource, Message,
     PromptCacheConfig, ReasoningEffort, Role, StopReason, StreamCollector, StreamEvent,
     ThinkingConfig, ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
 };
