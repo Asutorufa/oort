@@ -38,8 +38,9 @@ pub use compact::{
 };
 pub use composite::{CompositeBuilder, CompositeToolExecutor, Namespace, PinnedToolExecutor};
 pub use config_store::{
-    ApprovalPolicyKind, ConfigStore, McpAuth, McpServerRecord, McpTransportKind, PresetRecord,
-    ProviderKind, ProviderRecord,
+    ApprovalPolicyKind, ConfigStore, McpAuth, McpServerRecord, McpTransportKind, OAuthClientSource,
+    OAuthStatus, OAuthTokenRecord, OAuthTokenStore, PresetRecord, ProviderKind, ProviderRecord,
+    SkillRecord, SkillStore,
 };
 pub use context::{ContextManager, DefaultContextManager, RequestParams};
 pub use engine::{Agent, AgentBuilder, INTERRUPTED_TOOL_RESULT, StepOutcome};

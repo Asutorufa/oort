@@ -13,6 +13,7 @@
 pub mod client;
 pub mod config;
 pub mod executor;
+pub mod oauth;
 pub mod protocol;
 pub mod record;
 pub mod transport;

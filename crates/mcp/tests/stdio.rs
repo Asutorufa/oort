@@ -185,7 +185,7 @@ fn record(command: &str) -> oort_agent::McpServerRecord {
 #[tokio::test]
 async fn probe_stored_record_lists_sorted_tools_and_disconnects() {
     let rec = record(env!("CARGO_BIN_EXE_oort-mcp-mock"));
-    let p = probe(&rec, ClientOptions::default()).await.unwrap();
+    let p = probe(&rec, ClientOptions::default(), None).await.unwrap();
     assert_eq!(p.server.server_info.name, "oort-mcp-mock");
     let names: Vec<&str> = p.tools.iter().map(|t| t.name.as_str()).collect();
     assert_eq!(
@@ -198,17 +198,22 @@ async fn probe_stored_record_lists_sorted_tools_and_disconnects() {
     bad.env
         .insert("TOKEN".into(), "env:OORT_TEST_SURELY_UNSET".into());
     assert!(matches!(
-        probe(&bad, ClientOptions::default()).await,
+        probe(&bad, ClientOptions::default(), None).await,
         Err(McpError::Config(m)) if m.contains("OORT_TEST_SURELY_UNSET")
     ));
     let mut bad = rec;
     bad.command = None;
     assert!(matches!(
-        probe(&bad, ClientOptions::default()).await,
+        probe(&bad, ClientOptions::default(), None).await,
         Err(McpError::Config(_))
     ));
     assert!(matches!(
-        probe(&record("/nonexistent/oort-mcp"), ClientOptions::default()).await,
+        probe(
+            &record("/nonexistent/oort-mcp"),
+            ClientOptions::default(),
+            None
+        )
+        .await,
         Err(McpError::Transport(_))
     ));
 }

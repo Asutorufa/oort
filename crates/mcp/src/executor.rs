@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 
 use crate::client::{McpClient, McpError};
 use crate::protocol::{McpTool, RpcError};
+use crate::transport::TransportError;
 
 /// Tool metadata from `tools/list`.
 pub struct McpToolSpec {
@@ -114,6 +115,11 @@ impl ToolExecutor for McpToolExecutor {
                 "MCP server error {}: {}",
                 e.code, e.message
             ))),
+            Err(McpError::Transport(TransportError::Unauthorized)) => {
+                Err(ToolError::Failed(format!(
+                    "MCP server `{server}` needs re-authorization (OAuth); ask the user to reconnect it in Tools & MCP"
+                )))
+            }
             Err(McpError::Transport(e)) => {
                 tracing::error!(%server, tool = %call.name, kind = e.kind(), error = %e, "MCP transport failure");
                 Err(ToolError::Failed(format!(

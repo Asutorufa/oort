@@ -1240,18 +1240,23 @@ name = "oort-mcp"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "axum",
+ "base64 0.22.1",
  "bytes",
  "futures-util",
+ "getrandom 0.3.4",
  "mockito",
  "oort-agent",
  "oort-llm",
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror",
  "tokio",
  "tokio-util",
  "tracing",
+ "url",
 ]
 
 [[package]]
@@ -1276,6 +1281,18 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "oort-skills"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "oort-agent",
+ "serde",
+ "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
