@@ -56,6 +56,9 @@ pub struct LlmCallStats {
     pub ttft_ms: Option<u64>,
     /// Request start to end of stream.
     pub latency_ms: u64,
+    /// How long the model reasoned before moving on (`None` without reasoning).
+    #[serde(default)]
+    pub thinking_ms: Option<u64>,
     pub usage: Option<Usage>,
     pub request: RequestSummary,
 }

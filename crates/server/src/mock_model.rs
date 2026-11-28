@@ -189,8 +189,12 @@ fn plan(req: &ChatRequest) -> Plan {
             .rposition(|m| m.role != Role::Tool)
             .map_or(0, |i| i + 1);
         let text = summarize_results(&req.messages[start.saturating_sub(1)..]);
+        let asked = req.messages.iter().rev().find(|m| m.role == Role::User);
+        let thinking = asked
+            .is_some_and(|m| m.text().to_lowercase().contains("think"))
+            .then(|| "The tools answered. I should report what they returned.".to_string());
         return Plan {
-            thinking: None,
+            thinking,
             text,
             calls: vec![],
             slow: false,

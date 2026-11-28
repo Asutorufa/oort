@@ -51,14 +51,32 @@ pub enum StepOutcome {
     Halted(String),
 }
 
-/// The agent engine. Stateless across sessions: all session data lives in [`AgentState`].
+/// Where the blocks of one LLM call belong: its turn number and its message seq.
+#[derive(Debug, Clone, Copy)]
+struct BlockIds {
+    step: u32,
+    seq: usize,
+}
+
+impl BlockIds {
+    fn text(self) -> String {
+        format!("{}:text", self.seq)
+    }
+
+    fn thinking(self) -> String {
+        format!("{}:thinking", self.seq)
+    }
+}
+
 /// Timing of one streamed LLM call.
 #[derive(Debug, Clone, Copy)]
 struct StreamTiming {
     ttft_ms: Option<u64>,
     latency_ms: u64,
+    thinking_ms: Option<u64>,
 }
 
+/// The agent engine. Stateless across sessions: all session data lives in [`AgentState`].
 pub struct Agent {
     model: Arc<dyn ModelClient>,
     executor: Arc<dyn ToolExecutor>,
@@ -263,8 +281,16 @@ impl Agent {
             .await;
         let request = self.context.build_request(state, &self.tools);
         let summary = RequestSummary::of(&request);
+        // Nothing is appended while streaming, so the reply will land at this seq.
+        let blocks = BlockIds {
+            step: state.turn,
+            seq: state.messages().len(),
+        };
 
-        let Some((response, timing)) = self.stream_turn(request, inbox, turn_cancel).await? else {
+        let Some((response, timing)) = self
+            .stream_turn(request, blocks, inbox, turn_cancel)
+            .await?
+        else {
             // Interrupted mid-stream: the partial assistant output is discarded (never committed).
             if self.session_cancel.is_cancelled() {
                 return Err(AgentError::Cancelled);
@@ -309,6 +335,7 @@ impl Agent {
             seq: state.messages().len() - 1,
             ttft_ms: timing.ttft_ms,
             latency_ms: timing.latency_ms,
+            thinking_ms: timing.thinking_ms,
             usage: response.usage.clone(),
             request,
         };
@@ -445,6 +472,7 @@ impl Agent {
     async fn stream_turn(
         &self,
         request: ChatRequest,
+        blocks: BlockIds,
         inbox: &mut Inbox,
         turn_cancel: &CancellationToken,
     ) -> Result<Option<(ChatResponse, StreamTiming)>, AgentError> {
@@ -462,6 +490,8 @@ impl Agent {
         };
 
         let mut acc = TurnAccumulator::default();
+        let mut thinking_since: Option<Instant> = None;
+        let mut thinking_ms: Option<u64> = None;
         loop {
             tokio::select! {
                 biased;
@@ -479,12 +509,29 @@ impl Agent {
                         ) {
                             first_content = Some(started.elapsed());
                         }
+                        if matches!(
+                            event,
+                            StreamEvent::TextDelta(_)
+                                | StreamEvent::ToolCallStart { .. }
+                                | StreamEvent::Done { .. }
+                        ) {
+                            self.end_thinking(blocks, &mut thinking_since, &mut thinking_ms).await;
+                        }
                         match &event {
                             StreamEvent::TextDelta(d) => {
-                                self.events.emit(AgentEvent::TextDelta { delta: d.clone() }).await
+                                self.events.emit(AgentEvent::TextDelta {
+                                    step_index: blocks.step,
+                                    block_id: blocks.text(),
+                                    delta: d.clone(),
+                                }).await
                             }
                             StreamEvent::ThinkingDelta(d) => {
-                                self.events.emit(AgentEvent::ThinkingDelta { delta: d.clone() }).await
+                                thinking_since.get_or_insert_with(Instant::now);
+                                self.events.emit(AgentEvent::ThinkingDelta {
+                                    step_index: blocks.step,
+                                    block_id: blocks.thinking(),
+                                    delta: d.clone(),
+                                }).await
                             }
                             _ => {}
                         }
@@ -493,11 +540,35 @@ impl Agent {
                 },
             }
         }
+        self.end_thinking(blocks, &mut thinking_since, &mut thinking_ms)
+            .await;
         let timing = StreamTiming {
             ttft_ms: first_content.map(|d| d.as_millis() as u64),
             latency_ms: started.elapsed().as_millis() as u64,
+            thinking_ms,
         };
         Ok(Some((acc.finish(), timing)))
+    }
+
+    /// Closes the open reasoning span, if any. A provider that resumes reasoning within the
+    /// same call opens another span of the same block; the durations add up.
+    async fn end_thinking(
+        &self,
+        blocks: BlockIds,
+        since: &mut Option<Instant>,
+        total_ms: &mut Option<u64>,
+    ) {
+        let Some(since) = since.take() else {
+            return;
+        };
+        let duration_ms = total_ms.unwrap_or(0) + since.elapsed().as_millis() as u64;
+        *total_ms = Some(duration_ms);
+        self.events
+            .emit(AgentEvent::ThinkingEnd {
+                block_id: blocks.thinking(),
+                duration_ms,
+            })
+            .await;
     }
 
     // ----- tools -----------------------------------------------------------------------

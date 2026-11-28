@@ -67,11 +67,24 @@ pub enum AgentEvent {
     TurnStarted {
         turn: u32,
     },
+    /// Answer text of one LLM call. `step_index` is the call's turn number; `block_id` is
+    /// `<message seq>:text`, the position the block will have in history, so deltas of
+    /// different steps are never joined.
     TextDelta {
+        step_index: u32,
+        block_id: String,
         delta: String,
     },
+    /// Reasoning of one LLM call (`block_id` is `<message seq>:thinking`).
     ThinkingDelta {
+        step_index: u32,
+        block_id: String,
         delta: String,
+    },
+    /// The model moved on from reasoning (to text, a tool call, or the end of the stream).
+    ThinkingEnd {
+        block_id: String,
+        duration_ms: u64,
     },
     /// A complete assistant message was committed to history.
     AssistantMessage {

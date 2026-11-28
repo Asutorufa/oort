@@ -8,6 +8,7 @@
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
+use std::time::Instant;
 
 use oort_agent::AgentEvent;
 use oort_llm::ToolCall;
@@ -25,10 +26,34 @@ pub struct LiveTurn {
     pub turn: Option<u32>,
     pub text: String,
     pub thinking: String,
+    pub text_block: Option<String>,
+    pub thinking_block: Option<String>,
+    /// Set once reasoning has ended.
+    pub thinking_ms: Option<u64>,
+    /// Time spent reasoning so far, filled in when a client subscribes mid-thought.
+    pub thinking_elapsed_ms: Option<u64>,
+    #[serde(skip)]
+    thinking_since: Option<Instant>,
     pub running_tools: Vec<ToolCall>,
 }
 
 impl LiveTurn {
+    fn clear_step(&mut self) {
+        *self = Self {
+            turn: self.turn,
+            running_tools: std::mem::take(&mut self.running_tools),
+            ..Self::default()
+        };
+    }
+
+    fn snapshot(&self) -> Self {
+        let mut live = self.clone();
+        live.thinking_elapsed_ms = live
+            .thinking_since
+            .map(|since| since.elapsed().as_millis() as u64);
+        live
+    }
+
     fn apply(&mut self, env: &Envelope) {
         match env {
             Envelope::Agent { event, .. } => match event {
@@ -38,12 +63,27 @@ impl LiveTurn {
                         ..Self::default()
                     }
                 }
-                AgentEvent::TextDelta { delta } => self.text.push_str(delta),
-                AgentEvent::ThinkingDelta { delta } => self.thinking.push_str(delta),
+                AgentEvent::TextDelta {
+                    block_id, delta, ..
+                } => {
+                    self.text_block = Some(block_id.clone());
+                    self.text.push_str(delta);
+                }
+                AgentEvent::ThinkingDelta {
+                    block_id, delta, ..
+                } => {
+                    self.thinking_block = Some(block_id.clone());
+                    self.thinking_ms = None;
+                    self.thinking_since.get_or_insert_with(Instant::now);
+                    self.thinking.push_str(delta);
+                }
+                AgentEvent::ThinkingEnd { duration_ms, .. } => {
+                    self.thinking_ms = Some(*duration_ms);
+                    self.thinking_since = None;
+                }
                 // Committed: the snapshot has it now.
                 AgentEvent::AssistantMessage { .. } | AgentEvent::Interrupted { .. } => {
-                    self.text.clear();
-                    self.thinking.clear();
+                    self.clear_step();
                 }
                 AgentEvent::ToolStarted { call } => self.running_tools.push(call.clone()),
                 AgentEvent::ToolFinished { result } => {
@@ -142,7 +182,7 @@ impl Hub {
         Subscription {
             seq: st.seq,
             replay,
-            live: st.live.clone(),
+            live: st.live.snapshot(),
             rx,
         }
     }
@@ -155,7 +195,11 @@ mod tests {
     fn delta(text: &str) -> impl FnOnce(u64) -> Envelope + '_ {
         move |seq| Envelope::Agent {
             seq,
-            event: AgentEvent::TextDelta { delta: text.into() },
+            event: AgentEvent::TextDelta {
+                step_index: 1,
+                block_id: "1:text".into(),
+                delta: text.into(),
+            },
         }
     }
 
@@ -186,6 +230,29 @@ mod tests {
         assert_eq!(hub.subscribe(Some(3)).replay.unwrap().len(), 0);
         // A sequence number from before a restart cannot be replayed.
         assert!(hub.subscribe(Some(99)).replay.is_none());
+    }
+
+    #[test]
+    fn live_thinking_is_visible_to_a_late_subscriber() {
+        let hub = Hub::new();
+        let agent = |event| move |seq| Envelope::Agent { seq, event };
+        hub.publish(agent(AgentEvent::ThinkingDelta {
+            step_index: 2,
+            block_id: "3:thinking".into(),
+            delta: "hmm".into(),
+        }));
+        let live = hub.subscribe(None).live;
+        assert_eq!(live.thinking_block.as_deref(), Some("3:thinking"));
+        assert!(live.thinking_elapsed_ms.is_some());
+        assert_eq!(live.thinking_ms, None);
+
+        hub.publish(agent(AgentEvent::ThinkingEnd {
+            block_id: "3:thinking".into(),
+            duration_ms: 40,
+        }));
+        let live = hub.subscribe(None).live;
+        assert_eq!(live.thinking_ms, Some(40));
+        assert_eq!(live.thinking_elapsed_ms, None);
     }
 
     #[test]
