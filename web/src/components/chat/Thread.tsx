@@ -1,34 +1,45 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import type { ContentPart, RawMessage, SessionDetail, SessionSummary, ToolCall, ToolResult } from "../../api/types";
-import { ChevronDown } from "../../brand/Icons";
-import { OortMark } from "../../brand/OortMark";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import type { RawMessage, SessionDetail, SessionSummary, ToolResult } from "../../api/types";
+import { OortMark, type MarkState } from "../../brand/OortMark";
 import type { Live, SubagentLive, ToolTimes } from "../../hooks/useSessionStream";
 import { asWidget, parseResponse, responsesById, type WidgetActions } from "../../widgets/protocol";
 import { Widget } from "../../widgets/WidgetRegistry";
-import { JsonView } from "../common";
 import { Markdown } from "./LazyMarkdown";
 import { RowCard, SubagentCard } from "./SubagentCard";
 import { LoopErrorCard } from "./LoopErrorCard";
-import { Collapse } from "../ui";
 import { AnimatePresence, motion } from "motion/react";
 import { enter } from "../../lib/motion";
 import { ApprovalCard, AskUserCard, McpConfiguredCard } from "./ToolCards";
-import { useI18n, useT } from "../../i18n";
+import { useT } from "../../i18n";
+import { buildBlocks, fromLive, fromRaw, segments, type SourceMessage, type TurnBlock } from "./blocks";
+import { WorkSegment, type Folds } from "./WorkSegment";
 
 const RENDER_WIDGET = "render_widget";
 
 /** One user message, or one assistant turn (assistant + tool messages until the next user). */
-type Group = { kind: "user"; msg: RawMessage } | { kind: "assistant"; msgs: RawMessage[] };
+type Group = { kind: "user"; msg: RawMessage } | { kind: "assistant"; msgs: SourceMessage[] };
 
-function groupMessages(raw: RawMessage[]): Group[] {
+function groupMessages(raw: RawMessage[], live: Live): Group[] {
   const out: Group[] = [];
+  const assistant = () => {
+    const last = out[out.length - 1];
+    if (last?.kind === "assistant") return last;
+    const next: Group = { kind: "assistant", msgs: [] };
+    out.push(next);
+    return next;
+  };
   for (const m of raw) {
     if (m.role === "user") out.push({ kind: "user", msg: m });
-    else {
-      const last = out[out.length - 1];
-      if (last?.kind === "assistant") last.msgs.push(m);
-      else out.push({ kind: "assistant", msgs: [m] });
-    }
+    else assistant().msgs.push(fromRaw(m));
+  }
+  const tail = raw[raw.length - 1];
+  const turnEnded = tail?.role === "assistant" && !tail.content.some((p) => p.kind === "tool_call");
+  for (const step of live.steps) {
+    // Already in the snapshot.
+    if (step.seq < raw.length) continue;
+    // A new user message is on its way: do not attach its reply to the previous turn.
+    if (step.seq > raw.length && turnEnded && out[out.length - 1]?.kind === "assistant") out.push({ kind: "assistant", msgs: [] });
+    assistant().msgs.push(fromLive(step));
   }
   return out;
 }
@@ -70,11 +81,16 @@ function SkillReport({ skill, error, body }: { skill: string; error: boolean; bo
 /**
  * One assistant turn: the brand mark appears once at the top, and every step of the turn
  * (thinking, tools, subagents, approvals, the answer) stacks in a single column next to it.
+ * The mark turns while the agent works.
  */
-function Turn({ mark = true, live, children }: { mark?: boolean; live?: boolean; children: ReactNode }) {
+function Turn({ mark = true, state = "idle", children }: { mark?: boolean; state?: MarkState; children: ReactNode }) {
+  const t = useT();
+  const working = state !== "idle";
   return (
-    <div className={`row-assistant ${live ? "live" : ""}`}>
-      <div className="avatar">{mark && <OortMark size={18} />}</div>
+    <div className={`row-assistant ${working ? "live" : ""}`}>
+      <div className="avatar" role={working ? "status" : undefined} aria-label={working ? t("thread.waiting") : undefined}>
+        {mark && <OortMark size={18} state={state} />}
+      </div>
       <div className="assistant-body">{children}</div>
     </div>
   );
@@ -129,88 +145,6 @@ function UserBubble({ msg, widgetTitles }: { msg: RawMessage; widgetTitles: Map<
   );
 }
 
-// ----- activity row --------------------------------------------------------------------------
-
-function ToolLine({ call, result, running, ms }: { call: ToolCall; result?: ToolResult; running: boolean; ms?: number }) {
-  const { t, fmt } = useI18n();
-  const state = result ? (result.is_error ? "error" : "ok") : running ? "running" : "pending";
-  return (
-    <details className={`tool-line ${state}`}>
-      <summary>
-        <span className={`state-dot ${state}`} />
-        <span className="tool-name">{call.name.replace("__", " · ")}</span>
-        <span className="muted">{ms != null ? fmt.ms(ms) : state === "running" ? t("thread.toolRunning") : state === "pending" ? t("thread.toolPending") : ""}</span>
-      </summary>
-      <div className="tool-detail">
-        <div className="label">{t("thread.input")}</div>
-        <JsonView value={call.arguments} />
-        {result && (
-          <>
-            <div className="label">{result.is_error ? t("common.error") : t("thread.result")}</div>
-            <pre className={result.is_error ? "error-text" : ""}>{result.content}</pre>
-          </>
-        )}
-      </div>
-    </details>
-  );
-}
-
-function ActivityRow({
-  thinking,
-  calls,
-  results,
-  running,
-  toolTimes,
-  latencyMs,
-}: {
-  thinking: string[];
-  calls: ToolCall[];
-  results: Map<string, ToolResult>;
-  running: Set<string>;
-  toolTimes: ToolTimes;
-  latencyMs: number;
-}) {
-  const [open, setOpen] = useState(false);
-  const { t, fmt } = useI18n();
-  if (thinking.length === 0 && calls.length === 0) return null;
-  const toolMs = calls.reduce((s, c) => s + (toolTimes[c.id]?.ms ?? 0), 0);
-  const total = latencyMs + toolMs;
-  const parts =
-    calls.length === 0
-      ? t("thread.thought")
-      : thinking.length > 0
-        ? t("thread.thoughtAndTools", { count: calls.length })
-        : t("thread.tools", { count: calls.length });
-  const failed = calls.filter((c) => results.get(c.id)?.is_error).length;
-  const active = calls.some((c) => running.has(c.id));
-  return (
-    <div className={`activity ${open ? "open" : ""}`}>
-      <button className="activity-row" onClick={() => setOpen(!open)}>
-        {active && <span className="pulse" />}
-        <span>{parts}</span>
-        {total > 0 && <span className="muted">({fmt.ms(total)})</span>}
-        {failed > 0 && <span className="pill danger">{t("thread.errors", { count: failed })}</span>}
-        <span className="chev">
-          <ChevronDown size={13} />
-        </span>
-      </button>
-      <Collapse open={open}>
-        <div className="activity-body">
-          {thinking.map((th, i) => (
-            <div key={i} className="thought">
-              <div className="label">{t("thread.thinkingLabel")}</div>
-              <pre>{th || t("thread.thinkingHidden")}</pre>
-            </div>
-          ))}
-          {calls.map((c) => (
-            <ToolLine key={c.id} call={c} result={results.get(c.id)} running={running.has(c.id)} ms={toolTimes[c.id]?.ms} />
-          ))}
-        </div>
-      </Collapse>
-    </div>
-  );
-}
-
 // ----- assistant turn ------------------------------------------------------------------------
 
 interface ThreadProps {
@@ -227,14 +161,15 @@ interface ThreadProps {
   onCancelAutoRetry: () => Promise<void>;
 }
 
-/** Calls shown as their own cards (not in the activity line). */
-const CARD_TOOLS = new Set([RENDER_WIDGET, "spawn_subagent", "ask_user", "update_plan", "configure_mcp_server"]);
-
 export function Thread({ detail, live, toolTimes, actions, subagents, children, onTrace, onAnswer, onStartWithMcp, onRetry, onCancelAutoRetry }: ThreadProps) {
   const t = useT();
   const box = useRef<HTMLDivElement>(null);
+  const inner = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
-  const groups = useMemo(() => groupMessages(detail.raw), [detail.raw]);
+  const lastTop = useRef(0);
+  const [open, setOpen] = useState<Record<string, boolean>>({});
+  const folds: Folds = { open, set: (id, value) => setOpen((all) => ({ ...all, [id]: value })) };
+  const groups = useMemo(() => groupMessages(detail.raw, live), [detail.raw, live]);
   const results = useMemo(() => {
     const m = new Map<string, ToolResult>();
     for (const msg of detail.raw) for (const p of msg.content) if (p.kind === "tool_result") m.set(p.tool_call_id, p);
@@ -248,82 +183,81 @@ export function Thread({ detail, live, toolTimes, actions, subagents, children, 
     return m;
   }, [detail.raw]);
   const userTextsAfter = (seq: number) => detail.raw.filter((m) => m.role === "user" && m.seq > seq).map(textOf);
-  const latency = new Map(detail.usage.per_turn.map((t) => [t.seq, t.latency_ms ?? 0]));
   const pending = new Set(detail.pending_approvals.map((a) => a.call.id));
   const pendingInput = new Set(detail.pending_approvals.filter((a) => a.kind === "input").map((a) => a.call.id));
   const childByCall = new Map(children.filter((c) => c.lineage.parent_tool_call_id).map((c) => [c.lineage.parent_tool_call_id!, c.id]));
   const running = new Set(live.runningTools.map((c) => c.id));
   const cutAt = new Set(detail.checkpoints.map((c) => c.up_to_seq));
   const failure = detail.last_error ?? null;
-  const busy = detail.status === "running" && !failure;
+  const streaming = live.steps.some((step) => !step.parts);
+  const busy = !failure && (detail.status === "running" || streaming || running.size > 0);
 
+  // Follow the conversation as it grows (streaming, folding, cards loading).
   useEffect(() => {
     const el = box.current;
-    if (el && stick.current) el.scrollTop = el.scrollHeight;
-  }, [detail.raw.length, live.text.length, live.thinking.length, detail.pending_approvals.length]);
+    if (!el || !inner.current) return;
+    const observer = new ResizeObserver(() => {
+      if (stick.current) el.scrollTop = el.scrollHeight;
+    });
+    observer.observe(inner.current);
+    return () => observer.disconnect();
+  }, []);
 
-  const assistantParts = (msgs: RawMessage[]) => {
-    const parts: ContentPart[] = msgs.filter((m) => m.role === "assistant").flatMap((m) => m.content);
-    const thinking = parts.flatMap((p) => (p.kind === "thinking" ? [p.thinking] : []));
-    const calls = parts.flatMap((p) => (p.kind === "tool_call" && !CARD_TOOLS.has(p.name) ? [p as ToolCall] : []));
-    const latencyMs = msgs.reduce((s, m) => s + (latency.get(m.seq) ?? 0), 0);
-    return (
-      <>
-          <ActivityRow thinking={thinking} calls={calls} results={results} running={running} toolTimes={toolTimes} latencyMs={latencyMs} />
-          {msgs.map((m) =>
-            m.content.map((p, i) => {
-              if (p.kind === "text" && m.role === "assistant") return p.text.trim() ? <Markdown key={`${m.seq}-${i}`} text={p.text} /> : null;
-              if (p.kind === "tool_call" && p.name === "spawn_subagent") {
-                const a = (p.arguments ?? {}) as { task?: string; profile?: string };
-                return (
-                  <SubagentCard
-                    key={`${m.seq}-${i}`}
-                    task={a.task ?? ""}
-                    profile={a.profile ?? "explorer"}
-                    live={subagents[p.id]}
-                    result={results.get(p.id)}
-                    subSessionId={childByCall.get(p.id)}
-                    onTrace={onTrace}
-                  />
-                );
-              }
-              if (p.kind === "tool_call" && p.name === "ask_user") {
-                return (
-                  <AskUserCard
-                    key={`${m.seq}-${i}`}
-                    call={p}
-                    pending={pendingInput.has(p.id)}
-                    result={results.get(p.id)}
-                    onAnswer={(c) => onAnswer(p.id, c)}
-                  />
-                );
-              }
-              if (p.kind === "tool_call" && p.name === "configure_mcp_server") {
-                const r = results.get(p.id);
-                return r && !r.is_error ? <McpConfiguredCard key={`${m.seq}-${i}`} result={r} onStart={onStartWithMcp} /> : null;
-              }
-              if (p.kind === "tool_call" && p.name === RENDER_WIDGET) {
-                const spec = asWidget(p.arguments);
-                if (!spec) return null;
-                return (
-                  <Widget
-                    key={`${m.seq}-${i}`}
-                    id={p.id}
-                    spec={spec}
-                    response={responses.get(p.id)}
-                    pendingApproval={pending.has(p.id)}
-                    result={results.get(p.id)}
-                    laterUserTexts={userTextsAfter(m.seq)}
-                    actions={actions}
-                    disabled={detail.status === "halted"}
-                  />
-                );
-              }
-              return null;
-            }),
-          )}
-      </>
-    );
+  const renderBlock = (b: Exclude<TurnBlock, { type: "thinking" | "tool_group" }>) => {
+    switch (b.type) {
+      case "text":
+        return <Markdown text={b.text} />;
+      case "approval":
+        return (
+          <motion.div variants={enter} initial="hidden" animate="shown">
+            <ApprovalCard pending={b.pending} onApprove={() => actions.approve(b.pending.call.id)} onDeny={(reason) => actions.deny(b.pending.call.id, reason)} />
+          </motion.div>
+        );
+      case "subagent": {
+        const a = (b.call.arguments ?? {}) as { task?: string; profile?: string };
+        return (
+          <SubagentCard
+            task={a.task ?? ""}
+            profile={a.profile ?? "explorer"}
+            live={subagents[b.call.id]}
+            result={results.get(b.call.id)}
+            subSessionId={childByCall.get(b.call.id)}
+            onTrace={onTrace}
+          />
+        );
+      }
+      case "ask_user":
+        return <AskUserCard call={b.call} pending={pendingInput.has(b.call.id)} result={results.get(b.call.id)} onAnswer={(c) => onAnswer(b.call.id, c)} />;
+      case "mcp_configured":
+        return <McpConfiguredCard result={results.get(b.call.id)!} onStart={onStartWithMcp} />;
+      case "widget": {
+        const spec = asWidget(b.call.arguments);
+        return spec ? (
+          <Widget
+            id={b.call.id}
+            spec={spec}
+            response={responses.get(b.call.id)}
+            pendingApproval={pending.has(b.call.id)}
+            result={results.get(b.call.id)}
+            laterUserTexts={userTextsAfter(b.seq)}
+            actions={actions}
+            disabled={detail.status === "halted"}
+          />
+        ) : null;
+      }
+    }
+  };
+
+  const mcpShown = (id: string) => results.get(id)?.is_error === false;
+  const turnBlocks = (msgs: SourceMessage[], approvals: TurnBlock[], working: boolean) => {
+    const list = segments([...buildBlocks(msgs, mcpShown), ...approvals]);
+    return list.map((seg, i) => {
+      if (seg.kind === "block") return <Fragment key={seg.id}>{renderBlock(seg.block)}</Fragment>;
+      const active =
+        (working && i === list.length - 1) ||
+        seg.items.some((b) => (b.type === "thinking" ? b.status === "streaming" : b.calls.some((c) => running.has(c.id))));
+      return <WorkSegment key={seg.id} id={seg.id} items={seg.items} active={active} tools={{ results, running, times: toolTimes }} folds={folds} />;
+    });
   };
 
   const otherApprovals = detail.pending_approvals.filter((a) => a.call.name !== RENDER_WIDGET && a.kind === "approval");
@@ -332,17 +266,13 @@ export function Thread({ detail, live, toolTimes, actions, subagents, children, 
   const reportsIn = new Set(detail.raw.filter((m) => m.role === "user").flatMap((m) => [...textOf(m).matchAll(/session="([^"]+)"/g)].map((x) => x[1])));
   const skillRuns = Object.entries(subagents).filter(([id, s]) => id.startsWith("skill:") && !reportsIn.has(s.subSessionId));
 
-  const showLive = !!(live.text || live.thinking || (busy && !live.runningTools.length));
-  const hasTail = otherApprovals.length > 0 || skillRuns.length > 0 || showLive || !!failure;
-  const tailInLast = groups[groups.length - 1]?.kind === "assistant";
-  // Steps that belong to the turn in progress: they join the last assistant turn (one mark).
+  const approvalBlocks: TurnBlock[] = otherApprovals.map((pa) => ({ type: "approval", id: `approval:${pa.call.id}`, pending: pa }));
+  const markState: MarkState = !busy ? "idle" : running.size > 0 ? "running" : "thinking";
+  const hasTail = approvalBlocks.length > 0 || skillRuns.length > 0 || busy || !!failure;
+  const shown: Group[] = hasTail && groups[groups.length - 1]?.kind !== "assistant" ? [...groups, { kind: "assistant", msgs: [] }] : groups;
+  // Steps that belong to the turn in progress but have no place in its history yet.
   const tail = (
     <>
-      {otherApprovals.map((pa) => (
-        <motion.div key={pa.call.id} variants={enter} initial="hidden" animate="shown">
-          <ApprovalCard pending={pa} onApprove={() => actions.approve(pa.call.id)} onDeny={(reason) => actions.deny(pa.call.id, reason)} />
-        </motion.div>
-      ))}
       {skillRuns.map(([id, s]) => (
         <SubagentCard
           key={id}
@@ -353,26 +283,10 @@ export function Thread({ detail, live, toolTimes, actions, subagents, children, 
           onTrace={onTrace}
         />
       ))}
-      {failure && !showLive && (
+      {failure && !streaming && (
         <motion.div variants={enter} initial="hidden" animate="shown">
           <LoopErrorCard error={failure} onRetry={onRetry} onCancelAuto={onCancelAutoRetry} />
         </motion.div>
-      )}
-      {showLive && (
-        <>
-          {live.thinking && !live.text && <div className="activity-row ghost">{t("thread.thinkingLive")}</div>}
-          {live.text ? (
-            <Markdown text={live.text} />
-          ) : (
-            !live.thinking && (
-              <div className="typing" aria-label={t("thread.waiting")}>
-                <span />
-                <span />
-                <span />
-              </div>
-            )
-          )}
-        </>
       )}
     </>
   );
@@ -383,29 +297,31 @@ export function Thread({ detail, live, toolTimes, actions, subagents, children, 
       ref={box}
       onScroll={(e) => {
         const el = e.currentTarget;
-        stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+        // Only a move upwards is the reader's; a growing page must not stop the following.
+        if (el.scrollTop < lastTop.current - 1) stick.current = false;
+        if (el.scrollHeight - el.scrollTop - el.clientHeight < 60) stick.current = true;
+        lastTop.current = el.scrollTop;
       }}
     >
-      <div className="thread-inner">
+      <div className="thread-inner" ref={inner}>
         <AnimatePresence initial={false}>
-        {groups.map((g, i) => {
-          const isLast = i === groups.length - 1;
-          return (
-            <motion.div key={i} className="group" variants={enter} initial="hidden" animate="shown">
-              {g.kind === "user" && cutAt.has(g.msg.seq) && <div className="epoch">{t("thread.compacted")}</div>}
-              {g.kind === "user" ? (
-                <UserBubble msg={g.msg} widgetTitles={widgetTitles} />
-              ) : (
-                <Turn live={isLast && showLive}>
-                  {assistantParts(g.msgs)}
-                  {isLast && tail}
-                </Turn>
-              )}
-            </motion.div>
-          );
-        })}
+          {shown.map((g, i) => {
+            const isLast = i === shown.length - 1;
+            return (
+              <motion.div key={i} className="group" variants={enter} initial="hidden" animate="shown">
+                {g.kind === "user" && cutAt.has(g.msg.seq) && <div className="epoch">{t("thread.compacted")}</div>}
+                {g.kind === "user" ? (
+                  <UserBubble msg={g.msg} widgetTitles={widgetTitles} />
+                ) : (
+                  <Turn state={isLast ? markState : "idle"}>
+                    {turnBlocks(g.msgs, isLast ? approvalBlocks : [], isLast && busy)}
+                    {isLast && tail}
+                  </Turn>
+                )}
+              </motion.div>
+            );
+          })}
         </AnimatePresence>
-        {!tailInLast && hasTail && <Turn live={showLive}>{tail}</Turn>}
       </div>
     </div>
   );

@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
-use oort_agent::testing::{Behavior, MockModel, MockTool, MockTurn, executor};
+use oort_agent::testing::{Behavior, Gate, MockModel, MockTool, MockTurn, executor};
 use oort_agent::*;
-use oort_llm::{ChatRequest, Message, PromptCacheConfig, Role};
+use oort_llm::{ChatRequest, ContentPart, Message, PromptCacheConfig, Role, StreamEvent};
+use tokio::sync::Notify;
 
 use super::*;
 
@@ -384,6 +385,156 @@ async fn llm_calls_are_committed_with_their_step() {
         .await
         .unwrap_err();
     assert!(err.to_string().contains("append-only"), "{err}");
+}
+
+/// think₁ → content₁ → tool₁ → think₂ → tool₂ → content₂: every step streams under its own
+/// block id, reasoning is delivered while the call is still running, and SQLite keeps the
+/// exact order of the steps.
+#[tokio::test]
+async fn multi_step_blocks_stream_live_and_persist_in_order() {
+    let tool = MockTool::new("look", true, Behavior::Ok("seen".into()));
+    let h = Harness::new(vec![tool]).await;
+    let (id, mut state) = h.create(vec![Message::user("go")]).await;
+
+    let step = |thinking: &str, text: Option<&str>, call: Option<&str>| {
+        let mut events = vec![StreamEvent::ThinkingDelta(thinking.into())];
+        events.extend(text.map(|t| StreamEvent::TextDelta(t.into())));
+        if let Some(call_id) = call {
+            events.push(StreamEvent::ToolCallStart {
+                index: 0,
+                id: call_id.into(),
+                name: "look".into(),
+            });
+            events.push(StreamEvent::ToolCallDelta {
+                index: 0,
+                arguments_delta: "{}".into(),
+            });
+        }
+        events.push(StreamEvent::Done { stop_reason: None });
+        MockTurn { events, gate: None }
+    };
+    let reached = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    // The first call stalls right after its first reasoning chunk.
+    let model = MockModel::new(vec![
+        step("think one", Some("content one"), Some("c1")).with_gate(Gate::Pause {
+            after: 1,
+            reached: reached.clone(),
+            release: release.clone(),
+        }),
+        step("think two", None, Some("c2")),
+        MockTurn::text("content two", 10),
+    ]);
+    let (events, mut rx) = tokio::sync::mpsc::channel(256);
+    let agent = Agent::builder(model, executor(&h.tools))
+        .context_manager(Arc::new(context()))
+        .hook(Arc::new(PersistenceHook::new(
+            h.store.clone(),
+            id.clone(),
+            &state,
+        )))
+        .events(events)
+        .build()
+        .unwrap();
+    let run = tokio::spawn(async move {
+        agent
+            .run_loop(&mut state, &mut Inbox::detached())
+            .await
+            .unwrap();
+    });
+
+    // Delivered while the stream is still open.
+    reached.notified().await;
+    let mut seen = Vec::new();
+    loop {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("the thinking delta arrives before the call finishes")
+            .unwrap();
+        let first = matches!(event, AgentEvent::ThinkingDelta { .. });
+        seen.push(event);
+        if first {
+            break;
+        }
+    }
+    release.notify_one();
+    run.await.unwrap();
+    while let Some(event) = rx.recv().await {
+        seen.push(event);
+    }
+
+    let blocks: Vec<String> = seen
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ThinkingDelta {
+                step_index,
+                block_id,
+                delta,
+            }
+            | AgentEvent::TextDelta {
+                step_index,
+                block_id,
+                delta,
+            } => Some(format!("{step_index} {block_id} {delta}")),
+            AgentEvent::ThinkingEnd { block_id, .. } => Some(format!("end {block_id}")),
+            AgentEvent::ToolStarted { call } => Some(format!("tool {}", call.id)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        blocks,
+        [
+            "1 1:thinking think one",
+            "end 1:thinking",
+            "1 1:text content one",
+            "tool c1",
+            "2 3:thinking think two",
+            "end 3:thinking",
+            "tool c2",
+            "3 5:text content two",
+        ]
+    );
+
+    let stored = h.store.load_state(&id).await.unwrap();
+    let history: Vec<String> = stored
+        .state
+        .messages()
+        .iter()
+        .flat_map(|m| {
+            m.content.iter().map(move |part| {
+                let what = match part {
+                    ContentPart::Thinking { thinking, .. } => thinking.clone(),
+                    ContentPart::Text { text } => text.clone(),
+                    ContentPart::ToolCall(c) => format!("call {}", c.id),
+                    ContentPart::ToolResult(r) => format!("result {}", r.tool_call_id),
+                    _ => "other".into(),
+                };
+                format!("{:?}: {what}", m.role)
+            })
+        })
+        .collect();
+    assert_eq!(
+        history,
+        [
+            "User: go",
+            "Assistant: think one",
+            "Assistant: content one",
+            "Assistant: call c1",
+            "Tool: result c1",
+            "Assistant: think two",
+            "Assistant: call c2",
+            "Tool: result c2",
+            "Assistant: content two",
+        ]
+    );
+
+    // Reasoning time is stored with the call, under the message's seq.
+    let calls = h.store.list_llm_calls(&id).await.unwrap();
+    let timed: Vec<(usize, bool)> = calls
+        .iter()
+        .map(|c| (c.seq, c.thinking_ms.is_some()))
+        .collect();
+    assert_eq!(timed, [(1, true), (3, true), (5, false)]);
 }
 
 #[tokio::test]

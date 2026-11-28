@@ -156,6 +156,7 @@ export interface RawMessage {
   role: Role;
   content: ContentPart[];
   usage: Usage | null;
+  thinking_ms?: number;
 }
 
 export interface RequestSummary {
@@ -222,8 +223,10 @@ export interface LlmCallStats {
 
 export type AgentEvent =
   | { event: "turn_started"; turn: number }
-  | { event: "text_delta"; delta: string }
-  | { event: "thinking_delta"; delta: string }
+  /** `block_id` is `<message seq>:<kind>`, where the block will sit in history. */
+  | { event: "text_delta"; step_index: number; block_id: string; delta: string }
+  | { event: "thinking_delta"; step_index: number; block_id: string; delta: string }
+  | { event: "thinking_end"; block_id: string; duration_ms: number }
   | { event: "assistant_message"; message: Message }
   | { event: "tool_started"; call: ToolCall }
   | { event: "tool_finished"; result: ToolResult }
@@ -244,6 +247,10 @@ export interface LiveTurnWire {
   turn: number | null;
   text: string;
   thinking: string;
+  text_block: string | null;
+  thinking_block: string | null;
+  thinking_ms: number | null;
+  thinking_elapsed_ms: number | null;
   running_tools: ToolCall[];
 }
 
