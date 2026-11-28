@@ -221,8 +221,13 @@ impl OpenAIClient {
             });
         }
 
-        for msg in non_system {
-            encode_openai_message(msg, &mut messages);
+        let last_user_idx = non_system.iter().rposition(|m| m.role == Role::User);
+        for (idx, msg) in non_system.iter().enumerate() {
+            // DeepSeek Chat Completions recommends sending `reasoning_content` only within the
+            // active user turn's tool-call loop and omitting it from completed earlier turns.
+            let include_reasoning =
+                self.vendor != Vendor::Deepseek || last_user_idx.is_some_and(|u| idx > u);
+            encode_openai_message(msg, include_reasoning, &mut messages);
         }
 
         let mut tool_list: Vec<Value> = request.tools.iter().map(encode_openai_tool).collect();
@@ -791,7 +796,7 @@ fn encode_openai_tool_choice(choice: &ToolChoice) -> Value {
     }
 }
 
-fn encode_openai_message(msg: &Message, out: &mut Vec<OpenAIMessage>) {
+fn encode_openai_message(msg: &Message, include_reasoning: bool, out: &mut Vec<OpenAIMessage>) {
     match msg.role {
         Role::System => {
             let text = msg.text();
@@ -892,7 +897,9 @@ fn encode_openai_message(msg: &Message, out: &mut Vec<OpenAIMessage>) {
             for part in &msg.content {
                 match part {
                     ContentPart::Text { text: t, .. } => text.push_str(t),
-                    ContentPart::Thinking { thinking: t, .. } => thinking.push_str(t),
+                    ContentPart::Thinking { thinking: t, .. } if include_reasoning => {
+                        thinking.push_str(t)
+                    }
                     ContentPart::ToolCall(call) => {
                         tool_calls.push(OpenAIToolCallWire {
                             id: call.id.clone(),

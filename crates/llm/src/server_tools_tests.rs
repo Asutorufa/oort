@@ -433,3 +433,76 @@ async fn gemini_strict_per_part_server_tool_replay_preserves_each_signature() {
             && p.get("thoughtSignature").and_then(serde_json::Value::as_str) == Some("U0lHMzo=")
     }));
 }
+
+#[test]
+fn deepseek_current_turn_reasoning_and_anthropic_unsigned_thinking_guard() {
+    let raw_search = json!({
+        "type": "web_search_call",
+        "id": "ws_ds_1",
+        "status": "completed",
+        "action": { "queries": ["gold"] }
+    });
+    let history = vec![
+        Message::user("turn 1"),
+        Message::assistant_parts(vec![
+            ContentPart::Thinking {
+                thinking: "old turn reasoning".into(),
+                signature: None,
+            },
+            ContentPart::ServerToolUse {
+                id: "ws_ds_1".into(),
+                name: "web_search_call".into(),
+                action: Some("search".into()),
+                input: json!({ "queries": ["gold"] }),
+                raw_provider_payload: Some(raw_search.clone()),
+            },
+            ContentPart::text("turn 1 answer"),
+        ]),
+        Message::user("turn 2"),
+        Message::assistant_parts(vec![
+            ContentPart::Thinking {
+                thinking: "active turn reasoning".into(),
+                signature: None,
+            },
+            ContentPart::ToolCall(crate::ToolCall::new("c1", "render_widget", json!({}))),
+        ]),
+        Message::tool_result("c1", Some("render_widget"), "Displayed widget", false),
+    ];
+    let req = ChatRequest::new(history);
+
+    // DeepSeek Responses API: omits old-turn reasoning, includes active-turn reasoning,
+    // and keeps web_search_call from old turns verbatim.
+    let ds_resp =
+        OpenAIResponsesClient::new("sk-ds", "deepseek-flash").with_vendor(Vendor::Deepseek);
+    let b1 = ds_resp.build_request_json(&req, true).unwrap();
+    let input = b1["input"].as_array().unwrap();
+    assert!(input.iter().any(|i| i == &raw_search));
+    let reasoning_items: Vec<&serde_json::Value> = input
+        .iter()
+        .filter(|i| i.get("type").and_then(serde_json::Value::as_str) == Some("reasoning"))
+        .collect();
+    assert_eq!(reasoning_items.len(), 1);
+    assert_eq!(
+        reasoning_items[0]["content"][0]["text"],
+        "active turn reasoning"
+    );
+
+    // DeepSeek Chat Completions: omits old-turn reasoning_content, keeps active-turn reasoning_content.
+    let ds_chat = OpenAIClient::new("sk-ds", "deepseek-flash").with_vendor(Vendor::Deepseek);
+    let b2 = ds_chat.build_request_json(&req, true).unwrap();
+    let msgs = b2["messages"].as_array().unwrap();
+    assert!(msgs[1].get("reasoning_content").is_none());
+    assert_eq!(msgs[3]["reasoning_content"], "active turn reasoning");
+
+    // Anthropic: skips unsigned thinking blocks (cross-vendor safety).
+    let ant = AnthropicClient::new("sk-ant", "claude-sonnet-4-6").with_vendor(Vendor::Anthropic);
+    let b3 = ant.build_request_json(&req, false).unwrap();
+    let ant_msgs = b3["messages"].as_array().unwrap();
+    let has_thinking = ant_msgs.iter().any(|m| {
+        m["content"].as_array().is_some_and(|arr| {
+            arr.iter()
+                .any(|blk| blk.get("type").and_then(serde_json::Value::as_str) == Some("thinking"))
+        })
+    });
+    assert!(!has_thinking);
+}

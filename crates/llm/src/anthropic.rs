@@ -170,7 +170,7 @@ impl AnthropicClient {
             if msg.role == Role::System {
                 continue;
             }
-            let (role, blocks) = encode_anthropic_message(msg);
+            let (role, blocks) = encode_anthropic_message(msg, self.vendor);
             if blocks.is_empty() {
                 continue;
             }
@@ -636,7 +636,7 @@ fn encode_anthropic_tool_choice(choice: &ToolChoice) -> Value {
     }
 }
 
-fn encode_anthropic_message(msg: &Message) -> (&'static str, Vec<Value>) {
+fn encode_anthropic_message(msg: &Message, vendor: Vendor) -> (&'static str, Vec<Value>) {
     let role = match msg.role {
         Role::Assistant => "assistant",
         Role::User | Role::Tool | Role::System => "user",
@@ -714,10 +714,17 @@ fn encode_anthropic_message(msg: &Message) -> (&'static str, Vec<Value>) {
                 thinking,
                 signature,
             } => {
+                // Native Anthropic rejects unsigned `thinking` blocks (e.g. from another vendor).
+                let has_sig = signature.as_deref().is_some_and(|s| !s.is_empty());
+                if vendor == Vendor::Anthropic && !has_sig {
+                    continue;
+                }
                 let mut obj = serde_json::Map::new();
                 obj.insert("type".to_string(), Value::String("thinking".to_string()));
                 obj.insert("thinking".to_string(), Value::String(thinking.clone()));
-                if let Some(sig) = signature {
+                if let Some(sig) = signature
+                    && !sig.is_empty()
+                {
                     obj.insert("signature".to_string(), Value::String(sig.clone()));
                 }
                 blocks.push(Value::Object(obj));

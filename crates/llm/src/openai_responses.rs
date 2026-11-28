@@ -95,9 +95,12 @@ impl OpenAIResponsesClient {
         let model = request.resolve_model(&self.model)?.to_string();
         let (instructions, non_system) = request.split_system_messages();
 
+        let last_user_idx = non_system.iter().rposition(|m| m.role == Role::User);
         let mut input = Vec::new();
-        for msg in non_system {
-            encode_responses_input(msg, &mut input);
+        for (idx, msg) in non_system.iter().enumerate() {
+            let include_reasoning =
+                self.vendor == Vendor::Deepseek && last_user_idx.is_some_and(|u| idx > u);
+            encode_responses_input(msg, include_reasoning, &mut input);
         }
 
         let mut tool_list: Vec<Value> = request.tools.iter().map(encode_responses_tool).collect();
@@ -490,7 +493,7 @@ fn encode_responses_tool_choice(choice: &ToolChoice) -> Value {
     }
 }
 
-fn encode_responses_input(msg: &Message, out: &mut Vec<Value>) {
+fn encode_responses_input(msg: &Message, include_reasoning: bool, out: &mut Vec<Value>) {
     match msg.role {
         Role::System => {
             let text = msg.text();
@@ -561,11 +564,15 @@ fn encode_responses_input(msg: &Message, out: &mut Vec<Value>) {
             }
         }
         Role::Assistant => {
+            let mut reasoning_text = String::new();
             let mut text_parts = Vec::new();
             let mut tool_items = Vec::new();
             let mut server_items = Vec::new();
             for part in &msg.content {
                 match part {
+                    ContentPart::Thinking { thinking, .. } if include_reasoning && !thinking.is_empty() => {
+                        reasoning_text.push_str(thinking);
+                    }
                     ContentPart::Text { text, .. } if !text.is_empty() => {
                         text_parts.push(json!({ "type": "output_text", "text": text }));
                     }
@@ -589,6 +596,13 @@ fn encode_responses_input(msg: &Message, out: &mut Vec<Value>) {
                     }
                     _ => {}
                 }
+            }
+            if !reasoning_text.is_empty() {
+                out.push(json!({
+                    "type": "reasoning",
+                    "summary": [],
+                    "content": [{ "type": "reasoning_text", "text": reasoning_text }],
+                }));
             }
             out.extend(server_items);
             if !text_parts.is_empty() {
