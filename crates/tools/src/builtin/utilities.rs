@@ -109,8 +109,8 @@ tool_def!(WebFetch, "web_fetch", true,
 {
     "type": "object",
     "properties": {
-        "url": { "type": "string" },
-        "max_chars": { "type": "integer", "minimum": 500, "maximum": 100000 }
+        "url": { "type": "string", "description": "Full http:// or https:// URL to fetch" },
+        "max_chars": { "type": "integer", "minimum": 500, "maximum": 100000, "description": "Maximum characters to return inline before spilling to read_tool_output (default 30000)" }
     },
     "required": ["url"]
 });

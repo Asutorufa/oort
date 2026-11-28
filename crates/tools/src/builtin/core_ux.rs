@@ -79,10 +79,10 @@ tool_def!(AskUser, super::ASK_USER, true,
 {
     "type": "object",
     "properties": {
-        "question": { "type": "string" },
-        "kind": { "type": "string", "enum": ["single", "multiple", "text"], "description": "single / multiple choice from `options`, or free text" },
-        "options": { "type": "array", "items": { "type": "string" } },
-        "placeholder": { "type": "string" }
+        "question": { "type": "string", "description": "Clear, concise question shown to the user" },
+        "kind": { "type": "string", "enum": ["single", "multiple", "text"], "description": "`single` or `multiple` choice from `options`, or `text` for free-form input (default `text` if `options` omitted)" },
+        "options": { "type": "array", "items": { "type": "string" }, "description": "Non-empty list of choices (required when kind is `single` or `multiple`)" },
+        "placeholder": { "type": "string", "description": "Optional input placeholder text (for `text` mode)" }
     },
     "required": ["question"]
 });

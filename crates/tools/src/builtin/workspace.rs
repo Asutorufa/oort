@@ -308,11 +308,11 @@ tool_def!(WriteFile, "write_file", false,
 {
     "type": "object",
     "properties": {
-        "path": { "type": "string" },
-        "content": { "type": "string" },
-        "old_string": { "type": "string" },
-        "new_string": { "type": "string" },
-        "replace_all": { "type": "boolean" }
+        "path": { "type": "string", "description": "File path relative to the workspace root" },
+        "content": { "type": "string", "description": "Full file contents (create/overwrite mode; mutually exclusive with old_string/new_string)" },
+        "old_string": { "type": "string", "description": "Exact existing substring to replace (patch mode; requires new_string, mutually exclusive with content)" },
+        "new_string": { "type": "string", "description": "Replacement text for old_string (required when old_string is set)" },
+        "replace_all": { "type": "boolean", "description": "Replace every occurrence of old_string instead of requiring a unique match (default false)" }
     },
     "required": ["path"]
 });
@@ -432,8 +432,8 @@ tool_def!(RunCommand, "run_command", false,
 {
     "type": "object",
     "properties": {
-        "command": { "type": "string" },
-        "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 600 }
+        "command": { "type": "string", "description": "Shell command executed via `sh -c` in the workspace root" },
+        "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 600, "description": "Execution timeout in seconds (default 120, max 600)" }
     },
     "required": ["command"]
 });
