@@ -2,13 +2,14 @@ import { useEffect, useState } from "react";
 import { errorText, skills } from "../api";
 import type { Skill, SkillInput, SkillsReload } from "../api/types";
 import { Markdown } from "../components/chat/LazyMarkdown";
-import { Badge, Empty, ErrorBar, Modal } from "../components/common";
+import { ErrorBar, Modal } from "../components/common";
 import { Field, Toggle } from "../components/forms";
 import { SegmentedControl } from "../components/ui";
+import { AddButton, EmptyState, HeaderActions, ListItem, useAutoSelect } from "../components/settings/MasterDetail";
 import { navigate } from "../hooks/useHashRoute";
 import { useResource } from "../hooks/useResource";
 import { useT } from "../i18n";
-import { ToolIcon } from "../brand/Icons";
+import { MemoryIcon, RefreshIcon, SparkIcon, ToolIcon } from "../brand/Icons";
 
 interface Form {
   name: string;
@@ -72,6 +73,8 @@ export function SkillsView({ selected }: { selected: string | null }) {
     setError(null);
   }, [current?.id, current?.updated_at, isNew]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  useAutoSelect("skills", all.data, selected);
+
   const q = query.trim().toLowerCase();
   const shown = (all.data ?? []).filter((k) => !q || `${k.name} ${k.description} ${k.tags.join(" ")}`.toLowerCase().includes(q));
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setForm((f) => ({ ...f, [k]: v }));
@@ -113,18 +116,35 @@ export function SkillsView({ selected }: { selected: string | null }) {
 
   const editable = isNew || !!current?.editable;
 
+  if (all.data?.length === 0 && !isNew)
+    return (
+      <>
+        <HeaderActions>
+          <button type="button" className="head-action" onClick={rescan} title={t("skills.rescanHint")}>
+            <RefreshIcon size={14} />
+            {t("skills.reload")}
+          </button>
+          <AddButton label={t("skills.create")} onClick={() => navigate("skills", "new")} />
+        </HeaderActions>
+        <ErrorBar error={all.error} />
+        <ErrorBar error={error} onDismiss={() => setError(null)} />
+        {reload && <div className="reload-note">{t("skills.loaded", { count: reload.file_skills })}{reload.warnings.map((w) => <div key={w} className="warn-text">{w}</div>)}</div>}
+        <EmptyState icon={<SparkIcon size={20} />} title={t("skills.none")} action={{ label: t("skills.create"), onClick: () => navigate("skills", "new") }}>
+          {t("skills.intro")} <code>~/.oort/skills/&lt;name&gt;/SKILL.md</code> {t("skills.introAfter")}
+        </EmptyState>
+      </>
+    );
+
   return (
     <div className="master-detail">
+      <HeaderActions>
+        <button type="button" className="head-action" onClick={rescan} title={t("skills.rescanHint")}>
+          <RefreshIcon size={14} />
+          {t("skills.reload")}
+        </button>
+        <AddButton label={t("skills.create")} onClick={() => navigate("skills", "new")} />
+      </HeaderActions>
       <aside className="pane left">
-        <div className="pane-head">
-          <span className="spacer" />
-          <button className="btn small ghost" onClick={rescan} title={t("skills.rescanHint")}>
-            ↻ {t("skills.reload")}
-          </button>
-          <button className="btn primary small" onClick={() => navigate("skills", "new")}>
-            ＋ {t("skills.create")}
-          </button>
-        </div>
         <input className="filter" placeholder={t("skills.search")} value={query} onChange={(e) => setQuery(e.target.value)} />
         {reload && (
           <div className="reload-note">
@@ -137,19 +157,19 @@ export function SkillsView({ selected }: { selected: string | null }) {
           </div>
         )}
         <ErrorBar error={all.error} />
-        <ul className="item-list">
+        <ul className="md-list">
           {shown.map((k) => (
-            <li key={k.id} className={k.id === selected ? "selected" : ""} onClick={() => navigate("skills", k.id)}>
-              <div className="row">
-                <b className="mono">/{k.name}</b>
-                <span className="spacer" />
-                {k.execution_mode === "subagent" && <Badge tone="info">Subagent</Badge>}
-                <Badge tone={k.source.kind === "file" ? "muted" : "info"}>{k.source.kind === "file" ? "SKILL.md" : t("skills.app")}</Badge>
-              </div>
-              <div className="muted ellipsis">{k.description}</div>
-            </li>
+            <ListItem
+              key={k.id}
+              selected={k.id === selected}
+              onSelect={() => navigate("skills", k.id)}
+              icon={k.source.kind === "file" ? <MemoryIcon size={15} /> : <SparkIcon size={15} />}
+              iconTitle={k.source.kind === "file" ? "SKILL.md" : t("skills.app")}
+              title={`/${k.name}`}
+              sub={k.execution_mode === "subagent" ? `Subagent · ${k.description}` : k.description}
+            />
           ))}
-          {shown.length === 0 && <li className="muted">{t("skills.none")}</li>}
+          {shown.length === 0 && <li className="md-none">{t("skills.none")}</li>}
         </ul>
       </aside>
 
@@ -276,10 +296,7 @@ export function SkillsView({ selected }: { selected: string | null }) {
             )}
           </div>
         ) : (
-          <Empty>
-            {t("skills.intro")}
-            <code>~/.oort/skills/&lt;name&gt;/SKILL.md</code> {t("skills.introAfter")}
-          </Empty>
+          null
         )}
       </main>
       {confirm && current && (

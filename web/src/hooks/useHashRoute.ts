@@ -26,6 +26,11 @@ export function navigate(view: View, id?: string | null) {
   window.location.hash = href(view, id).slice(1);
 }
 
+/** Like `navigate`, without a new history entry. */
+export function replace(view: View, id?: string | null) {
+  window.location.replace(href(view, id));
+}
+
 export function useHashRoute(): Route {
   const [route, setRoute] = useState(() => parse(window.location.hash));
   useEffect(() => {

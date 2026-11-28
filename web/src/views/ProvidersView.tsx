@@ -14,11 +14,12 @@ import {
   type Vendor,
 } from "../api/types";
 import { getProtocolOption, getVendorPreset, VENDOR_PRESETS } from "../api/vendorCatalog";
-import { AlertIcon, CheckIcon, ChevronDown, KindIcon, PlusIcon, RefreshIcon, Spinner, TrashIcon } from "../brand/Icons";
-import { Empty, ErrorBar, Modal } from "../components/common";
+import { AlertIcon, CheckIcon, ChevronDown, KindIcon, ModelIcon, RefreshIcon, Spinner, TrashIcon } from "../brand/Icons";
+import { ErrorBar, Modal } from "../components/common";
 import { useI18n } from "../i18n";
 import { KeyValueEditor, SecretInput } from "../components/forms";
 import { Checkbox, Collapse, Combobox, SegmentedControl, Switch } from "../components/ui";
+import { AddButton, EmptyState, HeaderActions, ListItem, useAutoSelect } from "../components/settings/MasterDetail";
 import { navigate } from "../hooks/useHashRoute";
 import { useResource } from "../hooks/useResource";
 import { enter, spring, tap } from "../lib/motion";
@@ -229,19 +230,6 @@ function ResultBanner({ result }: { result: ProviderTest | "running" | null }) {
   );
 }
 
-/** Compact status line in the provider list. */
-export function TestResult({ result }: { result: ProviderTest | null | "running" }) {
-  const { t, fmt } = useI18n();
-  if (!result) return null;
-  if (result === "running") return <span className="muted">{t("prov.listChecking")}</span>;
-  return (
-    <span className={`test-result ${result.ok ? "ok" : "fail"}`}>
-      {result.ok ? <CheckIcon size={12} stroke={2.2} /> : <AlertIcon size={12} />}
-      {result.ok ? t("prov.listOk", { ms: fmt.ms(result.latency_ms) }) : result.error ?? t("prov.listFailed")}
-    </span>
-  );
-}
-
 // ----- view ----------------------------------------------------------------------------------
 
 export function ProvidersView({ selected }: { selected: string | null }) {
@@ -250,7 +238,6 @@ export function ProvidersView({ selected }: { selected: string | null }) {
   const isNew = selected === "new";
   const [form, setForm] = useState<Form>(blank);
   const [error, setError] = useState<string | null>(null);
-  const [tests, setTests] = useState<Record<string, ProviderTest | "running">>({});
   const [formTest, setFormTest] = useState<ProviderTest | "running" | null>(null);
   const [ping, setPing] = useState(false);
   const [confirm, setConfirm] = useState(false);
@@ -267,6 +254,8 @@ export function ProvidersView({ selected }: { selected: string | null }) {
     setModels([]);
     setModelsState("idle");
   }, [current?.id, current?.updated_at, isNew]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useAutoSelect("models", list.data, selected, (p) => p.is_enabled);
 
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setForm((f) => ({ ...f, [k]: v }));
   const dirty = !!current && JSON.stringify(form) !== JSON.stringify(toForm(current));
@@ -313,16 +302,6 @@ export function ProvidersView({ selected }: { selected: string | null }) {
 
   const setServerTool = (updater: (cur: ServerToolConfig) => ServerToolConfig) => {
     setForm((f) => ({ ...f, default_server_tools: updater(f.default_server_tools ?? {}) }));
-  };
-
-  const runTest = async (id: string) => {
-    setTests((t) => ({ ...t, [id]: "running" }));
-    try {
-      const r = await providers.test(id);
-      setTests((t) => ({ ...t, [id]: r }));
-    } catch (e) {
-      setTests((t) => ({ ...t, [id]: { ok: false, latency_ms: 0, model_checked: null, model_found: null, models: [], error: errorText(e) } }));
-    }
   };
 
   const testForm = async () => {
@@ -386,48 +365,38 @@ export function ProvidersView({ selected }: { selected: string | null }) {
   const supportedTools = proto.serverTools;
   const hasAnyServerTools = Object.keys(supportedTools).length > 0;
 
+  if (list.data?.length === 0 && !isNew)
+    return (
+      <>
+        <HeaderActions>
+          <AddButton label={t("common.add")} onClick={() => navigate("models", "new")} />
+        </HeaderActions>
+        <ErrorBar error={list.error} />
+        <EmptyState icon={<ModelIcon size={20} />} title={t("prov.emptyTitle")} action={{ label: t("common.add"), onClick: () => navigate("models", "new") }}>
+          {t("prov.emptyHint")}
+        </EmptyState>
+      </>
+    );
+
   return (
     <div className="master-detail">
+      <HeaderActions>
+        <AddButton label={t("common.add")} onClick={() => navigate("models", "new")} />
+      </HeaderActions>
       <aside className="pane left">
-        <div className="pane-head">
-          <span className="spacer" />
-          <motion.button whileTap={tap} className="btn small primary" onClick={() => navigate("models", "new")}>
-            <PlusIcon size={13} /> {t("common.add")}
-          </motion.button>
-        </div>
         <ErrorBar error={list.error} />
-        <ul className="item-list provider-list">
+        <ul className="md-list">
           {(list.data ?? []).map((p) => (
-            <li key={p.id} className={p.id === selected ? "selected" : ""} onClick={() => navigate("models", p.id)}>
-              {p.id === selected && <motion.span layoutId="provider-list-active" className="list-active" transition={spring} />}
-              <div className="provider-row">
-                <span className="provider-kind">
-                  <KindIcon kind={p.kind === "mock" ? "mock" : p.vendor ?? p.kind} size={16} />
-                </span>
-                <span className="provider-text">
-                  <span className="provider-name">
-                    {p.name}
-                    {!p.is_enabled && <span className="pill tiny">{t("common.disabled")}</span>}
-                  </span>
-                  <span className="provider-sub mono">{p.default_model || t("prov.noDefaultModel")}</span>
-                </span>
-                <button
-                  className="btn ghost small"
-                  title={t("prov.testConnection")}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    runTest(p.id);
-                  }}
-                >
-                  {t("prov.test")}
-                </button>
-              </div>
-              {tests[p.id] && (
-                <div className="provider-test" onClick={(e) => e.stopPropagation()}>
-                  <TestResult result={tests[p.id]} />
-                </div>
-              )}
-            </li>
+            <ListItem
+              key={p.id}
+              selected={p.id === selected}
+              onSelect={() => navigate("models", p.id)}
+              icon={<KindIcon kind={p.kind === "mock" ? "mock" : p.vendor ?? p.kind} size={15} />}
+              title={p.name}
+              sub={p.default_model || t("prov.noDefaultModel")}
+              mono
+              off={p.is_enabled ? undefined : t("common.disabled")}
+            />
           ))}
         </ul>
       </aside>
@@ -831,7 +800,7 @@ export function ProvidersView({ selected }: { selected: string | null }) {
             </div>
           </motion.div>
         ) : (
-          <Empty>{t("prov.empty")}</Empty>
+          null
         )}
       </main>
       {confirm && current && (

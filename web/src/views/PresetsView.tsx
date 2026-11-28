@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import { errorText, mcpServers, presets, providers, sessions, skills } from "../api";
 import { APPROVAL_POLICIES, REASONING_LEVELS, type ApprovalPolicy, type Preset, type PresetInput, type ReasoningEffort } from "../api/types";
-import { KindIcon } from "../brand/Icons";
+import { KindIcon, LayersIcon } from "../brand/Icons";
 import { Checkbox, SegmentedControl, Select, Switch } from "../components/ui";
-import { Badge, Empty, ErrorBar, Modal } from "../components/common";
+import { Badge, ErrorBar, Modal } from "../components/common";
 import { Field, GroupToggles } from "../components/forms";
+import { AddButton, EmptyState, HeaderActions, ListItem, useAutoSelect } from "../components/settings/MasterDetail";
 import { navigate } from "../hooks/useHashRoute";
 import { useResource } from "../hooks/useResource";
 import { useT } from "../i18n";
@@ -59,9 +60,10 @@ export function PresetsView({ selected }: { selected: string | null }) {
     setError(null);
   }, [current?.id, current?.updated_at, isNew, providerList.data]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  useAutoSelect("presets", list.data, selected);
+
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setForm((f) => ({ ...f, [k]: v }));
   const providerName = (id: string) => providerList.data?.find((p) => p.id === id)?.name ?? id;
-  const serverName = (id: string) => serverList.data?.find((s) => s.id === id)?.name ?? "(deleted)";
   const provider = providerList.data?.find((p) => p.id === form.provider_id);
 
   const save = async () => {
@@ -99,43 +101,38 @@ export function PresetsView({ selected }: { selected: string | null }) {
     }
   };
 
+  if (list.data?.length === 0 && !isNew)
+    return (
+      <>
+        <HeaderActions>
+          <AddButton label={t("common.add")} onClick={() => navigate("presets", "new")} />
+        </HeaderActions>
+        <ErrorBar error={list.error} />
+        <EmptyState icon={<LayersIcon size={20} />} title={t("presets.emptyTitle")} action={{ label: t("common.add"), onClick: () => navigate("presets", "new") }}>
+          {t("presets.emptyHint")}
+        </EmptyState>
+      </>
+    );
+
   return (
     <div className="master-detail">
+      <HeaderActions>
+        <AddButton label={t("common.add")} onClick={() => navigate("presets", "new")} />
+      </HeaderActions>
       <aside className="pane left">
-        <div className="pane-head">
-          <span className="spacer" />
-          <button className="primary small" onClick={() => navigate("presets", "new")}>
-            ＋ {t("common.add")}
-          </button>
-        </div>
         <ErrorBar error={list.error} />
-        <ul className="item-list">
+        <ul className="md-list">
           {(list.data ?? []).map((p) => (
-            <li key={p.id} className={p.id === selected ? "selected" : ""} onClick={() => navigate("presets", p.id)}>
-              <div className="row">
-                <b>{p.name}</b>
-                <span className="spacer" />
-                <button
-                  className="small primary"
-                  disabled={starting === p.id}
-                  title={t("presets.startHint")}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    start(p);
-                  }}
-                >
-                  {starting === p.id ? "…" : t("presets.start")}
-                </button>
-              </div>
-              <div className="muted ellipsis">{p.description || p.system_prompt}</div>
-              <div className="row muted">
-                <span>{providerName(p.provider_id)}</span>
-                <span className="mono">/ {p.model || t("presets.defaultModel")}</span>
-                {p.mcp_server_ids.length > 0 && <span>· {p.mcp_server_ids.map(serverName).join(", ")}</span>}
-              </div>
-            </li>
+            <ListItem
+              key={p.id}
+              selected={p.id === selected}
+              onSelect={() => navigate("presets", p.id)}
+              icon={<LayersIcon size={15} />}
+              title={p.name}
+              sub={`${providerName(p.provider_id)} / ${p.model || t("presets.defaultModel")}`}
+              mono
+            />
           ))}
-          {list.data?.length === 0 && <li className="muted">{t("presets.noneYet")}</li>}
         </ul>
       </aside>
 
@@ -147,8 +144,8 @@ export function PresetsView({ selected }: { selected: string | null }) {
               <h2>{current ? current.name : t("presets.new")}</h2>
               <span className="spacer" />
               {current && (
-                <button className="primary" disabled={starting === current.id} onClick={() => start(current)}>
-                  Start session with this preset
+                <button className="btn small" disabled={starting === current.id} title={t("presets.startHint")} onClick={() => start(current)}>
+                  {t("presets.start")}
                 </button>
               )}
             </div>
@@ -265,7 +262,7 @@ export function PresetsView({ selected }: { selected: string | null }) {
             </div>
           </div>
         ) : (
-          <Empty>{t("presets.intro")}</Empty>
+          null
         )}
       </main>
       {confirm && current && (

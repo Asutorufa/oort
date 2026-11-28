@@ -1,5 +1,6 @@
 import { motion } from "motion/react";
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { HeaderSlot } from "../../components/settings/MasterDetail";
 import { ArrowLeftIcon, LayersIcon, MemoryIcon, ModelIcon, PaletteIcon, SparkIcon, ToolIcon } from "../../brand/Icons";
 import { href, type SettingsView } from "../../hooks/useHashRoute";
 import { useT, type Key } from "../../i18n";
@@ -39,6 +40,7 @@ export function SettingsWorkspace({ view, id, onClose }: { view: SettingsView; i
   const t = useT();
   const root = useRef<HTMLDivElement>(null);
   useEffect(() => root.current?.focus({ preventScroll: true }), []);
+  const [slot, setSlot] = useState<HTMLDivElement | null>(null);
   const page = GROUPS.flatMap((g) => g.pages).find((p) => p.view === view)!;
 
   return (
@@ -72,19 +74,24 @@ export function SettingsWorkspace({ view, id, onClose }: { view: SettingsView; i
         ))}
       </aside>
       <div className="settings-content">
-        {/* The tool playground needs the extra width. */}
-        <div className={`settings-container ${view === "mcp" ? "wide" : ""}`}>
+        {/* List + detail pages are wider; the tool playground widest. */}
+        <div className={`settings-container ${view === "general" ? "" : view === "mcp" ? "widest" : "wide"}`}>
           <header className="settings-head">
-            <h1>{t(page.label)}</h1>
-            <p>{t(page.description)}</p>
+            <div>
+              <h1>{t(page.label)}</h1>
+              <p>{t(page.description)}</p>
+            </div>
+            <div className="settings-actions" ref={setSlot} />
           </header>
           <div className="settings-body">
-            {view === "general" && <GeneralSettings />}
-            {view === "models" && <ProvidersView selected={id} />}
-            {view === "presets" && <PresetsView selected={id} />}
-            {view === "mcp" && <McpView selected={id} />}
-            {view === "skills" && <SkillsView selected={id} />}
-            {view === "memories" && <MemoriesView selected={id} />}
+            <HeaderSlot.Provider value={slot}>
+              {view === "general" && <GeneralSettings />}
+              {view === "models" && <ProvidersView selected={id} />}
+              {view === "presets" && <PresetsView selected={id} />}
+              {view === "mcp" && <McpView selected={id} />}
+              {view === "skills" && <SkillsView selected={id} />}
+              {view === "memories" && <MemoriesView selected={id} />}
+            </HeaderSlot.Provider>
           </div>
         </div>
       </div>

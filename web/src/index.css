@@ -501,13 +501,7 @@ table { border-collapse: collapse; width: 100%; }
 .pane { overflow: auto; min-height: 0; }
 .pane.left { border-right: 1px solid var(--border-subtle); padding: 16px 12px; background: var(--bg-canvas); }
 .pane.detail { padding: 26px 32px 60px; }
-.pane-head { display: flex; align-items: center; gap: 6px; margin-bottom: 12px; }
-.pane-head h3 { font-size: 15px; color: var(--text-primary); letter-spacing: 0; }
 .filter { margin-bottom: 10px; }
-.item-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 1px; }
-.item-list li { padding: 8px 10px; border-radius: 8px; cursor: pointer; display: flex; flex-direction: column; gap: 2px; }
-.item-list li:hover { background: var(--bg-hover); }
-.item-list li.selected { background: var(--bg-selected); }
 .form { max-width: 760px; display: flex; flex-direction: column; gap: 12px; }
 .form.wide { max-width: 900px; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -527,7 +521,6 @@ table { border-collapse: collapse; width: 100%; }
 .card > summary { cursor: pointer; padding: 8px 12px; }
 .card-kind { font-size: 11px; color: var(--text-muted); font-weight: 600; letter-spacing: .03em; }
 .model-list { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 12px; }
-.test-result { display: inline-flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 12.5px; }
 .discovery, .playground, .oauth-panel { margin-top: 18px; max-width: 760px; border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); padding: 14px 16px; background: var(--bg-surface); display: flex; flex-direction: column; gap: 10px; }
 .oauth-meta { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12.5px; color: var(--text-secondary); }
 .oauth-meta code { word-break: break-all; }
@@ -859,20 +852,6 @@ input[type="range"].unset::-webkit-slider-thumb { opacity: .5; }
 .pf-banner-main { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; min-width: 0; }
 .pf-banner-main b { color: var(--text-primary); font-weight: 600; }
 .pf-banner-error { flex-basis: 100%; font-family: var(--mono); font-size: 12px; color: var(--text-secondary); overflow-wrap: anywhere; }
-
-/* provider list */
-.provider-list li { position: relative; padding: 9px 10px; }
-.provider-list li.selected { background: transparent; }
-.list-active { position: absolute; inset: 0; border-radius: 8px; background: var(--bg-selected); z-index: 0; }
-.provider-row { position: relative; z-index: 1; display: flex; align-items: center; gap: 10px; }
-.provider-kind { width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--border-subtle); background: var(--bg-elevated); display: grid; place-items: center; color: var(--text-secondary); flex: none; }
-.provider-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.provider-name { font-size: 13.5px; font-weight: 500; color: var(--text-primary); display: flex; gap: 6px; align-items: center; }
-.provider-sub { font-size: 11.5px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.provider-test { position: relative; z-index: 1; padding: 4px 0 0 40px; }
-.test-result { display: inline-flex; gap: 6px; align-items: center; font-size: 12px; }
-.test-result.ok { color: var(--ok); }
-.test-result.fail { color: var(--danger); }
 
 @media (max-width: 760px) {
   .kind-tiles, .kind-tiles:has(> :nth-child(5)) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -1262,16 +1241,39 @@ input[type="range"].unset::-webkit-slider-thumb { opacity: .5; }
 .settings-nav.active { background: var(--bg-active); color: var(--text-primary); font-weight: 500; }
 .settings-content { flex: 1; min-width: 0; overflow-y: auto; background: var(--bg-canvas); }
 .settings-container { height: 100%; max-width: 860px; margin: 0 auto; display: flex; flex-direction: column; padding: 32px 32px 0; }
-.settings-container.wide { max-width: 1080px; }
-.settings-head { flex: none; padding-bottom: 16px; margin-bottom: 24px; border-bottom: 1px solid var(--border-subtle); }
+.settings-container.wide { max-width: 1040px; }
+.settings-container.widest { max-width: 1120px; }
+.settings-head { flex: none; display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; padding-bottom: 16px; margin-bottom: 20px; border-bottom: 1px solid var(--border-subtle); }
 .settings-head h1 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: -0.015em; color: var(--text-primary); }
 .settings-head p { margin: 4px 0 0; font-size: 13px; color: var(--text-secondary); }
+.settings-actions { flex: none; display: flex; align-items: center; gap: 8px; }
+.head-action { height: 32px; flex: none; padding: 0 12px; border-radius: 8px; border: 1px solid var(--border-default); background: transparent; font-size: 13px; font-weight: 500; }
+.head-action.primary-action { border-color: transparent; background: var(--text-primary); color: var(--bg-canvas); }
+.head-action.primary-action:hover:not(:disabled) { background: var(--text-primary); opacity: .9; }
 .settings-body { flex: 1; min-height: 0; }
-/* The management screens inside the narrower settings column. */
-.settings .master-detail { grid-template-columns: 240px minmax(0, 1fr); }
-.settings .pane.left { padding: 0 12px 24px 0; }
-.settings .pane.detail { padding: 0 0 48px 24px; }
-.settings .pane.pf-pane { padding: 0 0 0 24px; }
+/* list rows and the empty state of the management screens */
+.md-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.md-item { width: 100%; min-width: 0; padding: 8px 10px; gap: 10px; justify-content: flex-start; text-align: left; border: 0; border-radius: 8px; background: transparent; line-height: 1.4; transition: background .15s; }
+.md-item.selected, .md-item.selected:hover:not(:disabled) { background: var(--bg-active); color: var(--text-primary); }
+.md-icon { width: 28px; height: 28px; flex: none; display: grid; place-items: center; border-radius: 6px; background: color-mix(in srgb, var(--bg-muted) 70%, transparent); color: var(--text-secondary); }
+.md-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.md-title, .md-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.md-title { font-size: 13px; font-weight: 500; }
+.md-sub { font-size: 11.5px; color: var(--text-tertiary); }
+.md-off { width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--border-strong); }
+.md-none { padding: 8px 10px; font-size: 12.5px; color: var(--text-tertiary); }
+.md-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 64px 16px; text-align: center; }
+.md-empty-icon { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 10px; background: var(--bg-muted); color: var(--text-secondary); }
+.md-empty h2 { font-size: 14px; font-weight: 600; }
+.md-empty p { max-width: 320px; margin: 0 0 8px; font-size: 13px; line-height: 1.65; color: var(--text-secondary); text-wrap: balance; }
+.md-empty code { overflow-wrap: anywhere; }
+
+/* The management screens inside the settings column. */
+.settings .master-detail { grid-template-columns: 260px minmax(0, 1fr); column-gap: 24px; }
+.settings .pane.left { padding: 0 20px 24px 0; }
+.settings .pane.detail { padding: 0 0 48px; }
+.settings .pane.detail h2 { line-height: 24px; }
+.settings .pane.pf-pane { padding: 0; }
 .settings .pf-footer { margin: 8px 0 0; padding: 0; }
 .setting-rows > * + * { border-top: 1px solid var(--border-subtle); }
 .setting-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px 24px; padding: 20px 0; }
@@ -1289,7 +1291,7 @@ input[type="range"].unset::-webkit-slider-thumb { opacity: .5; }
 @media (max-width: 900px) {
   .settings-rail { width: 200px; }
   .settings-container { padding: 24px 20px 0; }
-  .settings .master-detail { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 2fr) minmax(0, 3fr); }
+  .settings .master-detail { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 2fr) minmax(0, 3fr); row-gap: 0; }
   .settings .pane.left { padding: 0 0 12px; border-right: 0; border-bottom: 1px solid var(--border-subtle); }
   .settings .pane.detail, .settings .pane.pf-pane { padding-left: 0; padding-right: 0; padding-top: 16px; }
 }
