@@ -180,13 +180,26 @@ fn gemini_openrouter_qwen_and_custom_extra_body() {
     let req = ChatRequest::new(vec![Message::user("test")])
         .with_server_tools(full_server_tools());
 
-    // Gemini
+    // Gemini (server tools only -> no toolConfig needed)
     let gem = GeminiClient::new("gk", "gemini-2.5-flash").with_vendor(Vendor::Gemini);
     let (_, g_body) = gem.build_request_json(&req).unwrap();
     let g_tools = g_body["tools"].as_array().unwrap();
     assert!(g_tools.contains(&json!({ "google_search": {} })));
     assert!(g_tools.contains(&json!({ "url_context": {} })));
     assert!(g_tools.contains(&json!({ "code_execution": {} })));
+    assert!(g_body.get("toolConfig").is_none());
+
+    // Gemini (server tools + custom function declarations -> must enable includeServerSideToolInvocations)
+    let req_with_fn = req.clone().with_tools(vec![crate::ToolDefinition {
+        name: "current_time".into(),
+        description: "Get current time".into(),
+        parameters: json!({ "type": "object", "properties": {} }),
+    }]);
+    let (_, g_body_fn) = gem.build_request_json(&req_with_fn).unwrap();
+    assert_eq!(
+        g_body_fn["toolConfig"]["includeServerSideToolInvocations"],
+        true
+    );
 
     // OpenRouter (both protocols)
     let or_chat = OpenAIClient::new("ork", "openai/gpt-4o").with_vendor(Vendor::Openrouter);

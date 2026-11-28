@@ -224,11 +224,23 @@ impl GeminiClient {
             tools.push(json!({ "code_execution": {} }));
         }
 
-        let tool_config = if !request.tools.is_empty() {
+        let has_server_tools = enable_search
+            || request.server_tools.as_ref().is_some_and(|st| st.url_context)
+            || request
+                .server_tools
+                .as_ref()
+                .is_some_and(|st| st.code_execution);
+
+        let mut tool_config = if !request.tools.is_empty() {
             request.tool_choice.as_ref().map(encode_gemini_tool_choice)
         } else {
             None
         };
+        if !request.tools.is_empty() && has_server_tools {
+            tool_config
+                .get_or_insert_with(GeminiToolConfig::default)
+                .include_server_side_tool_invocations = Some(true);
+        }
 
         let thinking_config = request
             .thinking
@@ -448,10 +460,13 @@ struct GeminiFunctionDeclaration {
     parameters: Value,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct GeminiToolConfig {
-    function_calling_config: GeminiFunctionCallingConfig,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    function_calling_config: Option<GeminiFunctionCallingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    include_server_side_tool_invocations: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -626,7 +641,8 @@ fn encode_gemini_tool_choice(choice: &ToolChoice) -> GeminiToolConfig {
         },
     };
     GeminiToolConfig {
-        function_calling_config,
+        function_calling_config: Some(function_calling_config),
+        include_server_side_tool_invocations: None,
     }
 }
 
