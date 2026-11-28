@@ -4,16 +4,17 @@ import { ArrowUpIcon, BrainIcon, CubeIcon, ShieldIcon, StopIcon, XIcon } from ".
 import { APPROVAL_POLICIES, REASONING_LEVELS, type ApprovalPolicy, type CommandInfo, type InvokedSkill, type ReasoningEffort } from "../../api/types";
 import { popover, snappy, tap } from "../../lib/motion";
 import { Select } from "../ui";
+import { useT, type Key, type T } from "../../i18n";
 
 /** Japanese descriptions for the builtin commands (the server's text is English). */
-const COMMAND_TEXT: Record<string, string> = {
-  compact: "会話履歴を要約してコンテキストを整理",
-  approval: "ツール実行の承認ポリシーを切り替え",
-  stop: "実行中の応答をすぐに停止",
-  export: "この会話を JSON で書き出し",
-  new: "新しい会話を開始（プリセットを指定可）",
+const COMMAND_TEXT: Record<string, Key> = {
+  compact: "cmd.desc.compact",
+  approval: "cmd.desc.approval",
+  stop: "cmd.desc.stop",
+  export: "cmd.desc.export",
+  new: "cmd.desc.new",
 };
-const describe = (c: CommandInfo) => (c.kind === "command" ? (COMMAND_TEXT[c.name] ?? c.description) : c.description);
+const describe = (t: T, c: CommandInfo) => (c.kind === "command" && COMMAND_TEXT[c.name] ? t(COMMAND_TEXT[c.name]) : c.description);
 
 /** Commands that run as soon as they are picked (no argument to type). */
 const INSTANT = new Set(["compact", "stop", "export"]);
@@ -61,6 +62,7 @@ export function Composer({
   autoFocus?: boolean;
 }) {
   const [text, setText] = useState("");
+  const t = useT();
   const [chips, setChips] = useState<CommandInfo[]>([]);
   const [sel, setSel] = useState(0);
   const [dismissed, setDismissed] = useState<string | null>(null);
@@ -140,7 +142,7 @@ export function Composer({
         <span className="slash-name">/{c.name}</span>
         <span className="slash-hint">{c.argument_hint ?? ""}</span>
         <span className="slash-desc">
-          {describe(c)}
+          {describe(t, c)}
           {c.subagent && <span className="pill tiny">Subagent</span>}
         </span>
       </li>
@@ -155,19 +157,19 @@ export function Composer({
           <motion.div className="slash-menu" role="listbox" variants={popover("bottom")} initial="hidden" animate="shown" exit="exit" style={{ transformOrigin: "bottom center" }}>
             {groups.skills.length > 0 && (
               <>
-                <div className="slash-group">スキル</div>
+                <div className="slash-group">{t("composer.skills")}</div>
                 <ul>{groups.skills.map(option)}</ul>
               </>
             )}
             {groups.system.length > 0 && (
               <>
-                <div className="slash-group">システムコマンド</div>
+                <div className="slash-group">{t("composer.commands")}</div>
                 <ul>{groups.system.map(option)}</ul>
               </>
             )}
             <div className="slash-foot">
               <kbd>↑</kbd>
-              <kbd>↓</kbd> 選択 <kbd>Enter</kbd> 決定 <kbd>Esc</kbd> 閉じる
+              <kbd>↓</kbd> {t("composer.navigate")} <kbd>Enter</kbd> {t("composer.choose")} <kbd>Esc</kbd> {t("composer.dismiss")}
             </div>
           </motion.div>
         )}
@@ -178,12 +180,12 @@ export function Composer({
               <span key={c.name} className="attached-chip" title={c.description}>
                 /{c.name}
                 {c.subagent && <span className="pill tiny">Subagent</span>}
-                <button aria-label={`${c.name} を外す`} onClick={() => setChips(chips.filter((x) => x.name !== c.name))}>
+                <button aria-label={t("composer.removeChip", { name: c.name })} onClick={() => setChips(chips.filter((x) => x.name !== c.name))}>
                   <XIcon size={12} stroke={2} />
                 </button>
               </span>
             ))}
-            {chips[chips.length - 1]?.argument_hint && <span className="muted">本文に {chips[chips.length - 1].argument_hint} を書いてください</span>}
+            {chips[chips.length - 1]?.argument_hint && <span className="muted">{t("composer.argHint", { hint: chips[chips.length - 1].argument_hint ?? "" })}</span>}
           </div>
         )}
         <textarea
@@ -192,7 +194,7 @@ export function Composer({
           autoFocus={autoFocus}
           value={text}
           disabled={disabled}
-          placeholder={placeholder ?? (busy ? "続けて入力するとキューに追記されます…" : "メッセージを入力 — / でスキル・コマンド")}
+          placeholder={placeholder ?? (busy ? t("composer.placeholderBusy") : t("composer.placeholder"))}
           onChange={(e) => {
             setText(e.target.value);
             setSel(0);
@@ -217,31 +219,33 @@ export function Composer({
             <Select<ReasoningEffort>
               variant="pill"
               placement="top"
-              ariaLabel="思考レベル"
-              title="思考レベル（次の応答から反映されます）"
+              ariaLabel={t("reasoning.label")}
+              title={t("reasoning.pillHint")}
               icon={<BrainIcon size={13} />}
               value={reasoning}
               onChange={onReasoning}
               renderValue={(o) => {
                 const eff = REASONING_LEVELS.find((l) => l.value === effectiveReasoning);
-                return reasoning === "default" && eff && eff.value !== "default" ? `思考: 既定（${eff.label}）` : `思考: ${o?.label ?? ""}`;
+                return reasoning === "default" && eff && eff.value !== "default"
+                  ? t("reasoning.pillDefault", { level: t(eff.label) })
+                  : t("reasoning.pill", { level: o ? String(o.label) : "" });
               }}
-              options={REASONING_LEVELS.map((l) => ({ value: l.value, label: l.label, description: l.description }))}
+              options={REASONING_LEVELS.map((l) => ({ value: l.value, label: t(l.label), description: t(l.description) }))}
             />
           )}
           {policy && onPolicy && (
             <Select<ApprovalPolicy>
               variant="pill"
               placement="top"
-              ariaLabel="ツール実行の承認ポリシー"
+              ariaLabel={t("policy.label")}
               icon={<ShieldIcon size={13} />}
               value={policy}
               onChange={onPolicy}
-              options={APPROVAL_POLICIES.map((p) => ({ value: p.value, label: p.label, description: p.hint }))}
+              options={APPROVAL_POLICIES.map((p) => ({ value: p.value, label: t(p.label), description: t(p.hint) }))}
             />
           )}
           {model && (
-            <span className="dock-model" title="この会話のモデル">
+            <span className="dock-model" title={t("composer.model")}>
               <CubeIcon size={13} />
               <span className="mono">{model}</span>
             </span>
@@ -250,11 +254,11 @@ export function Composer({
           <AnimatePresence mode="popLayout" initial={false}>
             {busy && canSend ? (
               <motion.span key="queue" className="dock-actions" initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.96 }} transition={snappy}>
-                <button className="btn ghost" disabled={sending} onClick={() => submit("interrupt")} title="いまの応答を止めて、このメッセージを送ります">
-                  中断して送信
+                <button className="btn ghost" disabled={sending} onClick={() => submit("interrupt")} title={t("composer.interruptHint")}>
+                  {t("composer.interrupt")}
                 </button>
-                <motion.button whileTap={tap} className="btn primary" disabled={sending} onClick={() => submit("send")} title="応答の区切りでこのメッセージを追加します">
-                  キューに追記
+                <motion.button whileTap={tap} className="btn primary" disabled={sending} onClick={() => submit("send")} title={t("composer.queueHint")}>
+                  {t("composer.queue")}
                 </motion.button>
               </motion.span>
             ) : busy && onStop ? (
@@ -262,8 +266,8 @@ export function Composer({
                 key="stop"
                 whileTap={{ scale: 0.92 }}
                 className="btn send stop"
-                title="停止"
-                aria-label="停止"
+                title={t("composer.stop")}
+                aria-label={t("composer.stop")}
                 onClick={onStop}
                 initial={{ opacity: 0, scale: 0.6, rotate: -45 }}
                 animate={{ opacity: 1, scale: 1, rotate: 0 }}
@@ -279,7 +283,7 @@ export function Composer({
                 className="btn send"
                 disabled={!canSend}
                 onClick={() => submit("send")}
-                aria-label="送信"
+                aria-label={t("composer.send")}
                 initial={{ opacity: 0, scale: 0.6 }}
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.6 }}

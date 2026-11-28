@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { CheckIcon, ChevronDown } from "../../brand/Icons";
 import { Popover, type Placement } from "./Popover";
+import { useT } from "../../i18n";
 
 export interface Option<T extends string> {
   value: T;
@@ -20,7 +21,7 @@ export function Select<T extends string>({
   value,
   options,
   onChange,
-  placeholder = "選択してください",
+  placeholder,
   placement = "auto",
   align = "start",
   variant = "field",
@@ -49,6 +50,7 @@ export function Select<T extends string>({
   title?: string;
 }) {
   const [open, setOpen] = useState(false);
+  const t = useT();
   const [active, setActive] = useState(0);
   const trigger = useRef<HTMLButtonElement>(null);
   const list = useRef<HTMLDivElement>(null);
@@ -119,7 +121,7 @@ export function Select<T extends string>({
       >
         {icon && <span className="select-icon">{icon}</span>}
         {current?.icon && !icon && <span className="select-icon">{current.icon}</span>}
-        <span className={`select-value ${current ? "" : "placeholder"}`}>{renderValue ? renderValue(current) : current?.label ?? placeholder}</span>
+        <span className={`select-value ${current ? "" : "placeholder"}`}>{renderValue ? renderValue(current) : current?.label ?? placeholder ?? t("select.placeholder")}</span>
         <span className="select-chev">
           <ChevronDown size={14} />
         </span>

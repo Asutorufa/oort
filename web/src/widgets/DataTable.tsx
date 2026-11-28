@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import type { WidgetProps } from "./protocol";
 import { Done, WidgetCard } from "./WidgetCard";
+import { useT } from "../i18n";
 
 interface Column {
   key: string;
@@ -20,6 +21,7 @@ export function DataTable({ id, spec, response, actions, disabled }: WidgetProps
   const rows = (spec.data.rows as Row[]) ?? [];
   const rowActions = (spec.data.row_actions as RowAction[]) ?? [];
   const [query, setQuery] = useState("");
+  const t = useT();
   const [sort, setSort] = useState<{ key: string; dir: 1 | -1 } | null>(null);
   const [sent, setSent] = useState<{ action: string; index: number } | null>(null);
   const answered = (response?.payload as { action?: string; row_index?: number } | undefined) ?? (sent ? { action: sent.action, row_index: sent.index } : undefined);
@@ -47,9 +49,9 @@ export function DataTable({ id, spec, response, actions, disabled }: WidgetProps
     <WidgetCard
       title={spec.title}
       kind="table"
-      status={answered && <Done>{rowActions.find((a) => a.id === answered.action)?.label ?? answered.action}（{(answered.row_index ?? 0) + 1} 行目）</Done>}
+      status={answered && <Done>{t("widget.rowChosen", { action: rowActions.find((a) => a.id === answered.action)?.label ?? answered.action ?? "", row: (answered.row_index ?? 0) + 1 })}</Done>}
     >
-      {rows.length > 5 && <input className="table-filter" placeholder="絞り込み…" value={query} onChange={(e) => setQuery(e.target.value)} />}
+      {rows.length > 5 && <input className="table-filter" placeholder={t("widget.filter")} value={query} onChange={(e) => setQuery(e.target.value)} />}
       <div className="table-wrap">
         <table className="data-table">
           <thead>
@@ -83,7 +85,7 @@ export function DataTable({ id, spec, response, actions, disabled }: WidgetProps
             {shown.length === 0 && (
               <tr>
                 <td colSpan={columns.length + 1} className="muted">
-                  該当する行がありません
+                  {t("widget.noRows")}
                 </td>
               </tr>
             )}

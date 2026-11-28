@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useT } from "../../i18n";
 
 /**
  * Footer of every approval: `却下` (quiet) and `承認して実行` (primary), right-aligned. A reason
@@ -16,6 +17,7 @@ export function DecisionFooter({
   onDeny: (reason: string) => Promise<void>;
 }) {
   const [withReason, setWithReason] = useState(false);
+  const t = useT();
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const act = async (f: () => Promise<void>) => {
@@ -26,7 +28,8 @@ export function DecisionFooter({
       setBusy(false);
     }
   };
-  const deny = () => act(() => onDeny(reason.trim() || "ユーザーが却下しました"));
+  // Sent to the agent: fixed text, independent of the UI language.
+  const deny = () => act(() => onDeny(reason.trim() || "The user declined."));
   const off = busy || disabled;
   if (withReason) {
     return (
@@ -34,7 +37,7 @@ export function DecisionFooter({
         <input
           autoFocus
           className="reason"
-          placeholder="却下する理由（エージェントに伝わります）"
+          placeholder={t("decision.reasonPlaceholder")}
           value={reason}
           onChange={(e) => setReason(e.target.value)}
           onKeyDown={(e) => {
@@ -43,10 +46,10 @@ export function DecisionFooter({
           }}
         />
         <button className="btn ghost" disabled={off} onClick={() => setWithReason(false)}>
-          戻る
+          {t("common.back")}
         </button>
         <button className="btn" disabled={off} onClick={deny}>
-          却下する
+          {t("decision.denyConfirm")}
         </button>
       </div>
     );
@@ -54,14 +57,14 @@ export function DecisionFooter({
   return (
     <div className="decision">
       <button className="text-btn" disabled={off} onClick={() => setWithReason(true)}>
-        理由を添えて却下
+        {t("decision.withReason")}
       </button>
       <span className="spacer" />
       <button className="btn" disabled={off} onClick={deny}>
-        却下
+        {t("decision.deny")}
       </button>
       <button className="btn primary" disabled={off || !canApprove} onClick={() => act(onApprove)}>
-        承認して実行
+        {t("decision.approve")}
       </button>
     </div>
   );

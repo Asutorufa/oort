@@ -155,6 +155,12 @@ export const CubeIcon = (p: P) => (
     <path d="m4 7.5 8 4.5 8-4.5M12 12v9" />
   </Svg>
 );
+export const GlobeIcon = (p: P) => (
+  <Svg {...p}>
+    <circle cx="12" cy="12" r="8.5" />
+    <path d="M3.5 12h17M12 3.5c2.4 2.3 3.6 5.1 3.6 8.5s-1.2 6.2-3.6 8.5c-2.4-2.3-3.6-5.1-3.6-8.5S9.6 5.8 12 3.5Z" />
+  </Svg>
+);
 /** Generic marks for provider kinds (not vendor logos). */
 export const KindIcon = ({ kind, size = 18 }: { kind: string; size?: number }) => {
   switch (kind) {

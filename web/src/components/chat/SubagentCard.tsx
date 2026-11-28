@@ -2,14 +2,14 @@ import { useEffect, useState, type ReactNode } from "react";
 import type { ToolResult } from "../../api/types";
 import { AlertIcon, CheckIcon, ChevronDown, Spinner } from "../../brand/Icons";
 import type { SubagentLive } from "../../hooks/useSessionStream";
-import { fmtMs } from "../common";
 import { Collapse } from "../ui";
 import { Markdown } from "./LazyMarkdown";
+import { useI18n, type Key, type T } from "../../i18n";
 
-const PROFILE: Record<string, string> = { explorer: "探索", researcher: "リサーチ", reviewer: "レビュー" };
+const PROFILE: Record<string, Key> = { explorer: "subagent.explorer", researcher: "subagent.researcher", reviewer: "subagent.reviewer" };
 
-export function profileLabel(p: string) {
-  return PROFILE[p] ?? p.replace(/^preset:/, "");
+export function profileLabel(t: T, p: string) {
+  return PROFILE[p] ? t(PROFILE[p]) : p.replace(/^preset:/, "");
 }
 
 /** Strips the trailer `spawn_subagent` appends to its report. */
@@ -97,6 +97,7 @@ export function SubagentCard({
   onTrace?: (id: string) => void;
 }) {
   const [, tick] = useState(0);
+  const { t, fmt } = useI18n();
   const running = !result && !!live && !live.done;
   useEffect(() => {
     if (!running) return;
@@ -109,37 +110,37 @@ export function SubagentCard({
   const elapsed = live ? (running ? Date.now() : live.lastAt) - live.startedAt : null;
   const sid = subSessionId ?? live?.subSessionId;
   const firstLine = task.split("\n").find((l) => l.trim()) ?? task;
-  const doing = running ? (live?.currentTool ? `${live.currentTool.replace("__", " · ")} を実行中` : "考えています") : null;
+  const doing = running ? (live?.currentTool ? t("subagent.running", { tool: live.currentTool.replace("__", " · ") }) : t("subagent.thinking")) : null;
 
   const meta = (
     <>
-      {interrupted ? "中断" : result?.is_error ? "エラー" : doing}
+      {interrupted ? t("subagent.interrupted") : result?.is_error ? t("common.error") : doing}
       {(interrupted || result?.is_error || doing) && live ? " · " : ""}
-      {live ? `${live.turns} ターン · ${fmtMs(elapsed)}` : !result ? "待機中" : ""}
+      {live ? `${t("subagent.turns", { count: live.turns })} · ${fmt.ms(elapsed)}` : !result ? t("subagent.waiting") : ""}
     </>
   );
 
   return (
     <RowCard
       state={state}
-      title={profileLabel(profile)}
+      title={profileLabel(t, profile)}
       subject={firstLine}
       meta={meta}
       actions={
         sid && onTrace ? (
-          <button className="btn ghost tiny-btn" onClick={() => onTrace(sid)} title="実行トレースを開く">
-            トレース
+          <button className="btn ghost tiny-btn" onClick={() => onTrace(sid)} title={t("subagent.traceHint")}>
+            {t("subagent.trace")}
           </button>
         ) : undefined
       }
     >
       <div className="rowcard-section">
-        <div className="rowcard-label">タスク</div>
+        <div className="rowcard-label">{t("subagent.task")}</div>
         <div className="rowcard-task">{task}</div>
       </div>
       {report && (
         <div className="rowcard-section">
-          <div className="rowcard-label">{result?.is_error ? "エラー" : "結果"}</div>
+          <div className="rowcard-label">{result?.is_error ? t("common.error") : t("subagent.result")}</div>
           <Markdown text={report.body} />
         </div>
       )}

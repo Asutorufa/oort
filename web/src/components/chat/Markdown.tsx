@@ -7,6 +7,7 @@ import "katex/dist/katex.min.css";
 import remarkGfm from "remark-gfm";
 import { copyText } from "../common";
 import { prepareMath } from "./mathPrep";
+import { useT } from "../../i18n";
 
 interface HastNode {
   type: string;
@@ -22,6 +23,7 @@ const hastText = (n: HastNode | undefined): string =>
 /** `<pre>` with the language and a copy button (the raw text comes from the source AST). */
 function CodeBlock({ node, children, ...rest }: ComponentProps<"pre"> & { node?: HastNode }) {
   const [copied, setCopied] = useState(false);
+  const t = useT();
   const code = node?.children?.find((c) => c.tagName === "code");
   const lang = ((code?.properties?.className as string[] | undefined) ?? [])
     .find((c) => c.startsWith("language-"))
@@ -44,7 +46,7 @@ function CodeBlock({ node, children, ...rest }: ComponentProps<"pre"> & { node?:
             window.setTimeout(() => setCopied(false), 1200);
           }}
         >
-          {copied ? "コピーしました" : "コピー"}
+          {copied ? t("common.copied") : t("common.copy")}
         </button>
       </div>
       <pre {...rest}>{children}</pre>

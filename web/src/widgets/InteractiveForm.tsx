@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Checkbox, Select } from "../components/ui";
 import type { WidgetProps } from "./protocol";
 import { Done, WidgetCard } from "./WidgetCard";
+import { useT } from "../i18n";
 
 interface FieldSpec {
   name: string;
@@ -26,6 +27,7 @@ export function InteractiveForm({ id, spec, response, actions, disabled }: Widge
   const fields = (spec.data.fields as FieldSpec[]) ?? [];
   const [values, setValues] = useState<Values>(() => initial(fields));
   const [sending, setSending] = useState(false);
+  const t = useT();
   const [sent, setSent] = useState<Values | null>(null);
   const submitted = (response?.payload as Values | undefined) ?? sent;
   const shown = submitted ?? values;
@@ -46,7 +48,7 @@ export function InteractiveForm({ id, spec, response, actions, disabled }: Widge
   };
 
   return (
-    <WidgetCard title={spec.title} kind="form" status={submitted && <Done>送信済み</Done>}>
+    <WidgetCard title={spec.title} kind="form" status={submitted && <Done>{t("widget.submitted")}</Done>}>
       <form
         className={`wform ${submitted ? "locked" : ""}`}
         onSubmit={(e) => {
@@ -92,7 +94,7 @@ export function InteractiveForm({ id, spec, response, actions, disabled }: Widge
         {!submitted && (
           <div className="wactions">
             <button type="submit" className="btn primary" disabled={locked || missing.length > 0}>
-              {sending ? "送信中…" : String(spec.data.submit_label ?? "送信")}
+              {sending ? t("widget.sending") : String(spec.data.submit_label ?? t("widget.submit"))}
             </button>
           </div>
         )}

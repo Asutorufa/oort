@@ -7,6 +7,7 @@ import { Badge, Empty, ErrorBar, Modal } from "../components/common";
 import { Field, GroupToggles } from "../components/forms";
 import { navigate } from "../hooks/useHashRoute";
 import { useResource } from "../hooks/useResource";
+import { useT } from "../i18n";
 
 type Form = Required<PresetInput>;
 
@@ -41,6 +42,7 @@ const toForm = (p: Preset): Form => ({
 });
 
 export function PresetsView({ selected }: { selected: string | null }) {
+  const t = useT();
   const list = useResource(presets.list);
   const providerList = useResource(providers.list);
   const serverList = useResource(mcpServers.list);
@@ -101,9 +103,9 @@ export function PresetsView({ selected }: { selected: string | null }) {
     <div className="master-detail">
       <aside className="pane left">
         <div className="pane-head">
-          <h3>プリセット</h3>
+          <h3>{t("presets.title")}</h3>
           <button className="primary small" onClick={() => navigate("presets", "new")}>
-            ＋ 追加
+            ＋ {t("common.add")}
           </button>
         </div>
         <ErrorBar error={list.error} />
@@ -116,24 +118,24 @@ export function PresetsView({ selected }: { selected: string | null }) {
                 <button
                   className="small primary"
                   disabled={starting === p.id}
-                  title="このプリセットで新しい会話を始める"
+                  title={t("presets.startHint")}
                   onClick={(e) => {
                     e.stopPropagation();
                     start(p);
                   }}
                 >
-                  {starting === p.id ? "…" : "会話を始める"}
+                  {starting === p.id ? "…" : t("presets.start")}
                 </button>
               </div>
               <div className="muted ellipsis">{p.description || p.system_prompt}</div>
               <div className="row muted">
                 <span>{providerName(p.provider_id)}</span>
-                <span className="mono">/ {p.model || "既定モデル"}</span>
+                <span className="mono">/ {p.model || t("presets.defaultModel")}</span>
                 {p.mcp_server_ids.length > 0 && <span>· {p.mcp_server_ids.map(serverName).join(", ")}</span>}
               </div>
             </li>
           ))}
-          {list.data?.length === 0 && <li className="muted">まだありません</li>}
+          {list.data?.length === 0 && <li className="muted">{t("presets.noneYet")}</li>}
         </ul>
       </aside>
 
@@ -142,7 +144,7 @@ export function PresetsView({ selected }: { selected: string | null }) {
         {current || isNew ? (
           <div className="form">
             <div className="row">
-              <h2>{current ? current.name : "新しいプリセット"}</h2>
+              <h2>{current ? current.name : t("presets.new")}</h2>
               <span className="spacer" />
               {current && (
                 <button className="primary" disabled={starting === current.id} onClick={() => start(current)}>
@@ -151,36 +153,36 @@ export function PresetsView({ selected }: { selected: string | null }) {
               )}
             </div>
             <div className="grid2">
-              <Field label="名前">
+              <Field label={t("presets.name")}>
                 <input value={form.name} onChange={(e) => set("name", e.target.value)} />
               </Field>
-              <Field label="説明">
+              <Field label={t("presets.description")}>
                 <input value={form.description} onChange={(e) => set("description", e.target.value)} />
               </Field>
             </div>
             <div className="grid2">
-              <Field label="プロバイダ">
+              <Field label={t("presets.provider")}>
                 <Select
-                  ariaLabel="プロバイダ"
-                  placeholder="プロバイダを選択"
+                  ariaLabel={t("presets.provider")}
+                  placeholder={t("presets.pickProvider")}
                   value={form.provider_id || null}
                   onChange={(v) => set("provider_id", v)}
                   options={(providerList.data ?? []).map((p) => ({
                     value: p.id,
                     label: p.name,
-                    description: `${p.default_model || "既定モデルなし"}${p.is_enabled ? "" : " · 無効"}`,
+                    description: `${p.default_model || t("presets.noDefaultModel")}${p.is_enabled ? "" : ` · ${t("common.disabled")}`}`,
                     icon: <KindIcon kind={p.kind} size={15} />,
                   }))}
                 />
               </Field>
-              <Field label="モデル" hint="空欄ならプロバイダの既定モデルを使います">
-                <input value={form.model} placeholder={provider?.default_model || "モデル名"} onChange={(e) => set("model", e.target.value)} />
+              <Field label={t("presets.model")} hint={t("presets.modelHint")}>
+                <input value={form.model} placeholder={provider?.default_model || t("presets.modelName")} onChange={(e) => set("model", e.target.value)} />
               </Field>
             </div>
-            <Field label="システムプロンプト">
+            <Field label={t("presets.systemPrompt")}>
               <textarea rows={6} value={form.system_prompt} onChange={(e) => set("system_prompt", e.target.value)} />
             </Field>
-            <Field label="MCP サーバー">
+            <Field label={t("presets.mcp")}>
               <div className="checks">
                 {(serverList.data ?? []).map((s) => (
                   <Checkbox
@@ -191,15 +193,15 @@ export function PresetsView({ selected }: { selected: string | null }) {
                     }
                     label={
                       <>
-                        <span className="mono">{s.name}</span> {!s.is_enabled && <Badge>無効</Badge>}
+                        <span className="mono">{s.name}</span> {!s.is_enabled && <Badge>{t("common.disabled")}</Badge>}
                       </>
                     }
                   />
                 ))}
-                {serverList.data?.length === 0 && <span className="muted">登録されていません</span>}
+                {serverList.data?.length === 0 && <span className="muted">{t("presets.noMcp")}</span>}
               </div>
             </Field>
-            <Field label="組み込みツール" hint="会話の開始時に固定されます。Local Workspace はフォルダの指定が必要です">
+            <Field label={t("presets.groups")} hint={t("presets.groupsHint")}>
               <GroupToggles
                 value={form.builtin_groups}
                 onChange={(v) => set("builtin_groups", v)}
@@ -207,7 +209,7 @@ export function PresetsView({ selected }: { selected: string | null }) {
                 onWorkspaceRoot={(v) => set("workspace_root", v)}
               />
             </Field>
-            <Field label="Skills" hint="名前と説明だけが会話の最初に固定され、本文は必要なときに読み込まれます">
+            <Field label={t("presets.skills")} hint={t("presets.skillsHint")}>
               <div className="checks">
                 {(skillList.data ?? []).map((k) => (
                   <Checkbox
@@ -221,63 +223,63 @@ export function PresetsView({ selected }: { selected: string | null }) {
                     }
                   />
                 ))}
-                {skillList.data?.length === 0 && <span className="muted">Skill がありません</span>}
+                {skillList.data?.length === 0 && <span className="muted">{t("skills.none")}</span>}
               </div>
             </Field>
             <div className="grid2">
-              <Field label="承認ポリシー">
+              <Field label={t("policy.label")}>
                 <Select<ApprovalPolicy>
-                  ariaLabel="承認ポリシー"
+                  ariaLabel={t("policy.label")}
                   value={form.approval_policy}
                   onChange={(v) => set("approval_policy", v)}
-                  options={APPROVAL_POLICIES.map((p) => ({ value: p.value, label: p.label, description: p.hint }))}
+                  options={APPROVAL_POLICIES.map((p) => ({ value: p.value, label: t(p.label), description: t(p.hint) }))}
                 />
               </Field>
-              <Field label="思考レベル" hint={REASONING_LEVELS.find((l) => l.value === form.reasoning_effort)?.description}>
+              <Field label={t("reasoning.label")} hint={t(REASONING_LEVELS.find((l) => l.value === form.reasoning_effort)?.description ?? "reasoning.default.desc")}>
                 <SegmentedControl<ReasoningEffort>
                   full
                   size="sm"
-                  ariaLabel="思考レベル"
+                  ariaLabel={t("reasoning.label")}
                   value={form.reasoning_effort}
                   onChange={(v) => set("reasoning_effort", v)}
-                  options={REASONING_LEVELS.map((l) => ({ value: l.value, label: l.label, title: l.description }))}
+                  options={REASONING_LEVELS.map((l) => ({ value: l.value, label: t(l.label), title: t(l.description) }))}
                 />
               </Field>
             </div>
             <Switch
               checked={form.builtin_tools}
               onChange={(v) => set("builtin_tools", v)}
-              label="旧ツール（互換用）"
-              description="get_time・list_dir・read_file・write_note。組み込みツールを 1 つでも選ぶと使われません"
+              label={t("presets.legacy")}
+              description={t("presets.legacyHint")}
             />
             <div className="row actions">
               <button className="primary" onClick={save}>
-                {current ? "変更を保存" : "作成"}
+                {current ? t("common.save") : t("common.create")}
               </button>
               <span className="spacer" />
               {current && (
                 <button className="danger-outline" onClick={() => setConfirm(true)}>
-                  削除
+                  {t("common.delete")}
                 </button>
               )}
             </div>
           </div>
         ) : (
-          <Empty>プリセットは、プロバイダ・モデル・システムプロンプト・ツール・承認ポリシーの組み合わせです。選ぶか、追加してください。</Empty>
+          <Empty>{t("presets.intro")}</Empty>
         )}
       </main>
       {confirm && current && (
-        <Modal title="プリセットを削除しますか？" onClose={() => setConfirm(false)}>
+        <Modal title={t("presets.deleteTitle")} onClose={() => setConfirm(false)}>
           <p>
-            <b>{current.name}</b> を削除します。このプリセットから始めた会話には影響しません。
+            {t("presets.deleteBody", { name: current.name })}
           </p>
           <div className="row">
             <span className="spacer" />
             <button className="btn" onClick={() => setConfirm(false)}>
-              やめる
+              {t("common.keep")}
             </button>
             <button className="btn danger" onClick={remove}>
-              削除する
+              {t("common.deleteConfirm")}
             </button>
           </div>
         </Modal>

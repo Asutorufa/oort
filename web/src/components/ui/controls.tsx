@@ -2,6 +2,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { collapse, snappy, spring } from "../../lib/motion";
 import { Popover } from "./Popover";
+import { useT } from "../../i18n";
 
 // ----- SegmentedControl ----------------------------------------------------------------------
 
@@ -194,7 +195,7 @@ export function Combobox({
   options,
   placeholder,
   className = "",
-  emptyText = "一致する候補はありません",
+  emptyText,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -205,6 +206,7 @@ export function Combobox({
 }) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
+  const t = useT();
   const wrap = useRef<HTMLDivElement>(null);
   const q = value.trim().toLowerCase();
   const exact = options.some((o) => o.toLowerCase() === q);
@@ -237,7 +239,7 @@ export function Combobox({
       />
       <Popover anchor={wrap} open={open && options.length > 0} onClose={() => setOpen(false)} align="stretch" className="menu-pop">
         <div className="menu-list" role="listbox">
-          {shown.length === 0 && <div className="menu-empty">{emptyText}</div>}
+          {shown.length === 0 && <div className="menu-empty">{emptyText ?? t("combobox.empty")}</div>}
           {shown.map((o, i) => (
             <div
               key={o}

@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { errorText, mcpServers, oauth as oauthApi } from "../api";
 import type { McpServer, McpServerInput, McpTest, McpToolInfo, McpTransport, ToolCallResult } from "../api/types";
-import { Badge, Empty, ErrorBar, fmtMs, JsonView, Modal } from "../components/common";
+import { Badge, Empty, ErrorBar, JsonView, Modal } from "../components/common";
 import { Field, JsonEditor, KeyValueEditor, LinesEditor, SecretInput, Toggle } from "../components/forms";
 import { SegmentedControl, Select } from "../components/ui";
 import { navigate } from "../hooks/useHashRoute";
 import { useResource } from "../hooks/useResource";
+import { useI18n, useT } from "../i18n";
 
 interface Form {
   name: string;
@@ -94,23 +95,24 @@ function skeleton(schema: unknown): unknown {
 }
 
 function ToolList({ tools, selected, onPick }: { tools: McpToolInfo[]; selected: string | null; onPick: (t: McpToolInfo) => void }) {
+  const t = useT();
   return (
     <ul className="tool-list">
-      {tools.map((t) => (
-        <li key={t.name} className={t.name === selected ? "selected" : ""}>
+      {tools.map((x) => (
+        <li key={x.name} className={x.name === selected ? "selected" : ""}>
           <div className="row">
-            <b className="mono">{t.name}</b>
-            {t.read_only ? <Badge tone="ok">readOnly</Badge> : <Badge tone="warn">side effects</Badge>}
-            {t.title && <span className="muted">{t.title}</span>}
+            <b className="mono">{x.name}</b>
+            {x.read_only ? <Badge tone="ok">{t("mcp.readOnly")}</Badge> : <Badge tone="warn">{t("mcp.sideEffects")}</Badge>}
+            {x.title && <span className="muted">{x.title}</span>}
             <span className="spacer" />
-            <button className="small" onClick={() => onPick(t)}>
-              Try
+            <button className="btn small" onClick={() => onPick(x)}>
+              {t("mcp.try")}
             </button>
           </div>
-          {t.description && <div className="muted">{t.description}</div>}
+          {x.description && <div className="muted">{x.description}</div>}
           <details>
-            <summary className="muted">input schema</summary>
-            <JsonView value={t.input_schema} />
+            <summary className="muted">{t("mcp.schema")}</summary>
+            <JsonView value={x.input_schema} />
           </details>
         </li>
       ))}
@@ -125,7 +127,8 @@ function Playground({ server, tools, tool, onTool }: { server: McpServer; tools:
   const [result, setResult] = useState<ToolCallResult | null>(null);
   const [running, setRunning] = useState(false);
   const [raw, setRaw] = useState(false);
-  const info = tools.find((t) => t.name === tool);
+  const info = tools.find((x) => x.name === tool);
+  const { t, fmt } = useI18n();
 
   useEffect(() => {
     if (!info) return;
@@ -149,25 +152,25 @@ function Playground({ server, tools, tool, onTool }: { server: McpServer; tools:
 
   return (
     <section className="playground">
-      <h3>ツールを試す</h3>
-      <div className="muted">LLM を通さずに、このサーバーのツールを直接実行します。</div>
+      <h3>{t("mcp.playground")}</h3>
+      <div className="muted">{t("mcp.playgroundHint")}</div>
       <div className="grid2">
-        <Field label="ツール">
+        <Field label={t("mcp.tool")}>
           <Select
-            ariaLabel="ツール"
-            placeholder={tools.length ? "ツールを選択" : "先に「接続テスト & ツール検出」を実行してください"}
+            ariaLabel={t("mcp.tool")}
+            placeholder={tools.length ? t("mcp.pickTool") : t("mcp.discoverFirst")}
             disabled={tools.length === 0}
             value={tool ?? null}
             onChange={onTool}
             menuClassName="mono-menu"
-            options={tools.map((t) => ({ value: t.name, label: t.name, description: t.read_only ? undefined : "副作用があります" }))}
+            options={tools.map((x) => ({ value: x.name, label: x.name, description: x.read_only ? undefined : t("mcp.hasSideEffects") }))}
           />
         </Field>
-        <Field label="タイムアウト（ms）">
-          <input value={timeout} placeholder="サーバーの既定" inputMode="numeric" onChange={(e) => setTimeoutMs(e.target.value.replace(/\D/g, ""))} />
+        <Field label={t("mcp.timeout")}>
+          <input value={timeout} placeholder={t("mcp.serverDefault")} inputMode="numeric" onChange={(e) => setTimeoutMs(e.target.value.replace(/\D/g, ""))} />
         </Field>
       </div>
-      <Field label="引数（JSON）">
+      <Field label={t("mcp.args")}>
         <JsonEditor
           value={args}
           rows={8}
@@ -179,26 +182,26 @@ function Playground({ server, tools, tool, onTool }: { server: McpServer; tools:
       </Field>
       <div className="row">
         <button className="primary" disabled={!tool || parsed === undefined || running || !server.is_enabled} onClick={run}>
-          {running ? "実行中…" : "実行"}
+          {running ? t("mcp.running") : t("mcp.run")}
         </button>
-        {!server.is_enabled && <span className="muted">このサーバーは無効です</span>}
-        {info && !info.read_only && <Badge tone="warn">副作用のあるツールです</Badge>}
+        {!server.is_enabled && <span className="muted">{t("mcp.serverDisabled")}</span>}
+        {info && !info.read_only && <Badge tone="warn">{t("mcp.toolSideEffects")}</Badge>}
       </div>
       {result && (
         <div className="tool-output">
           <div className="row">
             <Badge tone={!result.ok ? "error" : result.is_error ? "warn" : "ok"}>
-              {!result.ok ? "呼び出し失敗" : result.is_error ? "ツールがエラーを返しました" : "成功"}
+              {!result.ok ? t("mcp.callFailed") : result.is_error ? t("mcp.toolError") : t("mcp.success")}
             </Badge>
-            <span className="muted">{fmtMs(result.latency_ms)}</span>
+            <span className="muted">{fmt.ms(result.latency_ms)}</span>
             <span className="spacer" />
             <SegmentedControl
               size="sm"
-              ariaLabel="表示形式"
+              ariaLabel={t("mcp.format")}
               value={raw ? "raw" : "text"}
               onChange={(v) => setRaw(v === "raw")}
               options={[
-                { value: "text", label: "テキスト" },
+                { value: "text", label: t("mcp.text") },
                 { value: "raw", label: "JSON" },
               ]}
             />
@@ -207,7 +210,7 @@ function Playground({ server, tools, tool, onTool }: { server: McpServer; tools:
           {raw ? (
             <JsonView value={{ content: result.content, structuredContent: result.structured_content, isError: result.is_error }} />
           ) : (
-            result.text != null && <pre>{result.text || "（空）"}</pre>
+            result.text != null && <pre>{result.text || t("common.empty")}</pre>
           )}
         </div>
       )}
@@ -219,6 +222,7 @@ function Playground({ server, tools, tool, onTool }: { server: McpServer; tools:
 function OAuthPanel({ server, onChanged }: { server: McpServer; onChanged: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { t, fmt } = useI18n();
   const o = server.oauth;
 
   useEffect(() => {
@@ -227,7 +231,7 @@ function OAuthPanel({ server, onChanged }: { server: McpServer; onChanged: () =>
       const d = e.data as { type?: string; server_id?: string; ok?: boolean; error?: string };
       if (d?.type !== "oort-oauth" || d.server_id !== server.id) return;
       setBusy(false);
-      if (!d.ok) setError(d.error ?? "認証に失敗しました");
+      if (!d.ok) setError(d.error ?? t("mcp.authFailed"));
       onChanged();
     };
     window.addEventListener("message", onMsg);
@@ -258,40 +262,40 @@ function OAuthPanel({ server, onChanged }: { server: McpServer; onChanged: () =>
     }
   };
   const connected = o?.status === "connected";
-  const expires = o?.expires_at ? new Date(o.expires_at).toLocaleString() : null;
+  const expires = o?.expires_at ? fmt.date(new Date(o.expires_at).getTime()) : null;
 
   return (
     <section className="oauth-panel">
       <div className="row">
         <span className={`dot ${connected ? "ok" : o ? "warn" : "muted"}`} />
-        <b>{connected ? "接続済み" : o ? "再認証が必要です" : "未接続"}</b>
+        <b>{connected ? t("mcp.connected") : o ? t("mcp.reauthNeeded") : t("mcp.notConnected")}</b>
         {o && <span className="muted">{o.issuer}</span>}
         <span className="spacer" />
         {connected ? (
           <>
             <button className="btn small" disabled={busy} onClick={authorize}>
-              再認証
+              {t("mcp.reauth")}
             </button>
             <button className="btn small danger-outline" onClick={disconnect}>
-              切断
+              {t("mcp.disconnect")}
             </button>
           </>
         ) : (
           <button className="btn primary small" disabled={busy || !server.is_enabled} onClick={authorize}>
-            {busy ? "ブラウザで認証中…" : "OAuth で認証"}
+            {busy ? t("mcp.authorizing") : t("mcp.authorize")}
           </button>
         )}
       </div>
       {o && (
         <div className="oauth-meta">
           <span>
-            スコープ: <code>{o.scopes || "（指定なし）"}</code>
+            {t("mcp.scopes")} <code>{o.scopes || t("mcp.noScopes")}</code>
           </span>
-          {expires && <span>期限: {expires}</span>}
+          {expires && <span>{t("mcp.expires", { when: expires })}</span>}
           <span>
-            クライアント: {o.client_source === "dcr" ? "動的登録" : "手動設定"} {o.client_id}
+            {t("mcp.client", { how: o.client_source === "dcr" ? t("mcp.dcr") : t("mcp.manual"), id: o.client_id ?? "" })}
           </span>
-          {o.has_refresh_token && <span>自動更新: 有効</span>}
+          {o.has_refresh_token && <span>{t("mcp.autoRefresh")}</span>}
         </div>
       )}
       {error && <div className="error-text">{error}</div>}
@@ -308,6 +312,7 @@ export function McpView({ selected }: { selected: string | null }) {
   const [test, setTest] = useState<McpTest | "running" | null>(null);
   const [tool, setTool] = useState<string | null>(null);
   const [confirm, setConfirm] = useState(false);
+  const { t, fmt } = useI18n();
 
   useEffect(() => {
     setForm(current ? toForm(current) : blank);
@@ -357,7 +362,7 @@ export function McpView({ selected }: { selected: string | null }) {
     <div className="master-detail">
       <aside className="pane left">
         <div className="pane-head">
-          <h3>ツール & MCP</h3>
+          <h3>{t("mcp.title")}</h3>
           <button className="primary small" onClick={() => navigate("mcp", "new")}>
             + Add
           </button>
@@ -369,13 +374,13 @@ export function McpView({ selected }: { selected: string | null }) {
               <div className="row">
                 <b className="mono">{m.name}</b>
                 <span className="spacer" />
-                {!m.is_enabled && <Badge>disabled</Badge>}
+                {!m.is_enabled && <Badge>{t("common.disabled")}</Badge>}
                 <Badge tone="info">{m.transport === "stdio" ? "stdio" : "http"}</Badge>
               </div>
               <div className="muted mono ellipsis">{m.transport === "stdio" ? [m.command, ...m.args].join(" ") : m.url}</div>
             </li>
           ))}
-          {list.data?.length === 0 && <li className="muted">none yet</li>}
+          {list.data?.length === 0 && <li className="muted">{t("mcp.noneYet")}</li>}
         </ul>
       </aside>
 
@@ -383,20 +388,20 @@ export function McpView({ selected }: { selected: string | null }) {
         {current || isNew ? (
           <>
             <div className="form">
-              <h2>{current ? current.name : "MCP サーバーを追加"}</h2>
+              <h2>{current ? current.name : t("mcp.add")}</h2>
               <ErrorBar error={error} onDismiss={() => setError(null)} />
               <div className="grid2">
-                <Field label="名前" hint="新しい会話でのツール名の接頭辞になります（name__tool）">
+                <Field label={t("mcp.name")} hint={t("mcp.nameHint")}>
                   <input value={form.name} placeholder="[A-Za-z0-9_-]" onChange={(e) => set("name", e.target.value)} />
                 </Field>
-                <Field label="接続方式">
+                <Field label={t("mcp.transport")}>
                   <SegmentedControl<McpTransport>
-                    ariaLabel="接続方式"
+                    ariaLabel={t("mcp.transport")}
                     value={form.transport}
                     onChange={(v) => set("transport", v)}
                     options={[
                       { value: "streamable_http", label: "HTTP", title: "Streamable HTTP" },
-                      { value: "stdio", label: "stdio", title: "ローカルのプロセスを起動" },
+                      { value: "stdio", label: "stdio", title: t("mcp.stdioHint") },
                     ]}
                   />
                 </Field>
@@ -407,34 +412,34 @@ export function McpView({ selected }: { selected: string | null }) {
                     <input value={form.url} placeholder="https://example.com/mcp" onChange={(e) => set("url", e.target.value)} />
                   </Field>
                   <KeyValueEditor
-                    title="ヘッダー"
-                    hint="値に env:NAME を使えます。認証系の値はマスク表示され、変更しなければ保持されます"
-                    addLabel="ヘッダーを追加"
-                    emptyText="ヘッダーはありません"
-                    keyPlaceholder="ヘッダー名"
+                    title={t("mcp.headers")}
+                    hint={t("mcp.headersHint")}
+                    addLabel={t("mcp.addHeader")}
+                    emptyText={t("mcp.noHeaders")}
+                    keyPlaceholder={t("mcp.headerName")}
                     value={form.headers}
                     onChange={(v) => set("headers", v)}
                   />
                   <div className="grid2">
-                    <Field label="認証">
+                    <Field label={t("mcp.auth")}>
                       <Select<Form["auth"]>
-                        ariaLabel="認証"
+                        ariaLabel={t("mcp.auth")}
                         value={form.auth}
                         onChange={(v) => set("auth", v)}
                         options={[
-                          { value: "none", label: "なし" },
-                          { value: "bearer", label: "Bearer トークン", description: "Authorization ヘッダーで送ります" },
-                          { value: "oauth", label: "OAuth 2.0", description: "ブラウザでサインインして接続します" },
+                          { value: "none", label: t("common.none") },
+                          { value: "bearer", label: t("mcp.bearer"), description: t("mcp.bearerHint") },
+                          { value: "oauth", label: "OAuth 2.0", description: t("mcp.oauthHint") },
                         ]}
                       />
                     </Field>
                     {form.auth === "oauth" && (
-                      <Field label="スコープ（任意）" hint="空ならサーバーが示すスコープを使います">
+                      <Field label={t("mcp.scopesOptional")} hint={t("mcp.scopesHint")}>
                         <input value={form.oauthScopes} placeholder="mcp:tools" onChange={(e) => set("oauthScopes", e.target.value)} />
                       </Field>
                     )}
                     {form.auth === "bearer" && (
-                      <Field label="トークン">
+                      <Field label={t("mcp.token")}>
                         <SecretInput
                           current={current?.auth.type === "bearer" ? current.auth.token : null}
                           source={current?.auth.type === "bearer" ? current.auth.token_source : "none"}
@@ -446,12 +451,12 @@ export function McpView({ selected }: { selected: string | null }) {
                   </div>
                   {form.auth === "oauth" && (
                     <details className="advanced">
-                      <summary>クライアントを手動で指定（動的登録に対応していないサーバー向け）</summary>
+                      <summary>{t("mcp.manualClient")}</summary>
                       <div className="grid2">
                         <Field label="client_id">
-                          <input value={form.oauthClientId} placeholder="空なら動的クライアント登録" onChange={(e) => set("oauthClientId", e.target.value)} />
+                          <input value={form.oauthClientId} placeholder={t("mcp.clientIdPlaceholder")} onChange={(e) => set("oauthClientId", e.target.value)} />
                         </Field>
-                        <Field label="client_secret" hint="env:NAME も可。マスク表示のまま保存すると保持されます">
+                        <Field label="client_secret" hint={t("mcp.clientSecretHint")}>
                           <input type="password" value={form.oauthClientSecret} onChange={(e) => set("oauthClientSecret", e.target.value)} />
                         </Field>
                       </div>
@@ -460,53 +465,53 @@ export function McpView({ selected }: { selected: string | null }) {
                 </>
               ) : (
                 <>
-                  <Field label="コマンド">
+                  <Field label={t("mcp.command")}>
                     <input className="mono" value={form.command} placeholder="npx" onChange={(e) => set("command", e.target.value)} />
                   </Field>
-                  <Field label="引数" hint="1 行に 1 つ">
+                  <Field label={t("mcp.argsLines")} hint={t("mcp.argsLinesHint")}>
                     <LinesEditor value={form.args} onChange={(v) => set("args", v)} placeholder={"-y\n@modelcontextprotocol/server-filesystem\n."} />
                   </Field>
                   <KeyValueEditor
-                    title="環境変数"
-                    hint="値に env:NAME を使うとサーバーの環境変数から読み込みます"
-                    addLabel="変数を追加"
-                    emptyText="環境変数はありません"
+                    title={t("mcp.env")}
+                    hint={t("mcp.envHint")}
+                    addLabel={t("mcp.addVar")}
+                    emptyText={t("mcp.noVars")}
                     keyPlaceholder="VAR"
                     value={form.env}
                     onChange={(v) => set("env", v)}
                   />
                 </>
               )}
-              <Toggle checked={form.is_enabled} onChange={(v) => set("is_enabled", v)} label="有効" />
+              <Toggle checked={form.is_enabled} onChange={(v) => set("is_enabled", v)} label={t("mcp.enabled")} />
               <div className="row actions">
                 <button className="primary" onClick={save}>
-                  {current ? "保存" : "作成"}
+                  {current ? t("common.save") : t("common.create")}
                 </button>
-                <button onClick={discover} disabled={test === "running"} title="未保存の変更も含めて接続します">
-                  {test === "running" ? "接続中…" : "接続テスト & ツール検出"}
+                <button onClick={discover} disabled={test === "running"} title={t("mcp.testHint")}>
+                  {test === "running" ? t("mcp.connecting") : t("mcp.discover")}
                 </button>
                 <span className="spacer" />
                 {current && (
                   <button className="danger-outline" onClick={() => setConfirm(true)}>
-                    Delete
+                    {t("common.delete")}
                   </button>
                 )}
               </div>
-              <div className="muted">変更は新しい会話から反映されます。既存の会話は作成時のツール一覧をそのまま使います。</div>
+              <div className="muted">{t("mcp.changesNote")}</div>
             </div>
 
             {current?.auth.type === "oauth" && <OAuthPanel server={current} onChanged={list.reload} />}
             {test && test !== "running" && (
               <section className="discovery">
                 <div className="row">
-                  <Badge tone={test.ok ? "ok" : "error"}>{test.ok ? "connected" : "failed"}</Badge>
-                  <span className="muted">{fmtMs(test.latency_ms)}</span>
+                  <Badge tone={test.ok ? "ok" : "error"}>{test.ok ? t("mcp.statusConnected") : t("mcp.statusFailed")}</Badge>
+                  <span className="muted">{fmt.ms(test.latency_ms)}</span>
                   {test.server_info && (
                     <span className="muted mono">
-                      {test.server_info.name} {test.server_info.version} · protocol {test.server_info.protocol_version}
+                      {test.server_info.name} {test.server_info.version} · {t("mcp.protocol", { v: test.server_info.protocol_version ?? "" })}
                     </span>
                   )}
-                  {test.ok && <span className="muted">· {test.tools.length} tools</span>}
+                  {test.ok && <span className="muted">· {t("mcp.toolCount", { count: test.tools.length })}</span>}
                 </div>
                 {test.error && <pre className="error-text">{test.error}</pre>}
                 {test.server_info?.instructions && <div className="muted">{test.server_info.instructions}</div>}
@@ -516,19 +521,19 @@ export function McpView({ selected }: { selected: string | null }) {
             {current && <Playground server={current} tools={tools} tool={tool} onTool={setTool} />}
           </>
         ) : (
-          <Empty>MCP サーバーを選ぶか、追加してください。</Empty>
+          <Empty>{t("mcp.empty")}</Empty>
         )}
       </main>
       {confirm && current && (
-        <Modal title="Delete MCP server?" onClose={() => setConfirm(false)}>
-          <p>
-            <b>{current.name}</b> will be deleted. Existing sessions keep their frozen tools; calls to this server's tools will return errors.
-          </p>
+        <Modal title={t("mcp.deleteTitle")} onClose={() => setConfirm(false)}>
+          <p>{t("mcp.deleteBody", { name: current.name })}</p>
           <div className="row">
             <span className="spacer" />
-            <button onClick={() => setConfirm(false)}>Cancel</button>
-            <button className="danger" onClick={remove}>
-              Delete
+            <button className="btn" onClick={() => setConfirm(false)}>
+              {t("common.keep")}
+            </button>
+            <button className="btn danger" onClick={remove}>
+              {t("common.deleteConfirm")}
             </button>
           </div>
         </Modal>

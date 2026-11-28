@@ -3,6 +3,7 @@ import type { PlanStep, RawMessage } from "../../api/types";
 import { AnimatePresence, motion } from "motion/react";
 import { CheckIcon, ChevronDown } from "../../brand/Icons";
 import { popover } from "../../lib/motion";
+import { useT } from "../../i18n";
 
 /** The latest `update_plan` steps in the history (the plan survives reloads this way). */
 export function lastPlan(raw: RawMessage[]): PlanStep[] | null {
@@ -30,6 +31,7 @@ function StepIcon({ status }: { status: PlanStep["status"] }) {
  */
 export function PlanPill({ steps }: { steps: PlanStep[] }) {
   const [open, setOpen] = useState(false);
+  const t = useT();
   const box = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
@@ -48,9 +50,9 @@ export function PlanPill({ steps }: { steps: PlanStep[] }) {
   const finished = done === steps.length;
   return (
     <div className="plan" ref={box}>
-      <button className={`plan-pill ${open ? "open" : ""}`} onClick={() => setOpen(!open)} aria-expanded={open} title="計画を表示">
+      <button className={`plan-pill ${open ? "open" : ""}`} onClick={() => setOpen(!open)} aria-expanded={open} title={t("plan.show")}>
         {finished ? <CheckIcon size={12} stroke={2.2} /> : <span className="plan-live" />}
-        <span className="plan-title">計画</span>
+        <span className="plan-title">{t("plan.title")}</span>
         <span className="plan-count">
           {done}/{steps.length}
         </span>
@@ -59,9 +61,9 @@ export function PlanPill({ steps }: { steps: PlanStep[] }) {
       </button>
       <AnimatePresence>
       {open && (
-        <motion.div className="plan-pop" role="dialog" aria-label="計画" variants={popover("top")} initial="hidden" animate="shown" exit="exit" style={{ transformOrigin: "top left" }}>
+        <motion.div className="plan-pop" role="dialog" aria-label={t("plan.title")} variants={popover("top")} initial="hidden" animate="shown" exit="exit" style={{ transformOrigin: "top left" }}>
           <div className="plan-pop-head">
-            <span>計画</span>
+            <span>{t("plan.title")}</span>
             <span className="plan-bar">
               <span style={{ width: `${(done / Math.max(steps.length, 1)) * 100}%` }} />
             </span>

@@ -1,3 +1,4 @@
+import type { Key } from "../i18n";
 // Mirrors crates/server/src/{api,config_api}.rs and the serde shapes of oort-agent / oort-llm.
 
 // ----- IR ------------------------------------------------------------------------------------
@@ -62,11 +63,11 @@ export type Phase =
 export type SessionStatus = "idle" | "running" | "needs_approval" | "halted";
 export type ApprovalPolicy = "auto_all" | "auto_readonly" | "always_ask";
 
-export const APPROVAL_POLICIES: { value: ApprovalPolicy; label: string; hint: string }[] = [
-  { value: "auto_all", label: "すべて自動実行", hint: "どのツールも確認せずに実行します" },
-  { value: "auto_readonly", label: "読み取りのみ自動", hint: "読み取りだけ自動。書き込みや実行は確認します" },
-  { value: "always_ask", label: "毎回確認", hint: "ツールを使うたびに確認します" },
-];
+export const APPROVAL_POLICIES: { value: ApprovalPolicy; label: Key; hint: Key }[] = (["auto_all", "auto_readonly", "always_ask"] as const).map((v) => ({
+  value: v,
+  label: `policy.${v}` as const,
+  hint: `policy.${v}.desc` as const,
+}));
 
 export interface SessionMeta {
   id: string;
@@ -111,13 +112,11 @@ export interface LoopError {
 /** Provider-neutral thinking level (`default`: leave it to the provider / model). */
 export type ReasoningEffort = "default" | "off" | "low" | "medium" | "high";
 
-export const REASONING_LEVELS: { value: ReasoningEffort; label: string; description: string }[] = [
-  { value: "default", label: "既定", description: "モデル・プロバイダの標準に任せます" },
-  { value: "off", label: "オフ", description: "考えずにすぐ答えます（対応モデルのみ）" },
-  { value: "low", label: "低", description: "軽く考えます。速さ重視" },
-  { value: "medium", label: "標準", description: "多くの作業に向いたバランス" },
-  { value: "high", label: "高", description: "じっくり考えます。難しい問題向け" },
-];
+export const REASONING_LEVELS: { value: ReasoningEffort; label: Key; description: Key }[] = (["default", "off", "low", "medium", "high"] as const).map((v) => ({
+  value: v,
+  label: `reasoning.${v}` as const,
+  description: `reasoning.${v}.desc` as const,
+}));
 
 export interface ProviderDefaults {
   reasoning_effort: ReasoningEffort;
@@ -542,11 +541,12 @@ export interface Memory {
   score?: number;
 }
 
-export const BUILTIN_GROUPS: { id: string; label: string; hint: string }[] = [
-  { id: "self_config", label: "Self-Config", hint: "Skill の保存・MCP サーバーの登録（常に確認）" },
-  { id: "core_ux", label: "Core UX", hint: "計画の表示・あなたへの質問・カード" },
-  { id: "memory", label: "Memory", hint: "会話をまたいで覚える・思い出す" },
-  { id: "utilities", label: "Utilities", hint: "現在時刻・Web ページの取得" },
-  { id: "subagent", label: "Subagent", hint: "調査を読み取り専用のサブエージェントに任せる" },
-  { id: "workspace", label: "Local Workspace", hint: "指定フォルダのファイル読み書き・コマンド実行" },
+/** Builtin tool groups; labels and hints are `groups.<id>` / `groups.<id>.hint` in the dictionaries. */
+export const BUILTIN_GROUPS: { id: "self_config" | "core_ux" | "memory" | "utilities" | "subagent" | "workspace" }[] = [
+  { id: "self_config" },
+  { id: "core_ux" },
+  { id: "memory" },
+  { id: "utilities" },
+  { id: "subagent" },
+  { id: "workspace" },
 ];

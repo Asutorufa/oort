@@ -8,13 +8,16 @@
 :root {
   --radius: 10px;
   --radius-lg: 12px;
-  --font: "Inter", "Hiragino Sans", "Noto Sans JP", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Hiragino Sans", "Noto Sans JP", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
   --mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
   font: 14px/1.6 var(--font);
   color: var(--text-primary);
   background: var(--bg-canvas);
   -webkit-font-smoothing: antialiased;
 }
+/* CJK glyphs follow <html lang> (set by the i18n provider). */
+:root:lang(ja) { --font: "Inter", "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Yu Gothic UI", "Meiryo", ui-sans-serif, system-ui, sans-serif; }
+:root:lang(ko) { --font: "Inter", "Apple SD Gothic Neo", "Pretendard", "Noto Sans KR", "Malgun Gothic", ui-sans-serif, system-ui, sans-serif; word-break: keep-all; }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg-canvas); }
 pre, code, .mono, kbd { font-family: var(--mono); }
@@ -672,6 +675,7 @@ input[type="range"].unset::-webkit-slider-thumb { opacity: .5; }
 /* ===== provider workbench ===== */
 .pf-pane { padding: 28px 32px 0; }
 .pf { max-width: 700px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; padding-bottom: 0; }
+.pf-footer { box-shadow: 0 -10px 16px -14px rgba(0, 0, 0, .12); }
 .pf-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .pf-head h2 { font-size: 20px; font-weight: 600; letter-spacing: .005em; }
 .pf-head p { margin: 4px 0 0; font-size: 13px; color: var(--text-muted); }
@@ -758,6 +762,10 @@ input[type="range"].unset::-webkit-slider-thumb { opacity: .5; }
 .nav.active, .conv.active { background: transparent; }
 .nav-highlight { position: absolute; inset: 0; border-radius: 8px; background: var(--bg-selected); z-index: 0; }
 .nav > :not(.nav-highlight), .conv > :not(.nav-highlight):not(.menu) { position: relative; z-index: 1; }
-.util-row .theme-seg { flex: 1; min-width: 0; padding: 2px; }
-.util-row .theme-seg button { padding: 3px 6px; min-width: 0; }
-.util-row .sidebar.collapsed .util-row .theme-seg { flex-direction: column; }
+.util-row .theme-seg { flex: none; padding: 2px; }
+.util-row .theme-seg button { padding: 4px 9px; min-width: 0; }
+.util-row .theme-seg .label { display: none; }
+.util-row { gap: 4px; }
+.util-row .lang-btn { margin-left: auto; }
+.util-row .theme-seg .swatch { display: inline-block; width: 9px; height: 9px; border-radius: 50%; flex: none; box-shadow: 0 0 0 1px var(--border-subtle); }
+.sidebar.collapsed .util-row .theme-seg { flex-direction: column; }

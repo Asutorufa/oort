@@ -12,7 +12,8 @@ import {
   type ReasoningEffort,
 } from "../api/types";
 import { AlertIcon, CheckIcon, ChevronDown, KindIcon, PlusIcon, RefreshIcon, Spinner, TrashIcon } from "../brand/Icons";
-import { Empty, ErrorBar, fmtMs, Modal } from "../components/common";
+import { Empty, ErrorBar, Modal } from "../components/common";
+import { useI18n, useT } from "../i18n";
 import { KeyValueEditor, SecretInput } from "../components/forms";
 import { Checkbox, Collapse, Combobox, SegmentedControl, Switch } from "../components/ui";
 import { navigate } from "../hooks/useHashRoute";
@@ -61,25 +62,37 @@ interface KindInfo {
   value: ProviderKind;
   name: string;
   sub: string;
-  base: string;
+  /** Placeholder of the base URL (a default URL, or required / unused). */
+  base: { default: string } | "required" | "unused";
   model: string;
   env: string;
-  /** Base URL is required. */
-  needsBase?: boolean;
 }
 
 const KINDS: KindInfo[] = [
-  { value: "openai", name: "OpenAI", sub: "Responses API", base: "https://api.openai.com/v1（既定）", model: "例: gpt-5.1", env: "OPENAI_API_KEY" },
-  { value: "anthropic", name: "Anthropic", sub: "Messages API", base: "https://api.anthropic.com（既定）", model: "例: claude-sonnet-4-5", env: "ANTHROPIC_API_KEY" },
-  { value: "gemini", name: "Gemini", sub: "Google AI Studio", base: "https://generativelanguage.googleapis.com/v1beta（既定）", model: "例: gemini-2.5-flash", env: "GEMINI_API_KEY" },
-  { value: "openai_compatible", name: "OpenAI 互換", sub: "Chat Completions / ローカル LLM", base: "必須（例: http://localhost:11434/v1）", model: "例: llama3.1:8b", env: "LOCAL_API_KEY", needsBase: true },
+  { value: "openai", name: "OpenAI", sub: "Responses API", base: { default: "https://api.openai.com/v1" }, model: "gpt-5.1", env: "OPENAI_API_KEY" },
+  { value: "anthropic", name: "Anthropic", sub: "Messages API", base: { default: "https://api.anthropic.com" }, model: "claude-sonnet-4-5", env: "ANTHROPIC_API_KEY" },
+  { value: "gemini", name: "Gemini", sub: "Google AI Studio", base: { default: "https://generativelanguage.googleapis.com/v1beta" }, model: "gemini-2.5-flash", env: "GEMINI_API_KEY" },
+  { value: "openai_compatible", name: "", sub: "", base: "required", model: "llama3.1:8b", env: "LOCAL_API_KEY" },
 ];
-const MOCK: KindInfo = { value: "mock", name: "Mock", sub: "オフライン", base: "使いません", model: "mock", env: "API_KEY" };
-const kindInfo = (k: ProviderKind) => KINDS.find((x) => x.value === k) ?? MOCK;
+const MOCK: KindInfo = { value: "mock", name: "Mock", sub: "", base: "unused", model: "mock", env: "API_KEY" };
+
+/** Display texts of a kind in the UI language (vendor and API names stay as they are). */
+function useKindInfo() {
+  const t = useT();
+  return (k: ProviderKind): KindInfo & { basePlaceholder: string } => {
+    const i = KINDS.find((x) => x.value === k) ?? MOCK;
+    const name = k === "openai_compatible" ? t("prov.kind.openai_compatible") : i.name;
+    const sub = k === "openai_compatible" ? t("prov.sub.openai_compatible") : k === "mock" ? t("prov.sub.mock") : i.sub;
+    const basePlaceholder =
+      i.base === "required" ? t("prov.baseRequired") : i.base === "unused" ? t("prov.baseUnused") : t("prov.baseDefault", { url: i.base.default });
+    return { ...i, name, sub, basePlaceholder };
+  };
+}
 
 const OUTPUT_PRESETS = [4096, 8192, 16384, 32768, 65536];
 const CONTEXT_PRESETS = [32_000, 128_000, 200_000, 1_000_000];
-const fmtTokens = (n: number) => (n >= 1_000_000 ? `${n / 1_000_000}M` : n >= 1000 ? `${Math.round(n / 1024) === n / 1024 ? n / 1024 : Math.round(n / 1000)}k` : String(n));
+const fmtTokens = (n: number) =>
+  n >= 1_000_000 && n % 1_000_000 === 0 ? `${n / 1_000_000}M` : n % 1024 === 0 ? `${n / 1024}k` : n % 1000 === 0 ? `${n / 1000}k` : String(n);
 
 // ----- small building blocks -----------------------------------------------------------------
 
@@ -147,6 +160,7 @@ function NumberField({
 }
 
 function ResultBanner({ result }: { result: ProviderTest | "running" | null }) {
+  const { t, fmt } = useI18n();
   return (
     <AnimatePresence mode="wait">
       {result && (
@@ -162,7 +176,7 @@ function ResultBanner({ result }: { result: ProviderTest | "running" | null }) {
             {result === "running" ? (
               <>
                 <Spinner />
-                <span>接続を確認しています…</span>
+                <span>{t("prov.checking")}</span>
               </>
             ) : result.ok ? (
               <>
@@ -170,15 +184,15 @@ function ResultBanner({ result }: { result: ProviderTest | "running" | null }) {
                   <CheckIcon size={15} stroke={2} />
                 </span>
                 <span className="pf-banner-main">
-                  <b>接続できました</b>
-                  <span className="tabular">{fmtMs(result.latency_ms)}</span>
+                  <b>{t("prov.connected")}</b>
+                  <span className="tabular">{fmt.ms(result.latency_ms)}</span>
                   {result.model_checked && (
                     <span>
                       · <span className="mono">{result.model_checked}</span>
-                      {result.model_found === false ? "（一覧にありません）" : result.model_found ? "（利用可能）" : ""}
+                      {result.model_found === false ? t("prov.notListed") : result.model_found ? t("prov.available") : ""}
                     </span>
                   )}
-                  {result.models.length > 0 && <span>· {result.models.length} モデル</span>}
+                  {result.models.length > 0 && <span>· {t("prov.modelCount", { count: result.models.length })}</span>}
                 </span>
               </>
             ) : (
@@ -187,8 +201,8 @@ function ResultBanner({ result }: { result: ProviderTest | "running" | null }) {
                   <AlertIcon size={15} />
                 </span>
                 <span className="pf-banner-main">
-                  <b>接続できませんでした</b>
-                  {result.latency_ms > 0 && <span className="tabular">{fmtMs(result.latency_ms)}</span>}
+                  <b>{t("prov.failed")}</b>
+                  {result.latency_ms > 0 && <span className="tabular">{fmt.ms(result.latency_ms)}</span>}
                   {result.error && <span className="pf-banner-error">{result.error}</span>}
                 </span>
               </>
@@ -202,12 +216,13 @@ function ResultBanner({ result }: { result: ProviderTest | "running" | null }) {
 
 /** Compact status line in the provider list. */
 export function TestResult({ result }: { result: ProviderTest | null | "running" }) {
+  const { t, fmt } = useI18n();
   if (!result) return null;
-  if (result === "running") return <span className="muted">確認中…</span>;
+  if (result === "running") return <span className="muted">{t("prov.listChecking")}</span>;
   return (
     <span className={`test-result ${result.ok ? "ok" : "fail"}`}>
       {result.ok ? <CheckIcon size={12} stroke={2.2} /> : <AlertIcon size={12} />}
-      {result.ok ? `接続 OK · ${fmtMs(result.latency_ms)}` : result.error ?? "失敗"}
+      {result.ok ? t("prov.listOk", { ms: fmt.ms(result.latency_ms) }) : result.error ?? t("prov.listFailed")}
     </span>
   );
 }
@@ -240,6 +255,8 @@ export function ProvidersView({ selected }: { selected: string | null }) {
 
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setForm((f) => ({ ...f, [k]: v }));
   const setD = <K extends keyof ProviderDefaults>(k: K, v: ProviderDefaults[K]) => setForm((f) => ({ ...f, defaults: { ...f.defaults, [k]: v } }));
+  const kindInfo = useKindInfo();
+  const { t, fmt } = useI18n();
   const info = kindInfo(form.kind);
 
   const runTest = async (id: string) => {
@@ -307,10 +324,10 @@ export function ProvidersView({ selected }: { selected: string | null }) {
     <div className="master-detail">
       <aside className="pane left">
         <div className="pane-head">
-          <h3>モデル設定</h3>
+          <h3>{t("prov.title")}</h3>
           <span className="spacer" />
           <motion.button whileTap={tap} className="btn small primary" onClick={() => navigate("models", "new")}>
-            <PlusIcon size={13} /> 追加
+            <PlusIcon size={13} /> {t("common.add")}
           </motion.button>
         </div>
         <ErrorBar error={list.error} />
@@ -325,19 +342,19 @@ export function ProvidersView({ selected }: { selected: string | null }) {
                 <span className="provider-text">
                   <span className="provider-name">
                     {p.name}
-                    {!p.is_enabled && <span className="pill tiny">無効</span>}
+                    {!p.is_enabled && <span className="pill tiny">{t("common.disabled")}</span>}
                   </span>
-                  <span className="provider-sub mono">{p.default_model || "既定モデルなし"}</span>
+                  <span className="provider-sub mono">{p.default_model || t("prov.noDefaultModel")}</span>
                 </span>
                 <button
                   className="btn ghost small"
-                  title="接続テスト"
+                  title={t("prov.testConnection")}
                   onClick={(e) => {
                     e.stopPropagation();
                     runTest(p.id);
                   }}
                 >
-                  テスト
+                  {t("prov.test")}
                 </button>
               </div>
               {tests[p.id] && (
@@ -355,17 +372,17 @@ export function ProvidersView({ selected }: { selected: string | null }) {
           <motion.div className="pf" key={current?.id ?? "new"} variants={enter} initial="hidden" animate="shown">
             <header className="pf-head">
               <div>
-                <h2>{current ? current.name : "プロバイダを追加"}</h2>
-                <p>{current ? `${kindInfo(current.kind).name} · ${kindInfo(current.kind).sub}` : "AI モデルの接続先と、会話で使う既定の設定を登録します"}</p>
+                <h2>{current ? current.name : t("prov.add")}</h2>
+                <p>{current ? `${kindInfo(current.kind).name} · ${kindInfo(current.kind).sub}` : t("prov.addSub")}</p>
               </div>
               <div className="pf-head-aside">
-                <span className="pf-status">{form.is_enabled ? "有効" : "無効"}</span>
+                <span className="pf-status">{form.is_enabled ? t("common.enabled") : t("common.disabled")}</span>
                 <Switch checked={form.is_enabled} onChange={(v) => set("is_enabled", v)} />
               </div>
             </header>
             <ErrorBar error={error} onDismiss={() => setError(null)} />
 
-            <div className="kind-tiles" role="radiogroup" aria-label="プロバイダの種類">
+            <div className="kind-tiles" role="radiogroup" aria-label={t("prov.kinds")}>
               {kinds.map((k) => {
                 const on = form.kind === k.value;
                 return (
@@ -377,54 +394,54 @@ export function ProvidersView({ selected }: { selected: string | null }) {
                     disabled={!!current && !on}
                     className={`kind-tile ${on ? "on" : ""}`}
                     onClick={() => !current && set("kind", k.value)}
-                    title={current && !on ? "作成後は種類を変更できません" : undefined}
+                    title={current && !on ? t("prov.kindLocked") : undefined}
                   >
                     {on && <motion.span layoutId="kind-tile-active" className="kind-tile-ring" transition={spring} />}
                     <span className="kind-tile-icon">
                       <KindIcon kind={k.value} />
                     </span>
-                    <span className="kind-tile-name">{k.name}</span>
-                    <span className="kind-tile-sub">{k.sub}</span>
+                    <span className="kind-tile-name">{kindInfo(k.value).name}</span>
+                    <span className="kind-tile-sub">{kindInfo(k.value).sub}</span>
                   </button>
                 );
               })}
             </div>
-            {current && <p className="pf-note">種類は作成後に変更できません（会話が通信形式に依存するため）。</p>}
+            {current && <p className="pf-note">{t("prov.kindLockedNote")}</p>}
 
-            <Section title="接続" description="接続先と認証情報">
+            <Section title={t("prov.connection")} description={t("prov.connectionSub")}>
               <div className="pf-grid">
                 <div className="pf-field">
-                  <Label htmlFor={ids.name}>名前</Label>
-                  <input id={ids.name} value={form.name} placeholder={`例: ${info.name}`} onChange={(e) => set("name", e.target.value)} />
+                  <Label htmlFor={ids.name}>{t("prov.name")}</Label>
+                  <input id={ids.name} value={form.name} placeholder={t("prov.example", { value: info.name })} onChange={(e) => set("name", e.target.value)} />
                 </div>
                 <div className="pf-field">
-                  <Label htmlFor={ids.base}>ベース URL</Label>
-                  <input id={ids.base} value={form.base_url} placeholder={info.base} disabled={form.kind === "mock"} onChange={(e) => set("base_url", e.target.value)} />
-                  <span className="field-hint">{info.needsBase ? "必須です" : "空欄なら既定の URL を使います"}</span>
+                  <Label htmlFor={ids.base}>{t("prov.baseUrl")}</Label>
+                  <input id={ids.base} value={form.base_url} placeholder={info.basePlaceholder} disabled={form.kind === "mock"} onChange={(e) => set("base_url", e.target.value)} />
+                  <span className="field-hint">{info.base === "required" ? t("prov.baseRequiredHint") : t("prov.baseOptionalHint")}</span>
                 </div>
               </div>
               {form.kind !== "mock" && (
                 <div className="pf-field">
-                  <Label>API キー</Label>
+                  <Label>{t("prov.apiKey")}</Label>
                   <SecretInput current={current?.api_key} source={current?.api_key_source} value={form.api_key} onChange={(v) => set("api_key", v)} envName={info.env} />
                 </div>
               )}
             </Section>
 
-            <Section title="モデル" description="新しい会話で最初に選ばれるモデル">
+            <Section title={t("prov.model")} description={t("prov.modelSub")}>
               <div className="pf-field">
                 <Label
                   htmlFor={ids.model}
                   hint={
                     <button type="button" className="btn ghost small" onClick={fetchModels} disabled={modelsState === "loading"}>
                       {modelsState === "loading" ? <Spinner size={13} /> : <RefreshIcon size={13} />}
-                      モデル一覧を取得
+                      {t("prov.fetchModels")}
                     </button>
                   }
                 >
-                  既定のモデル
+                  {t("prov.defaultModel")}
                 </Label>
-                <Combobox value={form.default_model} onChange={(v) => set("default_model", v)} options={models} placeholder={info.model} />
+                <Combobox value={form.default_model} onChange={(v) => set("default_model", v)} options={models} placeholder={t("prov.example", { value: info.model })} />
                 <AnimatePresence mode="wait" initial={false}>
                   <motion.span
                     key={typeof modelsState === "object" ? "err" : models.length ? "n" : "none"}
@@ -435,29 +452,29 @@ export function ProvidersView({ selected }: { selected: string | null }) {
                     transition={{ duration: 0.12 }}
                   >
                     {typeof modelsState === "object"
-                      ? `一覧を取得できませんでした（${modelsState.error}）。モデル名は直接入力できます。`
+                      ? t("prov.modelsError", { error: modelsState.error })
                       : models.length
-                        ? `${models.length} 個のモデルが見つかりました。入力して絞り込めます。`
-                        : "一覧を取得するか、モデル名を直接入力してください。"}
+                        ? t("prov.modelsFound", { count: models.length })
+                        : t("prov.modelsHint")}
                   </motion.span>
                 </AnimatePresence>
               </div>
             </Section>
 
-            <Section title="思考と生成" description="このプロバイダで作る会話の既定値（会話ごとに変更できます）">
+            <Section title={t("prov.generation")} description={t("prov.generationSub")}>
               <div className="pf-field">
-                <Label>思考レベル</Label>
+                <Label>{t("reasoning.label")}</Label>
                 <SegmentedControl<ReasoningEffort>
                   full
-                  ariaLabel="思考レベル"
+                  ariaLabel={t("reasoning.label")}
                   value={form.defaults.reasoning_effort}
                   onChange={(v) => setD("reasoning_effort", v)}
-                  options={REASONING_LEVELS.map((l) => ({ value: l.value, label: l.label, title: l.description }))}
+                  options={REASONING_LEVELS.map((l) => ({ value: l.value, label: t(l.label), title: t(l.description) }))}
                 />
                 <AnimatePresence mode="wait" initial={false}>
                   <motion.span key={level.value} className="field-hint" initial={{ opacity: 0, y: -2 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.12 }}>
-                    {level.description}
-                    {level.value !== "default" && "。対応していないモデルでは無視されることがあります。"}
+                    {t(level.description)}
+                    {level.value !== "default" && ` · ${t("prov.reasoningIgnored")}`}
                   </motion.span>
                 </AnimatePresence>
               </div>
@@ -467,10 +484,10 @@ export function ProvidersView({ selected }: { selected: string | null }) {
                   htmlFor={ids.temp}
                   hint={
                     <span className="pf-temp-value">
-                      <span className="tabular">{temp == null ? "既定" : temp.toFixed(2)}</span>
+                      <span className="tabular">{temp == null ? t("prov.default") : fmt.number(temp, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                       {temp != null && (
                         <button type="button" className="text-btn" onClick={() => setD("temperature", null)}>
-                          リセット
+                          {t("common.reset")}
                         </button>
                       )}
                     </span>
@@ -489,18 +506,18 @@ export function ProvidersView({ selected }: { selected: string | null }) {
                   value={temp ?? 1}
                   onChange={(e) => setD("temperature", Number(e.target.value))}
                 />
-                <span className="field-hint">低いほど安定、高いほど多様な応答になります。思考を使う推論モデルでは送信しません。</span>
+                <span className="field-hint">{t("prov.temperatureHint")}</span>
               </div>
 
               <div className="pf-grid">
                 <div className="pf-field">
-                  <Label>最大出力トークン</Label>
-                  <NumberField value={form.defaults.max_output_tokens} onChange={(v) => setD("max_output_tokens", v)} placeholder="既定（4,096）" presets={OUTPUT_PRESETS} />
+                  <Label>{t("prov.maxOutput")}</Label>
+                  <NumberField value={form.defaults.max_output_tokens} onChange={(v) => setD("max_output_tokens", v)} placeholder={t("prov.defaultValue", { n: fmt.number(4096) })} presets={OUTPUT_PRESETS} />
                 </div>
                 <div className="pf-field">
-                  <Label>コンテキスト長</Label>
-                  <NumberField value={form.defaults.context_window} onChange={(v) => setD("context_window", v)} placeholder="既定（200,000）" presets={CONTEXT_PRESETS} />
-                  <span className="field-hint">会話の自動要約はこの長さを基準に始まります</span>
+                  <Label>{t("prov.contextWindow")}</Label>
+                  <NumberField value={form.defaults.context_window} onChange={(v) => setD("context_window", v)} placeholder={t("prov.defaultValue", { n: fmt.number(200000) })} presets={CONTEXT_PRESETS} />
+                  <span className="field-hint">{t("prov.contextHint")}</span>
                 </div>
               </div>
             </Section>
@@ -508,8 +525,8 @@ export function ProvidersView({ selected }: { selected: string | null }) {
             <section className="pf-section">
               <button type="button" className="pf-disclosure" aria-expanded={advanced} onClick={() => setAdvanced(!advanced)}>
                 <div>
-                  <h3>詳細設定</h3>
-                  <p>タイムアウト・自動再試行・追加ヘッダー</p>
+                  <h3>{t("prov.advanced")}</h3>
+                  <p>{t("prov.advancedSub")}</p>
                 </div>
                 <motion.span animate={{ rotate: advanced ? 180 : 0 }} transition={spring} className="pf-disclosure-chev">
                   <ChevronDown size={16} />
@@ -519,7 +536,7 @@ export function ProvidersView({ selected }: { selected: string | null }) {
                 <div className="pf-section-body pf-advanced">
                   <div className="pf-grid">
                     <div className="pf-field">
-                      <Label htmlFor={ids.timeout}>タイムアウト</Label>
+                      <Label htmlFor={ids.timeout}>{t("prov.timeout")}</Label>
                       <div className="input-affix">
                         <input
                           id={ids.timeout}
@@ -528,15 +545,15 @@ export function ProvidersView({ selected }: { selected: string | null }) {
                           value={form.defaults.timeout_secs}
                           onChange={(e) => setD("timeout_secs", Number(e.target.value.replace(/[^\d]/g, "")) || 0)}
                         />
-                        <span className="affix-text">秒</span>
+                        <span className="affix-text">{t("prov.seconds")}</span>
                       </div>
-                      <span className="field-hint">応答が途切れてから諦めるまでの時間（5〜1800 秒）</span>
+                      <span className="field-hint">{t("prov.timeoutHint")}</span>
                     </div>
                     <div className="pf-field">
-                      <Label>自動再試行</Label>
+                      <Label>{t("prov.autoRetry")}</Label>
                       <div className="pf-inline">
                         <Switch checked={form.auto_retry.enabled} onChange={(v) => set("auto_retry", { ...form.auto_retry, enabled: v })} />
-                        <span className="muted">最大</span>
+                        <span className="muted">{t("prov.upTo")}</span>
                         <div className="input-affix narrow">
                           <input
                             inputMode="numeric"
@@ -545,19 +562,18 @@ export function ProvidersView({ selected }: { selected: string | null }) {
                             value={form.auto_retry.max_attempts}
                             onChange={(e) => set("auto_retry", { ...form.auto_retry, max_attempts: Math.min(10, Math.max(1, Number(e.target.value.replace(/[^\d]/g, "")) || 1)) })}
                           />
-                          <span className="affix-text">回</span>
+                          <span className="affix-text">{t("prov.times")}</span>
                         </div>
                       </div>
-                      <span className="field-hint">429・5xx・接続エラーで止まったとき、待ってから再試行します</span>
+                      <span className="field-hint">{t("prov.autoRetryHint")}</span>
                     </div>
                   </div>
                   <KeyValueEditor
-                    title="追加ヘッダー"
-                    hint="認証系の値はマスク表示され、変更しなければそのまま保持されます"
-                    addLabel="ヘッダーを追加"
-                    emptyText="追加ヘッダーはありません"
-                    keyPlaceholder="ヘッダー名"
-                    valuePlaceholder="値 または env:VAR"
+                    title={t("prov.headers")}
+                    hint={t("prov.headersHint")}
+                    addLabel={t("prov.addHeader")}
+                    emptyText={t("prov.noHeaders")}
+                    keyPlaceholder={t("prov.headerName")}
                     value={form.extra_headers}
                     onChange={(v) => set("extra_headers", v)}
                   />
@@ -568,11 +584,11 @@ export function ProvidersView({ selected }: { selected: string | null }) {
             {current && (
               <div className="pf-danger">
                 <div>
-                  <b>プロバイダを削除</b>
-                  <p>このプロバイダで作った会話は読めますが、続きは実行できなくなります。</p>
+                  <b>{t("prov.deleteSection")}</b>
+                  <p>{t("prov.deleteSectionBody")}</p>
                 </div>
                 <button className="btn danger-outline" onClick={() => setConfirm(true)}>
-                  <TrashIcon size={14} /> 削除
+                  <TrashIcon size={14} /> {t("common.delete")}
                 </button>
               </div>
             )}
@@ -580,38 +596,38 @@ export function ProvidersView({ selected }: { selected: string | null }) {
             <div className="pf-footer">
               <ResultBanner result={formTest} />
               <div className="pf-actions">
-                <motion.button whileTap={tap} className="btn" onClick={testForm} disabled={formTest === "running"} title="未保存の変更も含めて接続を確認します">
+                <motion.button whileTap={tap} className="btn" onClick={testForm} disabled={formTest === "running"} title={t("prov.testHint")}>
                   {formTest === "running" ? <Spinner size={13} /> : null}
-                  接続テスト
+                  {t("prov.testConnection")}
                 </motion.button>
-                <Checkbox checked={ping} onChange={setPing} label="1 トークン送って応答も確認" />
+                <Checkbox checked={ping} onChange={setPing} label={t("prov.ping")} />
                 <span className="spacer" />
                 <button className="btn ghost" onClick={() => (current ? setForm(toForm(current)) : navigate("models"))}>
-                  {current ? "変更を戻す" : "キャンセル"}
+                  {current ? t("prov.revert") : t("common.cancel")}
                 </button>
                 <motion.button whileTap={tap} className="btn primary" onClick={save} disabled={saving}>
                   {saving && <Spinner size={13} />}
-                  {current ? "変更を保存" : "作成"}
+                  {current ? t("common.save") : t("common.create")}
                 </motion.button>
               </div>
             </div>
           </motion.div>
         ) : (
-          <Empty>プロバイダを選ぶか、追加してください。API キーは env:NAME と書くとサーバーの環境変数から読み込みます。</Empty>
+          <Empty>{t("prov.empty")}</Empty>
         )}
       </main>
       {confirm && current && (
-        <Modal title="プロバイダを削除しますか？" onClose={() => setConfirm(false)}>
+        <Modal title={t("prov.deleteTitle")} onClose={() => setConfirm(false)}>
           <p>
-            <b>{current.name}</b> を削除します。このプロバイダで作った会話は読めますが、続きは実行できなくなります。
+            {t("prov.deleteBody", { name: current.name })}
           </p>
           <div className="row">
             <span className="spacer" />
             <button className="btn" onClick={() => setConfirm(false)}>
-              やめる
+              {t("common.keep")}
             </button>
             <button className="btn danger" onClick={remove}>
-              削除する
+              {t("common.deleteConfirm")}
             </button>
           </div>
         </Modal>

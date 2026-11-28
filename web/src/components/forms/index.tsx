@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { BUILTIN_GROUPS, type SecretSource } from "../../api/types";
 import { EyeIcon, EyeOffIcon, PlusIcon, TrashIcon } from "../../brand/Icons";
 import { Switch } from "../ui";
+import { useT, type Key } from "../../i18n";
 
 export function Field({ label, hint, children }: { label: string; hint?: ReactNode; children: ReactNode }) {
   return (
@@ -38,6 +39,7 @@ export function SecretInput({
   envName?: string;
 }) {
   const [shown, setShown] = useState(false);
+  const t = useT();
   const stored = current && source !== "none";
   return (
     <div className="secret">
@@ -47,19 +49,19 @@ export function SecretInput({
           autoComplete="off"
           spellCheck={false}
           value={value}
-          placeholder={stored ? `${current}（空欄のままなら変更しません）` : placeholder ?? `sk-… または env:${envName}`}
+          placeholder={stored ? t("secret.keep", { current: current ?? "" }) : placeholder ?? t("secret.placeholder", { env: envName })}
           onChange={(e) => onChange(e.target.value)}
         />
-        <button type="button" className="affix-btn" aria-label={shown ? "キーを隠す" : "キーを表示"} title={shown ? "隠す" : "表示"} onClick={() => setShown(!shown)}>
+        <button type="button" className="affix-btn" aria-label={shown ? t("secret.hide") : t("secret.show")} title={shown ? t("secret.hide") : t("secret.show")} onClick={() => setShown(!shown)}>
           {shown ? <EyeOffIcon /> : <EyeIcon />}
         </button>
       </div>
       <div className="secret-hints">
-        <button type="button" className="hint-chip" onClick={() => onChange(`env:${envName}`)} title="サーバーの環境変数から読み込みます">
+        <button type="button" className="hint-chip" onClick={() => onChange(`env:${envName}`)} title={t("secret.envHint")}>
           env:{envName}
         </button>
         <span className="field-hint">
-          {stored ? (source === "env" ? `現在: ${current}（環境変数）` : `現在: ${current}（保存済み）`) : "環境変数を参照すると、キーはサーバーの外に保存されません"}
+          {stored ? (source === "env" ? t("secret.currentEnv", { current: current ?? "" }) : t("secret.currentStored", { current: current ?? "" })) : t("secret.envAdvice")}
         </span>
       </div>
     </div>
@@ -77,12 +79,12 @@ let rowSeq = 0;
 export function KeyValueEditor({
   value,
   onChange,
-  keyPlaceholder = "名前",
-  valuePlaceholder = "値 または env:VAR",
+  keyPlaceholder,
+  valuePlaceholder,
   title,
   hint,
-  addLabel = "追加",
-  emptyText = "まだありません",
+  addLabel,
+  emptyText,
 }: {
   value: Record<string, string>;
   onChange: (v: Record<string, string>) => void;
@@ -93,6 +95,11 @@ export function KeyValueEditor({
   addLabel?: string;
   emptyText?: string;
 }) {
+  const t = useT();
+  keyPlaceholder ??= t("kv.name");
+  valuePlaceholder ??= t("kv.value");
+  addLabel ??= t("common.add");
+  emptyText ??= t("kv.empty");
   const toRows = (v: Record<string, string>): Row[] => Object.entries(v).map(([k, val]) => ({ id: ++rowSeq, k, v: val }));
   const [rows, setRows] = useState<Row[]>(() => toRows(value));
   // Resync only when the value comes from outside (not our own edit echoed back).
@@ -141,7 +148,7 @@ export function KeyValueEditor({
           >
             <input value={r.k} placeholder={keyPlaceholder} className="mono" onChange={(e) => commit(rows.map((x) => (x.id === r.id ? { ...x, k: e.target.value } : x)))} />
             <input value={r.v} placeholder={valuePlaceholder} className="mono" onChange={(e) => commit(rows.map((x) => (x.id === r.id ? { ...x, v: e.target.value } : x)))} />
-            <button type="button" className="btn ghost icon" aria-label="この行を削除" title="削除" onClick={() => commit(rows.filter((x) => x.id !== r.id))}>
+            <button type="button" className="btn ghost icon" aria-label={t("kv.removeRow")} title={t("common.delete")} onClick={() => commit(rows.filter((x) => x.id !== r.id))}>
               <TrashIcon size={14} />
             </button>
           </motion.div>
@@ -185,6 +192,7 @@ export function JsonEditor({
   onChange: (text: string, parsed: unknown | undefined) => void;
   rows?: number;
 }) {
+  const t = useT();
   let error: string | null = null;
   try {
     if (value.trim()) JSON.parse(value);
@@ -209,7 +217,7 @@ export function JsonEditor({
         }}
       />
       <div className="row">
-        <span className={error ? "field-error" : "muted"}>{error ?? "正しい JSON です"}</span>
+        <span className={error ? "field-error" : "muted"}>{error ?? t("json.valid")}</span>
         <span className="spacer" />
         <button
           className="small"
@@ -219,7 +227,7 @@ export function JsonEditor({
             onChange(JSON.stringify(parsed, null, 2), parsed);
           }}
         >
-          整形
+          {t("json.format")}
         </button>
       </div>
     </div>
@@ -257,6 +265,7 @@ export function GroupToggles({
   onWorkspaceRoot: (v: string) => void;
   compact?: boolean;
 }) {
+  const t = useT();
   const on = (id: string) => value.includes(id);
   return (
     <div className={`group-toggles ${compact ? "compact" : ""}`}>
@@ -266,11 +275,11 @@ export function GroupToggles({
             key={g.id}
             type="button"
             className={`toggle-chip ${on(g.id) ? "on" : ""}`}
-            title={g.hint}
+            title={t(`groups.${g.id}.hint` as Key)}
             aria-pressed={on(g.id)}
             onClick={() => onChange(on(g.id) ? value.filter((x) => x !== g.id) : [...value, g.id])}
           >
-            {g.label}
+            {t(`groups.${g.id}` as Key)}
           </button>
         ))}
       </div>
@@ -278,7 +287,7 @@ export function GroupToggles({
         <input
           className="mono workspace-input"
           value={workspaceRoot}
-          placeholder="/path/to/project（このフォルダの中だけを読み書きします）"
+          placeholder={t("groups.workspacePlaceholder")}
           onChange={(e) => onWorkspaceRoot(e.target.value)}
         />
       )}
