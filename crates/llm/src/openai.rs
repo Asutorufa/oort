@@ -978,12 +978,16 @@ where
                     }
 
                     if let Some(choice) = chunk.choices.into_iter().next() {
-                        if let Some(thinking) = choice
-                            .delta
-                            .reasoning_content
-                            .or(choice.delta.reasoning)
-                            .or(choice.delta.thought)
-                            && !thinking.is_empty()
+                        // Some gateways send an empty `reasoning_content` beside the
+                        // field that carries the text, so take the first non-empty one.
+                        if let Some(thinking) = [
+                            choice.delta.reasoning_content,
+                            choice.delta.reasoning,
+                            choice.delta.thought,
+                        ]
+                        .into_iter()
+                        .flatten()
+                        .find(|t| !t.is_empty())
                         {
                             st.queue.push_back(Ok(StreamEvent::ThinkingDelta(thinking)));
                         }

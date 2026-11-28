@@ -123,6 +123,9 @@ pub struct RawMessage {
     pub role: Role,
     pub content: Vec<ContentPart>,
     pub usage: Option<Usage>,
+    /// Reasoning time of the call that produced this message.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -243,6 +246,10 @@ impl SessionDetail {
                 role: m.role,
                 content: m.content.clone(),
                 usage: usage.get(seq).cloned().flatten(),
+                thinking_ms: calls
+                    .iter()
+                    .find(|s| s.seq == seq)
+                    .and_then(|s| s.thinking_ms),
             })
             .collect();
 

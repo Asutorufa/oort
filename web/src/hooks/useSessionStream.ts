@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { errorText, sessions } from "../api";
-import type { AgentEvent, Envelope, LiveTurnWire, PlanStep, SessionDetail, ToolCall } from "../api/types";
+import type { AgentEvent, ContentPart, Envelope, LiveTurnWire, PlanStep, SessionDetail, ToolCall } from "../api/types";
 
-/** Uncommitted output of the turn in progress (deltas are never part of the snapshot). */
 /** Live progress of one subagent (keyed by the parent's tool call id). */
 export interface SubagentLive {
   subSessionId: string;
@@ -16,14 +15,40 @@ export interface SubagentLive {
   done: boolean;
 }
 
+/** One LLM call of the turn in progress, until the snapshot contains its message. */
+export interface LiveStep {
+  /** Where the message will sit in `detail.raw`. */
+  seq: number;
+  thinking: string;
+  thinkingStartedAt: number | null;
+  /** Set once reasoning has ended. */
+  thinkingMs: number | null;
+  text: string;
+  /** The committed message; `null` while streaming. */
+  parts: ContentPart[] | null;
+}
+
+/** What the snapshot does not have yet (deltas are never part of it). */
 export interface Live {
   turn: number | null;
-  text: string;
-  thinking: string;
+  steps: LiveStep[];
   runningTools: ToolCall[];
 }
 
-export const EMPTY_LIVE: Live = { turn: null, text: "", thinking: "", runningTools: [] };
+export const EMPTY_LIVE: Live = { turn: null, steps: [], runningTools: [] };
+
+const seqOf = (blockId: string) => Number(blockId.split(":")[0]);
+const emptyStep = (seq: number): LiveStep => ({ seq, thinking: "", thinkingStartedAt: null, thinkingMs: null, text: "", parts: null });
+
+function updateStep(live: Live, blockId: string, update: (s: LiveStep) => LiveStep): Live {
+  const seq = seqOf(blockId);
+  const old = live.steps.find((s) => s.seq === seq);
+  const next = update(old ?? emptyStep(seq));
+  return { ...live, steps: old ? live.steps.map((s) => (s === old ? next : s)) : [...live.steps, next] };
+}
+
+/** Drops output that will never be committed; committed steps stay until the snapshot has them. */
+const committedOnly = (live: Live): Live => ({ ...live, steps: live.steps.filter((s) => s.parts) });
 
 export type ConnState = "connecting" | "open" | "reconnecting" | "closed";
 
@@ -36,12 +61,19 @@ export interface LogEntry {
 /** Client-measured tool durations (`tool_started` → `tool_finished`), kept per browser tab. */
 export type ToolTimes = Record<string, { startedAt: number; ms?: number }>;
 
-const fromWire = (l: LiveTurnWire): Live => ({
-  turn: l.turn,
-  text: l.text,
-  thinking: l.thinking,
-  runningTools: l.running_tools,
-});
+function fromWire(l: LiveTurnWire): Live {
+  const block = l.thinking_block ?? l.text_block;
+  const step: LiveStep | null = block
+    ? {
+        ...emptyStep(seqOf(block)),
+        thinking: l.thinking,
+        thinkingStartedAt: l.thinking_elapsed_ms == null ? null : Date.now() - l.thinking_elapsed_ms,
+        thinkingMs: l.thinking_ms,
+        text: l.text,
+      }
+    : null;
+  return { turn: l.turn, steps: step ? [step] : [], runningTools: l.running_tools };
+}
 
 function describe(ev: AgentEvent): string {
   switch (ev.event) {
@@ -146,13 +178,24 @@ export function useSessionStream(id: string | null, onDeleted?: () => void) {
     const apply = (ev: AgentEvent) => {
       switch (ev.event) {
         case "text_delta":
-          setLive((l) => ({ ...l, text: l.text + ev.delta }));
+          setLive((l) => updateStep(l, ev.block_id, (s) => ({ ...s, text: s.text + ev.delta })));
           return;
         case "thinking_delta":
-          setLive((l) => ({ ...l, thinking: l.thinking + ev.delta }));
+          setLive((l) =>
+            updateStep(l, ev.block_id, (s) => ({
+              ...s,
+              thinking: s.thinking + ev.delta,
+              thinkingStartedAt: s.thinkingStartedAt ?? Date.now(),
+              thinkingMs: null,
+            })),
+          );
+          return;
+        case "thinking_end":
+          setLive((l) => updateStep(l, ev.block_id, (s) => ({ ...s, thinkingMs: ev.duration_ms })));
           return;
         case "turn_started":
-          setLive({ ...EMPTY_LIVE, turn: ev.turn });
+          setLive((l) => ({ ...committedOnly(l), turn: ev.turn, runningTools: [] }));
+          scheduleRefresh();
           return;
         case "tool_started":
           recordTime(ev.call.id, () => ({ startedAt: Date.now() }));
@@ -167,13 +210,17 @@ export function useSessionStream(id: string | null, onDeleted?: () => void) {
           scheduleRefresh();
           return;
         case "assistant_message":
+          // Keep showing the step (now with its tool calls) until the snapshot catches up.
+          setLive((l) => ({ ...l, steps: l.steps.map((s) => (s.parts ? s : { ...s, parts: ev.message.content })) }));
+          scheduleRefresh();
+          return;
         case "interrupted":
-          setLive((l) => ({ ...l, text: "", thinking: "" }));
+          setLive(committedOnly);
           scheduleRefresh();
           return;
         case "completed":
         case "halted":
-          setLive(EMPTY_LIVE);
+          setLive((l) => ({ ...committedOnly(l), runningTools: [] }));
           scheduleRefresh();
           return;
         case "usage":
@@ -249,7 +296,7 @@ export function useSessionStream(id: string | null, onDeleted?: () => void) {
             return;
           case "loop_exited":
             push(env.seq, `loop exited${env.error ? `: ${env.error}` : ""}`);
-            setLive(EMPTY_LIVE);
+            setLive((l) => ({ ...committedOnly(l), runningTools: [] }));
             scheduleRefresh();
             return;
           case "session_updated":

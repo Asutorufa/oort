@@ -272,7 +272,7 @@ impl SessionStore for SqliteSessionStore {
 
     async fn list_llm_calls(&self, id: &str) -> Result<Vec<LlmCallStats>, StoreError> {
         let rows = sqlx::query(
-            "SELECT seq, turn, ttft_ms, latency_ms, usage_json, request_json FROM llm_calls \
+            "SELECT seq, turn, ttft_ms, latency_ms, thinking_ms, usage_json, request_json FROM llm_calls \
              WHERE session_id = ? ORDER BY seq",
         )
         .bind(id)
@@ -286,6 +286,7 @@ impl SessionStore for SqliteSessionStore {
                     seq: r.get::<i64, _>("seq") as usize,
                     ttft_ms: r.get::<Option<i64>, _>("ttft_ms").map(|v| v as u64),
                     latency_ms: r.get::<i64, _>("latency_ms") as u64,
+                    thinking_ms: r.get::<Option<i64>, _>("thinking_ms").map(|v| v as u64),
                     usage: from_json_opt(r.get("usage_json"), "llm_calls.usage_json")?,
                     request: from_json(r.get("request_json"), "llm_calls.request_json")?,
                 })
@@ -411,8 +412,8 @@ async fn insert_llm_call(
     stats: &LlmCallStats,
 ) -> Result<(), StoreError> {
     sqlx::query(
-        "INSERT INTO llm_calls (session_id, seq, turn, ttft_ms, latency_ms, usage_json, request_json, created_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO llm_calls (session_id, seq, turn, ttft_ms, latency_ms, usage_json, request_json, created_at, thinking_ms) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(id)
     .bind(stats.seq as i64)
@@ -422,6 +423,7 @@ async fn insert_llm_call(
     .bind(stats.usage.as_ref().map(to_json))
     .bind(to_json(&stats.request))
     .bind(now_ms())
+    .bind(stats.thinking_ms.map(|v| v as i64))
     .execute(conn)
     .await
     .map_err(classify)?;

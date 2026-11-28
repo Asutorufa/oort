@@ -484,6 +484,10 @@ impl SessionManager {
                     role: m.role,
                     content: m.content.clone(),
                     usage: stored.message_usage.get(seq).cloned().flatten(),
+                    thinking_ms: calls
+                        .iter()
+                        .find(|c| c.seq == seq)
+                        .and_then(|c| c.thinking_ms),
                 })
                 .collect(),
             compactions: state
