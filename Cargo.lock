@@ -1347,12 +1347,14 @@ name = "oort-storage"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
  "oort-agent",
  "oort-llm",
  "serde",
  "serde_json",
  "sqlx",
  "tokio",
+ "tracing",
  "uuid",
 ]
 

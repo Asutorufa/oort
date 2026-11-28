@@ -91,6 +91,7 @@ pub fn router(manager: Arc<SessionManager>, web_dist: Option<&FsPath>) -> Router
             "/skills/{id}",
             get(get_skill).put(update_skill).delete(delete_skill),
         );
+    let api = api.merge(crate::analytics_api::routes());
     let mut app = Router::new()
         .nest("/api", api)
         .with_state(manager)

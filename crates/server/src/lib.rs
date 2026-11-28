@@ -2,6 +2,7 @@
 //! configuration stores, LLM providers and tool executors (built-in + MCP), runs sessions in
 //! the background, and streams their events over SSE.
 
+pub mod analytics_api;
 pub mod api;
 pub mod approval;
 pub mod commands;
@@ -9,6 +10,7 @@ pub mod config;
 pub mod config_api;
 pub mod hub;
 pub mod manager;
+pub mod metering;
 pub mod mock_model;
 pub mod oauth;
 pub mod pool;

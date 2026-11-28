@@ -25,12 +25,14 @@ use oort_agent::{
     TracingHook,
 };
 use oort_llm::{Message, Role, ToolCall, ToolDefinition};
+use oort_storage::analytics::CallPurpose;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::api::ApiError;
 use crate::config::SessionConfig;
+use crate::metering::MeteredExecutor;
 use crate::registry::{Registry, ToolSelection, parse_groups};
 
 pub const SPAWN_SUBAGENT: &str = "spawn_subagent";
@@ -381,8 +383,15 @@ pub async fn run_subagent(
     let live = registry
         .live_executor(&selection(Some(child_runtime(sub_id.clone()))), false)
         .await?;
-    let tools = Arc::new(PinnedToolExecutor::new(&frozen_defs, live));
-    let model = registry.session_model(&cfg).await?;
+    let tools = MeteredExecutor::wrap(
+        Arc::new(PinnedToolExecutor::new(&frozen_defs, live)),
+        registry.analytics.clone(),
+        &sub_id,
+        cfg.mcp_servers.iter().map(|b| b.prefix.as_str()),
+    );
+    let model = registry
+        .session_model(&cfg, &sub_id, CallPurpose::Turn)
+        .await?;
     let defaults = registry.provider_defaults(&cfg).await;
     let thinking = Arc::new(std::sync::RwLock::new(defaults.reasoning_effort.thinking()));
     let agent = Agent::builder(model, tools)

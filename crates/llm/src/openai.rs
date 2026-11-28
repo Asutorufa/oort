@@ -683,6 +683,8 @@ struct OpenAIUsage {
     total_tokens: Option<u64>,
     prompt_tokens_details: Option<OpenAIPromptTokensDetails>,
     completion_tokens_details: Option<OpenAICompletionTokensDetails>,
+    /// DeepSeek's name for the cached part of `prompt_tokens`.
+    prompt_cache_hit_tokens: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -972,7 +974,10 @@ fn map_openai_usage(u: OpenAIUsage) -> Usage {
         output_tokens: u.completion_tokens,
         total_tokens: u.total_tokens,
         reasoning_tokens: u.completion_tokens_details.and_then(|d| d.reasoning_tokens),
-        cache_read_tokens: u.prompt_tokens_details.and_then(|d| d.cached_tokens),
+        cache_read_tokens: u
+            .prompt_tokens_details
+            .and_then(|d| d.cached_tokens)
+            .or(u.prompt_cache_hit_tokens),
         cache_creation_tokens: None,
     }
 }

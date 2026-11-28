@@ -1,7 +1,8 @@
 import { motion } from "motion/react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { analytics, BUDGET_CHANGED, type BudgetState } from "../../api/analytics";
 import { HeaderSlot } from "../../components/settings/MasterDetail";
-import { ArrowLeftIcon, LayersIcon, MemoryIcon, ModelIcon, PaletteIcon, SparkIcon, ToolIcon } from "../../brand/Icons";
+import { ArrowLeftIcon, ChartIcon, LayersIcon, MemoryIcon, ModelIcon, PaletteIcon, SparkIcon, ToolIcon } from "../../brand/Icons";
 import { href, type SettingsView } from "../../hooks/useHashRoute";
 import { useT, type Key } from "../../i18n";
 import { McpView } from "../McpView";
@@ -9,6 +10,7 @@ import { MemoriesView } from "../MemoriesView";
 import { PresetsView } from "../PresetsView";
 import { ProvidersView } from "../ProvidersView";
 import { SkillsView } from "../SkillsView";
+import { UsageView } from "../usage/UsageView";
 import { GeneralSettings } from "./GeneralSettings";
 
 interface Page {
@@ -21,7 +23,10 @@ interface Page {
 const GROUPS: { title: Key; pages: Page[] }[] = [
   {
     title: "settings.groupApp",
-    pages: [{ view: "general", label: "settings.general", description: "settings.general.desc", icon: <PaletteIcon size={16} /> }],
+    pages: [
+      { view: "general", label: "settings.general", description: "settings.general.desc", icon: <PaletteIcon size={16} /> },
+      { view: "usage", label: "usage.title", description: "usage.desc", icon: <ChartIcon size={16} /> },
+    ],
   },
   {
     title: "settings.groupAgent",
@@ -35,12 +40,30 @@ const GROUPS: { title: Key; pages: Page[] }[] = [
   },
 ];
 
+/** Where this month stands against the budget (`null` until known); only shown as a quiet dot. */
+function useBudgetState(): BudgetState | null {
+  const [state, setState] = useState<BudgetState | null>(null);
+  useEffect(() => {
+    // A failed check just leaves the dot as it was.
+    const check = () => void analytics.budget().then((b) => setState(b.status), () => {});
+    check();
+    window.addEventListener(BUDGET_CHANGED, check);
+    const timer = window.setInterval(check, 60_000);
+    return () => {
+      window.removeEventListener(BUDGET_CHANGED, check);
+      window.clearInterval(timer);
+    };
+  }, []);
+  return state;
+}
+
 /** Full-viewport settings: a navigation rail and one page. Covers the (still mounted) chat. */
 export function SettingsWorkspace({ view, id, onClose }: { view: SettingsView; id: string | null; onClose: () => void }) {
   const t = useT();
   const root = useRef<HTMLDivElement>(null);
   useEffect(() => root.current?.focus({ preventScroll: true }), []);
   const [slot, setSlot] = useState<HTMLDivElement | null>(null);
+  const budget = useBudgetState();
   const page = GROUPS.flatMap((g) => g.pages).find((p) => p.view === view)!;
 
   return (
@@ -68,6 +91,9 @@ export function SettingsWorkspace({ view, id, onClose }: { view: SettingsView; i
               <a key={p.view} href={href(p.view)} className={`settings-nav ${p.view === view ? "active" : ""}`} aria-current={p.view === view ? "page" : undefined}>
                 {p.icon}
                 <span>{t(p.label)}</span>
+                {p.view === "usage" && (budget === "warning" || budget === "exceeded") && (
+                  <i className={`u-alert is-${budget}`} role="img" aria-label={t(`usage.alert.${budget}`)} title={t(`usage.alert.${budget}`)} />
+                )}
               </a>
             ))}
           </nav>
@@ -75,7 +101,7 @@ export function SettingsWorkspace({ view, id, onClose }: { view: SettingsView; i
       </aside>
       <div className="settings-content">
         {/* List + detail pages are wider; the tool playground widest. */}
-        <div className={`settings-container ${view === "general" ? "" : view === "mcp" ? "widest" : "wide"}`}>
+        <div className={`settings-container ${view === "general" ? "" : view === "usage" ? "usage-page" : view === "mcp" ? "widest" : "wide"}`}>
           <header className="settings-head">
             <div>
               <h1>{t(page.label)}</h1>
@@ -86,6 +112,7 @@ export function SettingsWorkspace({ view, id, onClose }: { view: SettingsView; i
           <div className="settings-body">
             <HeaderSlot.Provider value={slot}>
               {view === "general" && <GeneralSettings />}
+              {view === "usage" && <UsageView />}
               {view === "models" && <ProvidersView selected={id} />}
               {view === "presets" && <PresetsView selected={id} />}
               {view === "mcp" && <McpView selected={id} />}

@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 
-export type View = "chat" | "general" | "mcp" | "skills" | "memories" | "models" | "presets";
+export type View = "chat" | "general" | "usage" | "mcp" | "skills" | "memories" | "models" | "presets";
 /** Every view but `chat` is a page of the settings workspace. */
 export type SettingsView = Exclude<View, "chat">;
-export const VIEWS: View[] = ["chat", "general", "mcp", "skills", "memories", "models", "presets"];
+export const VIEWS: View[] = ["chat", "general", "usage", "mcp", "skills", "memories", "models", "presets"];
 
 export interface Route {
   view: View;
