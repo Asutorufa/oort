@@ -14,8 +14,8 @@ export interface Option<T extends string> {
 
 /**
  * Listbox select in Oort's style: hairline trigger, frosted popover with check marks and
- * optional descriptions, ↑/↓/Home/End/Enter/Esc and type-to-jump. `variant="pill"` is the
- * compact form used in toolbars (the Composer opens upwards with `placement="top"`).
+ * optional descriptions, ↑/↓/Home/End/Enter/Esc and type-to-jump. `variant="tool"` is the
+ * borderless compact form used in toolbars (the Composer opens upwards with `placement="top"`).
  */
 export function Select<T extends string>({
   value,
@@ -39,7 +39,7 @@ export function Select<T extends string>({
   placeholder?: string;
   placement?: Placement;
   align?: "start" | "end" | "stretch";
-  variant?: "field" | "pill" | "ghost";
+  variant?: "field" | "tool" | "ghost";
   disabled?: boolean;
   ariaLabel?: string;
   /** Leading icon in the trigger. */
@@ -104,7 +104,7 @@ export function Select<T extends string>({
       <button
         ref={trigger}
         type="button"
-        className={`select-trigger ${variant} ${open ? "open" : ""} ${className}`}
+        className={`select-trigger ${variant === "field" ? "" : variant} ${open ? "open" : ""} ${className}`}
         disabled={disabled}
         aria-haspopup="listbox"
         aria-expanded={open}
@@ -123,7 +123,7 @@ export function Select<T extends string>({
         {current?.icon && !icon && <span className="select-icon">{current.icon}</span>}
         <span className={`select-value ${current ? "" : "placeholder"}`}>{renderValue ? renderValue(current) : current?.label ?? placeholder ?? t("select.placeholder")}</span>
         <span className="select-chev">
-          <ChevronDown size={14} />
+          <ChevronDown size={variant === "tool" ? 12 : 14} />
         </span>
       </button>
       <Popover anchor={trigger} open={open} onClose={() => setOpen(false)} placement={placement} align={align} className={`menu-pop ${menuClassName}`}>

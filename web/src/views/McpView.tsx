@@ -362,7 +362,7 @@ export function McpView({ selected }: { selected: string | null }) {
     <div className="master-detail">
       <aside className="pane left">
         <div className="pane-head">
-          <h3>{t("mcp.title")}</h3>
+          <span className="spacer" />
           <button className="primary small" onClick={() => navigate("mcp", "new")}>
             + Add
           </button>

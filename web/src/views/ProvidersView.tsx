@@ -389,7 +389,6 @@ export function ProvidersView({ selected }: { selected: string | null }) {
     <div className="master-detail">
       <aside className="pane left">
         <div className="pane-head">
-          <h3>{t("prov.title")}</h3>
           <span className="spacer" />
           <motion.button whileTap={tap} className="btn small primary" onClick={() => navigate("models", "new")}>
             <PlusIcon size={13} /> {t("common.add")}

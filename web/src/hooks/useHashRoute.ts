@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 
-export type View = "chat" | "mcp" | "skills" | "memories" | "models" | "presets";
-export const VIEWS: View[] = ["chat", "mcp", "skills", "memories", "models", "presets"];
+export type View = "chat" | "general" | "mcp" | "skills" | "memories" | "models" | "presets";
+/** Every view but `chat` is a page of the settings workspace. */
+export type SettingsView = Exclude<View, "chat">;
+export const VIEWS: View[] = ["chat", "general", "mcp", "skills", "memories", "models", "presets"];
 
 export interface Route {
   view: View;
@@ -9,7 +11,7 @@ export interface Route {
   id: string | null;
 }
 
-/** `#/chat/<id>`, `#/mcp`, …; older links (`#/s/<id>`, `#/providers`) still work. */
+/** `#/chat/<id>`, `#/general`, `#/mcp`, …; older links (`#/s/<id>`, `#/providers`) still work. */
 function parse(hash: string): Route {
   const legacy = hash.match(/^#\/s\/(.+)$/);
   if (legacy) return { view: "chat", id: legacy[1] };

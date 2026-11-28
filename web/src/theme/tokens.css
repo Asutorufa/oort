@@ -3,7 +3,7 @@
    in the accent; light / dark switch the neutrals. Applied as
    <html data-theme="iris|lunar" data-mode="light|dark">.
 
-   The accent is reserved for: the send button, active indicator dots and progress fills. */
+   The accent is reserved for: active indicator dots, progress fills and the "on" tint of toggles. */
 
 /* ----- neutrals: light ----- */
 :root,
@@ -22,6 +22,9 @@
   --text-primary: #18181B;
   --text-secondary: #52525B;
   --text-muted: #8E8E93;
+  --text-tertiary: var(--text-muted);
+  --bg-active: rgba(0, 0, 0, 0.06);
+  --bg-muted: #EFEFF1;
   --primary: #18181B;             /* primary buttons are neutral, not accent */
   --primary-hover: #2E2E33;
   --on-primary: #FFFFFF;
@@ -57,6 +60,8 @@
   --text-primary: #F4F4F5;
   --text-secondary: #B4B4BB;
   --text-muted: #7A7A82;
+  --bg-active: rgba(255, 255, 255, 0.08);
+  --bg-muted: #2A2A30;
   --primary: #F4F4F5;
   --primary-hover: #DEDEE2;
   --on-primary: #18181B;
@@ -82,24 +87,32 @@
   --accent-hover: #4C4CC4;
   --on-accent: #FFFFFF;
   --chart-1: #5B5BD6;
+  --accent-subtle: rgba(91, 91, 214, 0.10);
+  --accent-text: #4C4CC4;
 }
 [data-theme="iris"][data-mode="dark"] {
   --accent: #7C7CE6;
   --accent-hover: #8E8EEC;
   --on-accent: #FFFFFF;
   --chart-1: #8E8EEC;
+  --accent-subtle: rgba(124, 124, 230, 0.14);
+  --accent-text: #A5A5F2;
 }
 [data-theme="lunar"][data-mode="light"] {
   --accent: #18181B;
   --accent-hover: #2E2E33;
   --on-accent: #FFFFFF;
   --chart-1: #27272A;
+  --accent-subtle: var(--bg-active);
+  --accent-text: var(--text-primary);
 }
 [data-theme="lunar"][data-mode="dark"] {
   --accent: #F4F4F5;
   --accent-hover: #DEDEE2;
   --on-accent: #18181B;
   --chart-1: #E4E4E7;
+  --accent-subtle: var(--bg-active);
+  --accent-text: var(--text-primary);
 }
 
 /* ----- aliases used by older rules (all neutral; none of them paint with the accent) ----- */
@@ -112,7 +125,6 @@
   --text-2: var(--text-secondary);
   --muted: var(--text-muted);
   --accent-soft: var(--bg-selected);
-  --accent-text: var(--text-primary);
   --orbit-dot: var(--accent);
   --shadow: var(--shadow-pop);
 }

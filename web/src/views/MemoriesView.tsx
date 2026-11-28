@@ -74,7 +74,6 @@ export function MemoriesView({ selected }: { selected: string | null }) {
     <div className="master-detail">
       <aside className="pane left">
         <div className="pane-head">
-          <h3>{t("mem.title")}</h3>
           <span className="spacer" />
           <button className="btn primary small" onClick={() => navigate("memories", "new")}>
             ＋ {t("common.add")}

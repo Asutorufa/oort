@@ -103,7 +103,7 @@ export function PresetsView({ selected }: { selected: string | null }) {
     <div className="master-detail">
       <aside className="pane left">
         <div className="pane-head">
-          <h3>{t("presets.title")}</h3>
+          <span className="spacer" />
           <button className="primary small" onClick={() => navigate("presets", "new")}>
             ＋ {t("common.add")}
           </button>

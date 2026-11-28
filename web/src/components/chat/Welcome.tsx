@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { errorText, mcpServers, presets, providers, sessions, skills } from "../../api";
 import type { CreateSessionRequest } from "../../api/types";
 import { ToolIcon } from "../../brand/Icons";
 import { OortMark } from "../../brand/OortMark";
+import { useOnReturn } from "../../hooks/useOnReturn";
 import { useResource } from "../../hooks/useResource";
 import { ErrorBar } from "../common";
 import { GroupToggles } from "../forms";
@@ -11,7 +12,7 @@ import { ModelPicker } from "./ModelPicker";
 import { useT } from "../../i18n";
 
 /** The new-chat screen: pick a preset (or a model, skills and tools) and just start typing. */
-export function Welcome({ onCreated }: { onCreated: (id: string) => void }) {
+export function Welcome({ visible, onCreated }: { visible: boolean; onCreated: (id: string) => void }) {
   const presetList = useResource(presets.list);
   const providerList = useResource(providers.list);
   const serverList = useResource(mcpServers.list);
@@ -25,6 +26,17 @@ export function Welcome({ onCreated }: { onCreated: (id: string) => void }) {
   const [groups, setGroups] = useState<string[]>(() => JSON.parse(localStorage.getItem("oort.groups") ?? '["core_ux","memory","utilities"]'));
   const [workspace, setWorkspace] = useState(() => localStorage.getItem("oort.workspace") ?? "");
   const [error, setError] = useState<string | null>(null);
+  useOnReturn(visible, () => {
+    presetList.reload();
+    providerList.reload();
+    serverList.reload();
+    skillList.reload();
+  });
+
+  // A preset deleted in settings is no longer selected.
+  useEffect(() => {
+    if (presetId && presetList.data && !presetList.data.some((p) => p.id === presetId)) setPresetId(null);
+  }, [presetId, presetList.data]);
 
   const enabled = (providerList.data ?? []).filter((p) => p.is_enabled);
   const provider = enabled.find((p) => p.id === providerId) ?? enabled[0];
@@ -56,6 +68,8 @@ export function Welcome({ onCreated }: { onCreated: (id: string) => void }) {
 
   return (
     <div className="welcome">
+      {/* Empty, but keeps the 48px top line continuous with the sidebar header. */}
+      <header className="chat-top" />
       <div className="welcome-inner">
         <OortMark size={36} />
         <h1>{t("welcome.title")}</h1>

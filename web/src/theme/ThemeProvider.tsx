@@ -2,29 +2,34 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from "
 
 export type ThemeName = "iris" | "lunar";
 export type Mode = "light" | "dark";
+export type ModePreference = Mode | "system";
 
-export const THEMES: { id: ThemeName; label: "theme.iris" | "theme.lunar"; swatch: string }[] = [
-  { id: "iris", label: "theme.iris", swatch: "#5B5BD6" },
-  { id: "lunar", label: "theme.lunar", swatch: "#52525B" },
+export const THEMES: { id: ThemeName; label: "theme.iris" | "theme.lunar" }[] = [
+  { id: "lunar", label: "theme.lunar" },
+  { id: "iris", label: "theme.iris" },
 ];
 
 const THEME_KEY = "oort.theme";
 const MODE_KEY = "oort.mode";
+const DARK_QUERY = "(prefers-color-scheme: dark)";
 
 interface ThemeCtx {
   theme: ThemeName;
+  /** The mode in effect (`system` resolved). */
   mode: Mode;
+  modePreference: ModePreference;
   setTheme: (t: ThemeName) => void;
-  setMode: (m: Mode) => void;
+  setModePreference: (m: ModePreference) => void;
 }
 
 const Ctx = createContext<ThemeCtx | null>(null);
 
-function initialMode(): Mode {
+function initialMode(): ModePreference {
   const saved = localStorage.getItem(MODE_KEY);
-  if (saved === "light" || saved === "dark") return saved;
-  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  return saved === "light" || saved === "dark" ? saved : "system";
 }
+
+const systemDark = () => window.matchMedia?.(DARK_QUERY).matches ?? false;
 
 function initialTheme(): ThemeName {
   return localStorage.getItem(THEME_KEY) === "lunar" ? "lunar" : "iris";
@@ -33,7 +38,17 @@ function initialTheme(): ThemeName {
 /** Theme and light/dark mode, persisted in localStorage and applied to <html>. */
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setThemeState] = useState<ThemeName>(initialTheme);
-  const [mode, setModeState] = useState<Mode>(initialMode);
+  const [modePreference, setModeState] = useState<ModePreference>(initialMode);
+  const [dark, setDark] = useState(systemDark);
+  const mode: Mode = modePreference === "system" ? (dark ? "dark" : "light") : modePreference;
+
+  useEffect(() => {
+    const query = window.matchMedia?.(DARK_QUERY);
+    if (!query) return;
+    const onChange = () => setDark(query.matches);
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
 
   useEffect(() => {
     const el = document.documentElement;
@@ -44,11 +59,12 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const value: ThemeCtx = {
     theme,
     mode,
+    modePreference,
     setTheme: (t) => {
       localStorage.setItem(THEME_KEY, t);
       setThemeState(t);
     },
-    setMode: (m) => {
+    setModePreference: (m) => {
       localStorage.setItem(MODE_KEY, m);
       setModeState(m);
     },

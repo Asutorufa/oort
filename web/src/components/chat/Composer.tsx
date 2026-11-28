@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowUpIcon, BrainIcon, CubeIcon, GlobeIcon, ShieldIcon, StopIcon, XIcon } from "../../brand/Icons";
+import { ArrowUpIcon, BrainIcon, GlobeIcon, ShieldIcon, StopIcon, XIcon } from "../../brand/Icons";
 import { APPROVAL_POLICIES, REASONING_LEVELS, type ApprovalPolicy, type CommandInfo, type InvokedSkill, type ReasoningEffort } from "../../api/types";
 import { popover, snappy, tap } from "../../lib/motion";
 import { Select } from "../ui";
@@ -147,6 +147,7 @@ export function Composer({
     }
   };
 
+  const effective = REASONING_LEVELS.find((l) => l.value === effectiveReasoning);
   const canSend = (text.trim() !== "" || chips.length > 0) && !sending && !disabled;
   const option = (c: CommandInfo) => {
     const i = flat.indexOf(c);
@@ -229,83 +230,84 @@ export function Composer({
         />
         <div className="dock-bar">
           <div className="dock-tools">
+            {webSearchSupported && onWebSearch && (
+              <button
+                type="button"
+                className={`tool-btn ${webSearch ? "on" : ""}`}
+                aria-pressed={!!webSearch}
+                aria-label={t("composer.webSearch")}
+                title={webSearch ? t("composer.webSearchOn") : t("composer.webSearch")}
+                onClick={() => onWebSearch(!webSearch)}
+              >
+                <GlobeIcon size={14} />
+                <span className="tool-label">{t("composer.search")}</span>
+              </button>
+            )}
             {reasoning && onReasoning && (
               <Select<ReasoningEffort>
-                variant="pill"
+                variant="tool"
                 placement="top"
                 ariaLabel={t("reasoning.label")}
-                title={t("reasoning.pillHint")}
-                icon={<BrainIcon size={13} />}
+                title={
+                  reasoning === "default" && effective && effective.value !== "default"
+                    ? `${t("reasoning.pillDefault", { level: t(effective.label) })} · ${t("reasoning.pillHint")}`
+                    : t("reasoning.pillHint")
+                }
+                icon={<BrainIcon size={14} />}
                 value={reasoning}
                 onChange={onReasoning}
-                renderValue={(o) => {
-                  const eff = REASONING_LEVELS.find((l) => l.value === effectiveReasoning);
-                  return reasoning === "default" && eff && eff.value !== "default"
-                    ? t("reasoning.pillDefault", { level: t(eff.label) })
-                    : t("reasoning.pill", { level: o ? String(o.label) : "" });
-                }}
+                renderValue={(o) => t("reasoning.pill", { level: o ? String(o.label) : "" })}
                 options={REASONING_LEVELS.map((l) => ({ value: l.value, label: t(l.label), description: t(l.description) }))}
               />
             )}
             {policy && onPolicy && (
               <Select<ApprovalPolicy>
-                variant="pill"
+                variant="tool"
                 placement="top"
                 ariaLabel={t("policy.label")}
-                icon={<ShieldIcon size={13} />}
+                title={t("policy.label")}
+                icon={<ShieldIcon size={14} />}
                 value={policy}
                 onChange={onPolicy}
+                renderValue={() => t(`policy.${policy}.short`)}
                 options={APPROVAL_POLICIES.map((p) => ({ value: p.value, label: t(p.label), description: t(p.hint) }))}
               />
             )}
-            {model && onModel ? (
-              <Select<string>
-                variant="pill"
-                placement="top"
-                className="dock-model-pick"
-                menuClassName="model-menu"
-                ariaLabel={t("composer.model")}
-                title={t("composer.modelSwitch")}
-                icon={<CubeIcon size={13} />}
-                value={model}
-                onChange={(m) => m !== model && onModel(m)}
-                renderValue={() => <span className="mono">{model}</span>}
-                options={[...new Set([model, ...(models ?? [])])].map((m) => ({
-                  value: m,
-                  label: <span className="mono">{m}</span>,
-                  description: m === model ? (modelsFailed ? `${t("composer.modelCurrent")} · ${t("composer.modelListFailed")}` : t("composer.modelCurrent")) : undefined,
-                }))}
-              />
-            ) : (
-              model && (
-                <span className="dock-model" title={t("composer.model")}>
-                  <CubeIcon size={13} />
-                  <span className="mono">{model}</span>
-                </span>
-              )
-            )}
-            {webSearchSupported && onWebSearch && (
-              <motion.button
-                type="button"
-                whileTap={tap}
-                className={`dock-toggle-pill ${webSearch ? "on" : ""}`}
-                aria-pressed={!!webSearch}
-                title={webSearch ? t("composer.webSearchOn") : t("composer.webSearch")}
-                onClick={() => onWebSearch(!webSearch)}
-              >
-                <GlobeIcon size={13} />
-                <span>{t("composer.webSearch")}</span>
-              </motion.button>
-            )}
           </div>
+          <div className="dock-end">
+          {model && onModel ? (
+            <Select<string>
+              variant="tool"
+              placement="top"
+              align="end"
+              className="dock-model-pick"
+              menuClassName="model-menu"
+              ariaLabel={t("composer.model")}
+              title={`${model} · ${t("composer.modelSwitch")}`}
+              value={model}
+              onChange={(m) => m !== model && onModel(m)}
+              renderValue={() => model}
+              options={[...new Set([model, ...(models ?? [])])].map((m) => ({
+                value: m,
+                label: <span className="mono">{m}</span>,
+                description: m === model ? (modelsFailed ? `${t("composer.modelCurrent")} · ${t("composer.modelListFailed")}` : t("composer.modelCurrent")) : undefined,
+              }))}
+            />
+          ) : (
+            model && (
+              <span className="dock-model" title={t("composer.model")}>
+                {model}
+              </span>
+            )
+          )}
           <div className="dock-submit">
             <AnimatePresence mode="popLayout" initial={false}>
             {busy && canSend ? (
               <motion.span key="queue" className="dock-actions" initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.96 }} transition={snappy}>
-                <button className="btn ghost" disabled={sending} onClick={() => submit("interrupt")} title={t("composer.interruptHint")}>
+                <button className="tool-btn" disabled={sending} onClick={() => submit("interrupt")} title={t("composer.interruptHint")}>
                   {t("composer.interrupt")}
                 </button>
-                <motion.button whileTap={tap} className="btn primary" disabled={sending} onClick={() => submit("send")} title={t("composer.queueHint")}>
+                <motion.button whileTap={tap} className="btn primary small" disabled={sending} onClick={() => submit("send")} title={t("composer.queueHint")}>
                   {t("composer.queue")}
                 </motion.button>
               </motion.span>
@@ -322,7 +324,7 @@ export function Composer({
                 exit={{ opacity: 0, scale: 0.6 }}
                 transition={snappy}
               >
-                <StopIcon size={14} />
+                <StopIcon size={13} />
               </motion.button>
             ) : (
               <motion.button
@@ -337,10 +339,11 @@ export function Composer({
                 exit={{ opacity: 0, scale: 0.6 }}
                 transition={snappy}
               >
-                <ArrowUpIcon size={16} stroke={2} />
+                <ArrowUpIcon size={15} stroke={2} />
               </motion.button>
             )}
           </AnimatePresence>
+          </div>
           </div>
         </div>
       </div>

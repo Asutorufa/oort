@@ -117,7 +117,6 @@ export function SkillsView({ selected }: { selected: string | null }) {
     <div className="master-detail">
       <aside className="pane left">
         <div className="pane-head">
-          <h3>{t("skills.title")}</h3>
           <span className="spacer" />
           <button className="btn small ghost" onClick={rescan} title={t("skills.rescanHint")}>
             ↻ {t("skills.reload")}

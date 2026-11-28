@@ -14,6 +14,7 @@ import { TurnInspector } from "../components/chat/TurnInspector";
 import { Welcome } from "../components/chat/Welcome";
 import { Empty, ErrorBar } from "../components/common";
 import { navigate } from "../hooks/useHashRoute";
+import { useOnReturn } from "../hooks/useOnReturn";
 import { useResource } from "../hooks/useResource";
 import { useSessionStream } from "../hooks/useSessionStream";
 import { formatResponse, type WidgetActions } from "../widgets/protocol";
@@ -50,10 +51,20 @@ function modelList(providerId: string): Promise<string[]> {
 
 const STATUS: Record<string, Key | null> = { running: "status.running", needs_approval: "status.needsApproval", halted: "status.halted", idle: null };
 
-export function ChatView({ selected, onListChanged }: { selected: string | null; onListChanged: () => void }) {
+export function ChatView({
+  selected,
+  visible,
+  onListChanged,
+}: {
+  selected: string | null;
+  /** False while settings cover the chat; turning true again reloads what settings may have changed. */
+  visible: boolean;
+  onListChanged: () => void;
+}) {
   if (!selected || selected === "new") {
     return (
       <Welcome
+        visible={visible}
         onCreated={(id) => {
           onListChanged();
           navigate("chat", id);
@@ -61,10 +72,10 @@ export function ChatView({ selected, onListChanged }: { selected: string | null;
       />
     );
   }
-  return <Session key={selected} id={selected} onListChanged={onListChanged} />;
+  return <Session key={selected} id={selected} visible={visible} onListChanged={onListChanged} />;
 }
 
-function Session({ id, onListChanged }: { id: string; onListChanged: () => void }) {
+function Session({ id, visible, onListChanged }: { id: string; visible: boolean; onListChanged: () => void }) {
   const { detail, live, log, conn, error: loadError, refresh, toolTimes, subagents, plan } = useSessionStream(id, () => {
     onListChanged();
     navigate("chat");
@@ -101,6 +112,13 @@ function Session({ id, onListChanged }: { id: string; onListChanged: () => void 
       live = false;
     };
   }, [providerId]);
+  const reloadCommands = commandList.reload;
+  useOnReturn(visible, () => {
+    reloadCommands();
+    refresh();
+    modelCache.clear();
+    if (providerId) modelList(providerId).then(setModels, () => setModels("failed"));
+  });
   const [inspector, setInspector] = useState(false);
   const [inspect, setInspect] = useState<TurnUsage | null>(null);
   const [title, setTitle] = useState<string | null>(null);
@@ -191,7 +209,13 @@ function Session({ id, onListChanged }: { id: string; onListChanged: () => void 
     }
   };
 
-  if (!detail) return <Empty>{loadError ?? t("common.loading")}</Empty>;
+  if (!detail)
+    return (
+      <div className="chat-loading">
+        <header className="chat-top" />
+        <Empty>{loadError ?? t("common.loading")}</Empty>
+      </div>
+    );
   const turns = detail.usage.per_turn;
   const prevTurn = inspect ? turns[turns.findIndex((t) => t.seq === inspect.seq) - 1] : undefined;
   const failed = !!detail.last_error;
