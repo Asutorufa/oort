@@ -228,76 +228,78 @@ export function Composer({
           }}
         />
         <div className="dock-bar">
-          {reasoning && onReasoning && (
-            <Select<ReasoningEffort>
-              variant="pill"
-              placement="top"
-              ariaLabel={t("reasoning.label")}
-              title={t("reasoning.pillHint")}
-              icon={<BrainIcon size={13} />}
-              value={reasoning}
-              onChange={onReasoning}
-              renderValue={(o) => {
-                const eff = REASONING_LEVELS.find((l) => l.value === effectiveReasoning);
-                return reasoning === "default" && eff && eff.value !== "default"
-                  ? t("reasoning.pillDefault", { level: t(eff.label) })
-                  : t("reasoning.pill", { level: o ? String(o.label) : "" });
-              }}
-              options={REASONING_LEVELS.map((l) => ({ value: l.value, label: t(l.label), description: t(l.description) }))}
-            />
-          )}
-          {policy && onPolicy && (
-            <Select<ApprovalPolicy>
-              variant="pill"
-              placement="top"
-              ariaLabel={t("policy.label")}
-              icon={<ShieldIcon size={13} />}
-              value={policy}
-              onChange={onPolicy}
-              options={APPROVAL_POLICIES.map((p) => ({ value: p.value, label: t(p.label), description: t(p.hint) }))}
-            />
-          )}
-          {model && onModel ? (
-            <Select<string>
-              variant="pill"
-              placement="top"
-              className="dock-model-pick"
-              menuClassName="model-menu"
-              ariaLabel={t("composer.model")}
-              title={t("composer.modelSwitch")}
-              icon={<CubeIcon size={13} />}
-              value={model}
-              onChange={(m) => m !== model && onModel(m)}
-              renderValue={() => <span className="mono">{model}</span>}
-              options={[...new Set([model, ...(models ?? [])])].map((m) => ({
-                value: m,
-                label: <span className="mono">{m}</span>,
-                description: m === model ? (modelsFailed ? `${t("composer.modelCurrent")} · ${t("composer.modelListFailed")}` : t("composer.modelCurrent")) : undefined,
-              }))}
-            />
-          ) : (
-            model && (
-              <span className="dock-model" title={t("composer.model")}>
-                <CubeIcon size={13} />
-                <span className="mono">{model}</span>
-              </span>
-            )
-          )}
-          {webSearchSupported && onWebSearch && (
-            <motion.button
-              type="button"
-              whileTap={tap}
-              className={`dock-toggle-pill ${webSearch ? "on" : ""}`}
-              aria-pressed={!!webSearch}
-              title={webSearch ? t("composer.webSearchOn") : t("composer.webSearch")}
-              onClick={() => onWebSearch(!webSearch)}
-            >
-              <GlobeIcon size={13} />
-              <span>{t("composer.webSearch")}</span>
-            </motion.button>
-          )}
-          <span className="spacer" />
-          <AnimatePresence mode="popLayout" initial={false}>
+          <div className="dock-tools">
+            {reasoning && onReasoning && (
+              <Select<ReasoningEffort>
+                variant="pill"
+                placement="top"
+                ariaLabel={t("reasoning.label")}
+                title={t("reasoning.pillHint")}
+                icon={<BrainIcon size={13} />}
+                value={reasoning}
+                onChange={onReasoning}
+                renderValue={(o) => {
+                  const eff = REASONING_LEVELS.find((l) => l.value === effectiveReasoning);
+                  return reasoning === "default" && eff && eff.value !== "default"
+                    ? t("reasoning.pillDefault", { level: t(eff.label) })
+                    : t("reasoning.pill", { level: o ? String(o.label) : "" });
+                }}
+                options={REASONING_LEVELS.map((l) => ({ value: l.value, label: t(l.label), description: t(l.description) }))}
+              />
+            )}
+            {policy && onPolicy && (
+              <Select<ApprovalPolicy>
+                variant="pill"
+                placement="top"
+                ariaLabel={t("policy.label")}
+                icon={<ShieldIcon size={13} />}
+                value={policy}
+                onChange={onPolicy}
+                options={APPROVAL_POLICIES.map((p) => ({ value: p.value, label: t(p.label), description: t(p.hint) }))}
+              />
+            )}
+            {model && onModel ? (
+              <Select<string>
+                variant="pill"
+                placement="top"
+                className="dock-model-pick"
+                menuClassName="model-menu"
+                ariaLabel={t("composer.model")}
+                title={t("composer.modelSwitch")}
+                icon={<CubeIcon size={13} />}
+                value={model}
+                onChange={(m) => m !== model && onModel(m)}
+                renderValue={() => <span className="mono">{model}</span>}
+                options={[...new Set([model, ...(models ?? [])])].map((m) => ({
+                  value: m,
+                  label: <span className="mono">{m}</span>,
+                  description: m === model ? (modelsFailed ? `${t("composer.modelCurrent")} · ${t("composer.modelListFailed")}` : t("composer.modelCurrent")) : undefined,
+                }))}
+              />
+            ) : (
+              model && (
+                <span className="dock-model" title={t("composer.model")}>
+                  <CubeIcon size={13} />
+                  <span className="mono">{model}</span>
+                </span>
+              )
+            )}
+            {webSearchSupported && onWebSearch && (
+              <motion.button
+                type="button"
+                whileTap={tap}
+                className={`dock-toggle-pill ${webSearch ? "on" : ""}`}
+                aria-pressed={!!webSearch}
+                title={webSearch ? t("composer.webSearchOn") : t("composer.webSearch")}
+                onClick={() => onWebSearch(!webSearch)}
+              >
+                <GlobeIcon size={13} />
+                <span>{t("composer.webSearch")}</span>
+              </motion.button>
+            )}
+          </div>
+          <div className="dock-submit">
+            <AnimatePresence mode="popLayout" initial={false}>
             {busy && canSend ? (
               <motion.span key="queue" className="dock-actions" initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.96 }} transition={snappy}>
                 <button className="btn ghost" disabled={sending} onClick={() => submit("interrupt")} title={t("composer.interruptHint")}>
@@ -339,6 +341,7 @@ export function Composer({
               </motion.button>
             )}
           </AnimatePresence>
+          </div>
         </div>
       </div>
     </div>
