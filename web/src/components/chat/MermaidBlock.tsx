@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import {
   AlertIcon,
@@ -217,6 +217,64 @@ export function MermaidBlock({ code, streaming }: { code: string; streaming?: bo
   const [copied, setCopied] = useState(false);
   const inlineRef = useRef<HTMLDivElement | null>(null);
   const modalRef = useRef<HTMLDivElement | null>(null);
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const modalBodyRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<{
+    el: HTMLDivElement;
+    pointerId: number;
+    startX: number;
+    startY: number;
+    startLeft: number;
+    startTop: number;
+  } | null>(null);
+
+  const syncPannable = useCallback((el: HTMLDivElement | null) => {
+    if (!el) return;
+    const canPan = el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1;
+    el.classList.toggle("is-pannable", canPan);
+  }, []);
+
+  const onPanPointerDown = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    const el = e.currentTarget;
+    const canPan = el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1;
+    if (!canPan) return;
+    e.preventDefault();
+    el.setPointerCapture(e.pointerId);
+    el.classList.add("is-dragging");
+    dragRef.current = {
+      el,
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      startLeft: el.scrollLeft,
+      startTop: el.scrollTop,
+    };
+  }, []);
+
+  const onPanPointerMove = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    const d = dragRef.current;
+    if (!d || d.el !== e.currentTarget || d.pointerId !== e.pointerId) return;
+    d.el.scrollLeft = d.startLeft - (e.clientX - d.startX);
+    d.el.scrollTop = d.startTop - (e.clientY - d.startY);
+  }, []);
+
+  const onPanPointerEnd = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    const d = dragRef.current;
+    if (!d || d.el !== e.currentTarget || d.pointerId !== e.pointerId) return;
+    if (d.el.hasPointerCapture(e.pointerId)) {
+      d.el.releasePointerCapture(e.pointerId);
+    }
+    d.el.classList.remove("is-dragging");
+    dragRef.current = null;
+  }, []);
+
+  const onModalWheel = useCallback((e: ReactWheelEvent<HTMLDivElement>) => {
+    if (!e.ctrlKey && !e.metaKey) return;
+    e.preventDefault();
+    const step = e.deltaY < 0 ? 0.15 : -0.15;
+    setModalZoom((z) => Math.max(0.4, Math.min(3, Math.round((z + step) * 100) / 100)));
+  }, []);
 
   useEffect(() => {
     // Never invoke mermaid.render() while the fenced block is still streaming/unclosed.
@@ -260,14 +318,16 @@ export function MermaidBlock({ code, streaming }: { code: string; streaming?: bo
   useLayoutEffect(() => {
     if (svg && view === "diagram" && !streaming && !error) {
       fixSvgContrast(inlineRef.current);
+      syncPannable(stageRef.current);
     }
-  }, [svg, view, streaming, error, theme, mode]);
+  }, [svg, view, streaming, error, theme, mode, zoom, syncPannable]);
 
   useLayoutEffect(() => {
     if (fullscreen && svg) {
       fixSvgContrast(modalRef.current);
+      syncPannable(modalBodyRef.current);
     }
-  }, [fullscreen, svg, theme, mode]);
+  }, [fullscreen, svg, theme, mode, modalZoom, syncPannable]);
 
   useEffect(() => {
     if (!fullscreen) return;
@@ -409,7 +469,14 @@ export function MermaidBlock({ code, streaming }: { code: string; streaming?: bo
           <code>{code}</code>
         </pre>
       ) : svg ? (
-        <div className="mermaid-stage">
+        <div
+          ref={stageRef}
+          className="mermaid-stage"
+          onPointerDown={onPanPointerDown}
+          onPointerMove={onPanPointerMove}
+          onPointerUp={onPanPointerEnd}
+          onPointerCancel={onPanPointerEnd}
+        >
           <div
             ref={inlineRef}
             className="mermaid-svg"
@@ -468,7 +535,15 @@ export function MermaidBlock({ code, streaming }: { code: string; streaming?: bo
                   </button>
                 </div>
               </div>
-              <div className="mermaid-modal-body">
+              <div
+                ref={modalBodyRef}
+                className="mermaid-modal-body"
+                onPointerDown={onPanPointerDown}
+                onPointerMove={onPanPointerMove}
+                onPointerUp={onPanPointerEnd}
+                onPointerCancel={onPanPointerEnd}
+                onWheel={onModalWheel}
+              >
                 <div
                   ref={modalRef}
                   className="mermaid-svg"

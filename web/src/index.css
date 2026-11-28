@@ -1062,6 +1062,19 @@ input[type="range"].unset::-webkit-slider-thumb { opacity: .5; }
   display: flex;
   background: transparent;
 }
+.mermaid-stage.is-pannable,
+.mermaid-modal-body.is-pannable {
+  cursor: grab;
+}
+.mermaid-stage.is-dragging,
+.mermaid-modal-body.is-dragging {
+  cursor: grabbing;
+  user-select: none;
+}
+.mermaid-stage.is-dragging .mermaid-svg,
+.mermaid-modal-body.is-dragging .mermaid-svg {
+  pointer-events: none;
+}
 .mermaid-svg {
   flex-shrink: 0;
   margin: auto;
