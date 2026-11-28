@@ -33,14 +33,15 @@ A Rust LLM agent workspace.
 - [`crates/skills`](crates/skills) (`oort-skills`): `SKILL.md` parsing and a `SkillRegistry` over skill directories and the database
 - [`crates/server`](crates/server) (`oort-server`) + [`web/`](web): Oort app (axum + SSE backend, React/Vite frontend)
 
-## Workbench
+## Oort app
 
-A local developer workbench (`web/`, React + Vite) with four views:
+`web/` (React + Vite) is a consumer-style app:
 
-- **Chat**: sessions (create from a preset or ad hoc, rename, delete, export a JSON trace), streaming Markdown output with highlighted, copyable code blocks, collapsible Thinking / Tool cards (tool name, duration and status visible when collapsed), approval card, Send/Steer vs Interrupt vs Compact, an approval-policy switch in the header, a per-turn debug inspector (TTFT, total time, tokens, cache hit rate, request summary and prefix hashes) and a debug panel (phase, per-turn tokens, context usage, compaction points, raw vs active history, event log). The event stream reconnects by itself and survives page reloads mid-turn.
-- **Providers**: add / edit / test LLM providers (`env:NAME` keys supported, stored keys are never shown).
-- **MCP Servers**: add / edit servers, *Test & Discover* their tools (readOnly badges, schemas) and run any tool directly in the **Tool Playground** (no LLM).
-- **Presets**: provider + model + system prompt + MCP servers + approval policy templates, started with one click.
+- **Chat**: a centered thread with Markdown (highlighted, copyable code), Intelligent UI cards (charts, tables, forms, approval diffs, action chips), and one quiet activity line per turn (「思考して 2 件のツールを実行 (0.22s) ⌄」) that expands into thinking and tool details. The floating composer completes `/` skills and commands, switches the approval policy, and while the agent works offers *キューに追記* (Steer) and *中断して送信* (Interrupt). The **透視** drawer holds the internals: prefix-cache hit rate and breakdown, TTFT and total time per call, manual compaction, raw vs active history, and the event log. The event stream resumes after reloads and dropped connections.
+- **Sidebar** (collapsible): new chat, conversations (running / waiting-for-approval indicators, rename, export JSON, delete), navigation, theme dots (星雲暮紫 `iris` / 月光極簡 `lunar`) and light/dark, remembered in `localStorage`.
+- **ツール & MCP**: servers, connection test and tool discovery, the Tool Playground, and OAuth 2.0 (authorize in a popup, scopes and expiry, reconnect / disconnect).
+- **Skills**: `SKILL.md` files and app-made skills, search, preview and editor, rescan.
+- **モデル設定** (providers) and **Presets** (provider, model, prompt, MCP servers, skills, approval policy).
 
 ### Development (two terminals)
 

@@ -73,6 +73,63 @@ fn sample_widget(kind: &str) -> Value {
     json!({ "widget_type": kind, "title": format!("Sample {kind}"), "data": data })
 }
 
+/// A natural reply to a batch of tool results (`msgs` = the assistant message that made the
+/// calls, then its tool messages). Widget results are internal notes for the model, so they
+/// are acknowledged rather than read out.
+fn summarize_results(msgs: &[Message]) -> String {
+    let widget_kind = |id: &str| -> Option<String> {
+        msgs.iter().flat_map(|m| &m.content).find_map(|p| match p {
+            ContentPart::ToolCall(c) if c.id == id && c.name == "render_widget" => c
+                .arguments
+                .get("widget_type")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            _ => None,
+        })
+    };
+    let mut lines: Vec<String> = Vec::new();
+    let mut waiting = false;
+    let mut shown = 0;
+    for p in msgs.iter().flat_map(|m| &m.content) {
+        let ContentPart::ToolResult(r) = p else {
+            continue;
+        };
+        let name = r.name.as_deref().unwrap_or("tool");
+        let snippet: String = r.content.chars().take(240).collect();
+        match widget_kind(&r.tool_call_id).as_deref() {
+            Some("approval_diff") if r.is_error => {
+                lines.push("承知しました。この変更は行いません。".into())
+            }
+            Some("approval_diff") => {
+                lines.push("承認ありがとうございます。変更を反映しました。".into())
+            }
+            Some(_) if r.is_error => {
+                lines.push(format!("カードを表示できませんでした（{snippet}）。"))
+            }
+            Some(kind) => {
+                shown += 1;
+                waiting |= matches!(kind, "interactive_form" | "data_table" | "action_chips");
+            }
+            None if r.is_error => lines.push(format!("⚠️ `{name}` は失敗しました: {snippet}")),
+            None => lines.push(format!(
+                "**{name}** の結果:\n\n```\n{}\n```",
+                snippet.trim_end()
+            )),
+        }
+    }
+    if shown > 0 {
+        lines.insert(
+            0,
+            if waiting {
+                "上のカードから選んでください。回答をもとに続けます。".into()
+            } else {
+                "結果をカードにまとめました。".into()
+            },
+        );
+    }
+    lines.join("\n\n")
+}
+
 fn plan(req: &ChatRequest) -> Plan {
     let last = req.messages.last();
     if last.is_some_and(|m| m.role == Role::Tool) {
@@ -82,19 +139,7 @@ fn plan(req: &ChatRequest) -> Plan {
             .iter()
             .rposition(|m| m.role != Role::Tool)
             .map_or(0, |i| i + 1);
-        let mut text = String::from("Tool results:\n");
-        for msg in &req.messages[start..] {
-            for p in &msg.content {
-                if let ContentPart::ToolResult(r) = p {
-                    let snippet: String = r.content.chars().take(200).collect();
-                    let flag = if r.is_error { " (error)" } else { "" };
-                    text.push_str(&format!(
-                        "- {}{flag}: {snippet}\n",
-                        r.name.as_deref().unwrap_or("?")
-                    ));
-                }
-            }
-        }
+        let text = summarize_results(&req.messages[start.saturating_sub(1)..]);
         return Plan {
             thinking: None,
             text,
@@ -150,7 +195,13 @@ fn plan(req: &ChatRequest) -> Plan {
         }
         t
     } else {
-        format!("Calling {} tool(s).", calls.len())
+        // Widgets speak for themselves; other tools get a short lead-in.
+        let tools = calls.iter().filter(|(n, _)| n != "render_widget").count();
+        if tools == 0 {
+            String::new()
+        } else {
+            "確認します。".to_string()
+        }
     };
     Plan {
         thinking: lower

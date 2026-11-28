@@ -13,6 +13,10 @@ import type {
   SessionDetail,
   SessionSummary,
   ApprovalPolicy,
+  Skill,
+  SkillInput,
+  SkillsReload,
+  OAuthStatus,
   ToolCallResult,
 } from "./types";
 
@@ -54,6 +58,20 @@ export const mcpServers = {
       arguments: args,
       timeout_ms,
     }),
+};
+
+export const oauth = {
+  status: (id: string) => request<OAuthStatus | null>("GET", `/mcp-servers/${id}/oauth`),
+  start: (id: string) => request<{ authorization_url: string; state: string }>("POST", `/mcp-servers/${id}/oauth/start`),
+  disconnect: (id: string) => request<void>("POST", `/mcp-servers/${id}/oauth/disconnect`),
+};
+
+export const skills = {
+  list: () => request<Skill[]>("GET", "/skills"),
+  create: (input: SkillInput) => request<Skill>("POST", "/skills", input),
+  update: (id: string, input: SkillInput) => request<Skill>("PUT", `/skills/${encodeURIComponent(id)}`, input),
+  remove: (id: string) => request<void>("DELETE", `/skills/${encodeURIComponent(id)}`),
+  reload: () => request<SkillsReload>("POST", "/skills/reload"),
 };
 
 export const presets = {
