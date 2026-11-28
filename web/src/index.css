@@ -325,14 +325,14 @@ input[type="checkbox"] { width: auto; accent-color: var(--primary); }
 .dock textarea:focus { box-shadow: none; }
 /* One row, always. Controls are borderless: the dock is the only box. */
 .dock-bar { display: flex; flex-wrap: nowrap; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 10px 10px; container: dock-bar / inline-size; }
-.dock-tools { display: flex; align-items: center; gap: 2px; min-width: 0; }
-.dock-end { display: flex; align-items: center; gap: 6px; flex: none; }
+.dock-tools { display: flex; align-items: center; gap: 2px; flex: none; }
+.dock-end { display: flex; align-items: center; justify-content: flex-end; gap: 6px; flex: 0 1 auto; min-width: 0; }
 .dock .tool-btn, .dock .select-trigger.tool { flex: none; display: inline-flex; align-items: center; gap: 6px; width: auto; height: 28px; padding: 0 8px; border: 0; border-radius: 8px; background: transparent; box-shadow: none; color: var(--text-secondary); font-size: 12px; font-weight: 500; white-space: nowrap; cursor: pointer; transition: background .15s, color .15s; }
 .dock .tool-btn:hover:not(:disabled), .dock .select-trigger.tool:hover:not(:disabled), .dock .select-trigger.tool.open { background: var(--bg-hover); color: var(--text-primary); }
 .dock .tool-btn.on, .dock .tool-btn.on:hover { background: var(--accent-subtle); color: var(--accent-text); }
 .dock .select-trigger.tool .select-icon { color: inherit; }
-.dock .select-trigger.dock-model-pick { max-width: 160px; font-weight: 400; }
-.dock-model { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 8px; font-size: 12px; color: var(--text-secondary); }
+.dock .select-trigger.dock-model-pick { flex: 0 1 auto; min-width: 0; max-width: 160px; overflow: hidden; font-weight: 400; }
+.dock-model { min-width: 0; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 8px; font-size: 12px; color: var(--text-secondary); }
 .dock-submit { display: inline-flex; align-items: center; flex: none; }
 .dock-actions { display: inline-flex; align-items: center; gap: 4px; }
 .dock-actions .btn.primary { height: 28px; padding: 0 10px; }
@@ -340,6 +340,10 @@ input[type="checkbox"] { width: auto; accent-color: var(--primary); }
 @container dock-bar (max-width: 520px) {
   .dock-tools .tool-label, .dock-tools .select-value { display: none; }
   .dock .select-trigger.dock-model-pick, .dock-model { max-width: 110px; }
+}
+@container dock-bar (max-width: 360px) {
+  .dock-tools .select-chev { display: none; }
+  .dock .dock-tools .tool-btn, .dock .dock-tools .select-trigger.tool { padding: 0 6px; }
 }
 .btn.send { width: 28px; height: 28px; flex: none; padding: 0; justify-content: center; border-radius: 50%; border: 0; background: var(--text-primary); color: var(--bg-canvas); }
 .btn.send:hover:not(:disabled) { background: var(--text-primary); opacity: .9; }
