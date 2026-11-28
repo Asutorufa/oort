@@ -1,16 +1,20 @@
 import { useMemo, useRef, useState } from "react";
-import { ArrowUpIcon, StopIcon, XIcon } from "../../brand/Icons";
-import { APPROVAL_POLICIES, type ApprovalPolicy, type CommandInfo, type InvokedSkill } from "../../api/types";
+import { AnimatePresence, motion } from "motion/react";
+import { ArrowUpIcon, BrainIcon, CubeIcon, ShieldIcon, StopIcon, XIcon } from "../../brand/Icons";
+import { APPROVAL_POLICIES, REASONING_LEVELS, type ApprovalPolicy, type CommandInfo, type InvokedSkill, type ReasoningEffort } from "../../api/types";
+import { popover, snappy, tap } from "../../lib/motion";
+import { Select } from "../ui";
+import { useT, type Key, type T } from "../../i18n";
 
 /** Japanese descriptions for the builtin commands (the server's text is English). */
-const COMMAND_TEXT: Record<string, string> = {
-  compact: "会話履歴を要約してコンテキストを整理",
-  approval: "ツール実行の承認ポリシーを切り替え",
-  stop: "実行中の応答をすぐに停止",
-  export: "この会話を JSON で書き出し",
-  new: "新しい会話を開始（プリセットを指定可）",
+const COMMAND_TEXT: Record<string, Key> = {
+  compact: "cmd.desc.compact",
+  approval: "cmd.desc.approval",
+  stop: "cmd.desc.stop",
+  export: "cmd.desc.export",
+  new: "cmd.desc.new",
 };
-const describe = (c: CommandInfo) => (c.kind === "command" ? (COMMAND_TEXT[c.name] ?? c.description) : c.description);
+const describe = (t: T, c: CommandInfo) => (c.kind === "command" && COMMAND_TEXT[c.name] ? t(COMMAND_TEXT[c.name]) : c.description);
 
 /** Commands that run as soon as they are picked (no argument to type). */
 const INSTANT = new Set(["compact", "stop", "export"]);
@@ -29,6 +33,13 @@ export function Composer({
   commands,
   policy,
   onPolicy,
+  reasoning,
+  effectiveReasoning,
+  onReasoning,
+  model,
+  models,
+  onModel,
+  modelsFailed,
   onSend,
   onInterrupt,
   onCommand,
@@ -41,6 +52,15 @@ export function Composer({
   commands: CommandInfo[];
   policy?: ApprovalPolicy;
   onPolicy?: (p: ApprovalPolicy) => void;
+  /** The session's thinking level and what `default` currently resolves to. */
+  reasoning?: ReasoningEffort;
+  effectiveReasoning?: ReasoningEffort;
+  onReasoning?: (r: ReasoningEffort) => void;
+  model?: string;
+  /** Models the user can switch to (same provider); without it the model is shown read-only. */
+  models?: string[];
+  onModel?: (m: string) => void;
+  modelsFailed?: boolean;
   onSend: (text: string, skills: InvokedSkill[]) => Promise<void>;
   onInterrupt?: (text: string, skills: InvokedSkill[]) => Promise<void>;
   onCommand?: (name: string, args: string) => Promise<void>;
@@ -49,6 +69,7 @@ export function Composer({
   autoFocus?: boolean;
 }) {
   const [text, setText] = useState("");
+  const t = useT();
   const [chips, setChips] = useState<CommandInfo[]>([]);
   const [sel, setSel] = useState(0);
   const [dismissed, setDismissed] = useState<string | null>(null);
@@ -128,7 +149,7 @@ export function Composer({
         <span className="slash-name">/{c.name}</span>
         <span className="slash-hint">{c.argument_hint ?? ""}</span>
         <span className="slash-desc">
-          {describe(c)}
+          {describe(t, c)}
           {c.subagent && <span className="pill tiny">Subagent</span>}
         </span>
       </li>
@@ -138,38 +159,40 @@ export function Composer({
   return (
     <div className="dock-wrap">
       <div className={`dock ${disabled ? "disabled" : ""}`}>
+        <AnimatePresence>
         {groups && flat.length > 0 && (
-          <div className="slash-menu" role="listbox">
+          <motion.div className="slash-menu" role="listbox" variants={popover("bottom")} initial="hidden" animate="shown" exit="exit" style={{ transformOrigin: "bottom center" }}>
             {groups.skills.length > 0 && (
               <>
-                <div className="slash-group">スキル</div>
+                <div className="slash-group">{t("composer.skills")}</div>
                 <ul>{groups.skills.map(option)}</ul>
               </>
             )}
             {groups.system.length > 0 && (
               <>
-                <div className="slash-group">システムコマンド</div>
+                <div className="slash-group">{t("composer.commands")}</div>
                 <ul>{groups.system.map(option)}</ul>
               </>
             )}
             <div className="slash-foot">
               <kbd>↑</kbd>
-              <kbd>↓</kbd> 選択 <kbd>Enter</kbd> 決定 <kbd>Esc</kbd> 閉じる
+              <kbd>↓</kbd> {t("composer.navigate")} <kbd>Enter</kbd> {t("composer.choose")} <kbd>Esc</kbd> {t("composer.dismiss")}
             </div>
-          </div>
+          </motion.div>
         )}
+        </AnimatePresence>
         {chips.length > 0 && (
           <div className="attached">
             {chips.map((c) => (
               <span key={c.name} className="attached-chip" title={c.description}>
                 /{c.name}
                 {c.subagent && <span className="pill tiny">Subagent</span>}
-                <button aria-label={`${c.name} を外す`} onClick={() => setChips(chips.filter((x) => x.name !== c.name))}>
+                <button aria-label={t("composer.removeChip", { name: c.name })} onClick={() => setChips(chips.filter((x) => x.name !== c.name))}>
                   <XIcon size={12} stroke={2} />
                 </button>
               </span>
             ))}
-            {chips[chips.length - 1]?.argument_hint && <span className="muted">本文に {chips[chips.length - 1].argument_hint} を書いてください</span>}
+            {chips[chips.length - 1]?.argument_hint && <span className="muted">{t("composer.argHint", { hint: chips[chips.length - 1].argument_hint ?? "" })}</span>}
           </div>
         )}
         <textarea
@@ -178,7 +201,7 @@ export function Composer({
           autoFocus={autoFocus}
           value={text}
           disabled={disabled}
-          placeholder={placeholder ?? (busy ? "続けて入力するとキューに追記されます…" : "メッセージを入力 — / でスキル・コマンド")}
+          placeholder={placeholder ?? (busy ? t("composer.placeholderBusy") : t("composer.placeholder"))}
           onChange={(e) => {
             setText(e.target.value);
             setSel(0);
@@ -199,39 +222,104 @@ export function Composer({
           }}
         />
         <div className="dock-bar">
+          {reasoning && onReasoning && (
+            <Select<ReasoningEffort>
+              variant="pill"
+              placement="top"
+              ariaLabel={t("reasoning.label")}
+              title={t("reasoning.pillHint")}
+              icon={<BrainIcon size={13} />}
+              value={reasoning}
+              onChange={onReasoning}
+              renderValue={(o) => {
+                const eff = REASONING_LEVELS.find((l) => l.value === effectiveReasoning);
+                return reasoning === "default" && eff && eff.value !== "default"
+                  ? t("reasoning.pillDefault", { level: t(eff.label) })
+                  : t("reasoning.pill", { level: o ? String(o.label) : "" });
+              }}
+              options={REASONING_LEVELS.map((l) => ({ value: l.value, label: t(l.label), description: t(l.description) }))}
+            />
+          )}
           {policy && onPolicy && (
-            <select className="policy" value={policy} title="ツール実行の承認ポリシー" onChange={(e) => onPolicy(e.target.value as ApprovalPolicy)}>
-              {APPROVAL_POLICIES.map((p) => (
-                <option key={p.value} value={p.value}>
-                  {p.value === "auto_all" ? "すべて自動実行" : p.value === "auto_readonly" ? "読み取りのみ自動" : "毎回確認"}
-                </option>
-              ))}
-            </select>
+            <Select<ApprovalPolicy>
+              variant="pill"
+              placement="top"
+              ariaLabel={t("policy.label")}
+              icon={<ShieldIcon size={13} />}
+              value={policy}
+              onChange={onPolicy}
+              options={APPROVAL_POLICIES.map((p) => ({ value: p.value, label: t(p.label), description: t(p.hint) }))}
+            />
+          )}
+          {model && onModel ? (
+            <Select<string>
+              variant="pill"
+              placement="top"
+              className="dock-model-pick"
+              menuClassName="model-menu"
+              ariaLabel={t("composer.model")}
+              title={t("composer.modelSwitch")}
+              icon={<CubeIcon size={13} />}
+              value={model}
+              onChange={(m) => m !== model && onModel(m)}
+              renderValue={() => <span className="mono">{model}</span>}
+              options={[...new Set([model, ...(models ?? [])])].map((m) => ({
+                value: m,
+                label: <span className="mono">{m}</span>,
+                description: m === model ? (modelsFailed ? `${t("composer.modelCurrent")} · ${t("composer.modelListFailed")}` : t("composer.modelCurrent")) : undefined,
+              }))}
+            />
+          ) : (
+            model && (
+              <span className="dock-model" title={t("composer.model")}>
+                <CubeIcon size={13} />
+                <span className="mono">{model}</span>
+              </span>
+            )
           )}
           <span className="spacer" />
-          {busy ? (
-            <>
-              {!canSend && onStop && (
-                <button className="btn send stop" title="停止" aria-label="停止" onClick={onStop}>
-                  <StopIcon size={14} />
+          <AnimatePresence mode="popLayout" initial={false}>
+            {busy && canSend ? (
+              <motion.span key="queue" className="dock-actions" initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.96 }} transition={snappy}>
+                <button className="btn ghost" disabled={sending} onClick={() => submit("interrupt")} title={t("composer.interruptHint")}>
+                  {t("composer.interrupt")}
                 </button>
-              )}
-              {canSend && (
-                <>
-                  <button className="btn ghost" disabled={sending} onClick={() => submit("interrupt")} title="いまの応答を止めて、このメッセージを送ります">
-                    中断して送信
-                  </button>
-                  <button className="btn primary" disabled={sending} onClick={() => submit("send")} title="応答の区切りでこのメッセージを追加します">
-                    キューに追記
-                  </button>
-                </>
-              )}
-            </>
-          ) : (
-            <button className="btn send" disabled={!canSend} onClick={() => submit("send")} aria-label="送信">
-              <ArrowUpIcon size={16} stroke={2} />
-            </button>
-          )}
+                <motion.button whileTap={tap} className="btn primary" disabled={sending} onClick={() => submit("send")} title={t("composer.queueHint")}>
+                  {t("composer.queue")}
+                </motion.button>
+              </motion.span>
+            ) : busy && onStop ? (
+              <motion.button
+                key="stop"
+                whileTap={{ scale: 0.92 }}
+                className="btn send stop"
+                title={t("composer.stop")}
+                aria-label={t("composer.stop")}
+                onClick={onStop}
+                initial={{ opacity: 0, scale: 0.6, rotate: -45 }}
+                animate={{ opacity: 1, scale: 1, rotate: 0 }}
+                exit={{ opacity: 0, scale: 0.6 }}
+                transition={snappy}
+              >
+                <StopIcon size={14} />
+              </motion.button>
+            ) : (
+              <motion.button
+                key="send"
+                whileTap={{ scale: 0.92 }}
+                className="btn send"
+                disabled={!canSend}
+                onClick={() => submit("send")}
+                aria-label={t("composer.send")}
+                initial={{ opacity: 0, scale: 0.6 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.6 }}
+                transition={snappy}
+              >
+                <ArrowUpIcon size={16} stroke={2} />
+              </motion.button>
+            )}
+          </AnimatePresence>
         </div>
       </div>
     </div>

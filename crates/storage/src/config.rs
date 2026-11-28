@@ -2,9 +2,10 @@
 
 use async_trait::async_trait;
 use oort_agent::{
-    ApprovalPolicyKind, ConfigStore, McpServerRecord, McpTransportKind, MemoryHit, MemoryQuery,
-    MemoryRecord, MemoryStore, OAuthTokenRecord, OAuthTokenStore, PresetRecord, ProviderKind,
-    ProviderRecord, SkillInvocation, SkillRecord, SkillStore, StoreError,
+    ApprovalPolicyKind, AutoRetry, ConfigStore, McpServerRecord, McpTransportKind, MemoryHit,
+    MemoryQuery, MemoryRecord, MemoryStore, OAuthTokenRecord, OAuthTokenStore, PresetRecord,
+    ProviderDefaults, ProviderKind, ProviderRecord, ReasoningEffort, SkillInvocation, SkillRecord,
+    SkillStore, StoreError,
 };
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
@@ -21,6 +22,23 @@ fn provider_from_row(r: &SqliteRow) -> Result<ProviderRecord, StoreError> {
         default_model: r.get("default_model"),
         extra_headers: from_json(r.get("extra_headers_json"), "extra_headers_json")?,
         is_enabled: r.get("is_enabled"),
+        auto_retry: AutoRetry {
+            enabled: r.get("auto_retry"),
+            max_attempts: r.get::<i64, _>("auto_retry_max").clamp(1, 10) as u32,
+        },
+        defaults: ProviderDefaults {
+            reasoning_effort: ReasoningEffort::parse(r.get("default_reasoning_effort"))?,
+            temperature: r
+                .get::<Option<f64>, _>("default_temperature")
+                .map(|t| t as f32),
+            max_output_tokens: r
+                .get::<Option<i64>, _>("default_max_output_tokens")
+                .map(|v| v.max(0) as u32),
+            context_window: r
+                .get::<Option<i64>, _>("default_context_window")
+                .map(|v| v.max(0) as u64),
+            timeout_secs: r.get::<i64, _>("timeout_secs").clamp(1, 3600) as u32,
+        },
         created_at: r.get("created_at"),
         updated_at: r.get("updated_at"),
     })
@@ -57,6 +75,7 @@ fn preset_from_row(r: &SqliteRow) -> Result<PresetRecord, StoreError> {
         skill_ids: from_json(r.get("skill_ids_json"), "skill_ids_json")?,
         builtin_groups: from_json(r.get("builtin_groups_json"), "builtin_groups_json")?,
         workspace_root: r.get("workspace_root"),
+        reasoning_effort: ReasoningEffort::parse(r.get("reasoning_effort"))?,
         created_at: r.get("created_at"),
         updated_at: r.get("updated_at"),
     })
@@ -151,7 +170,9 @@ impl ConfigStore for SqliteSessionStore {
     async fn create_provider(&self, p: &ProviderRecord) -> Result<(), StoreError> {
         sqlx::query(
             "INSERT INTO providers (id, name, kind, base_url, api_key, default_model, \
-             extra_headers_json, is_enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             extra_headers_json, is_enabled, auto_retry, auto_retry_max, default_reasoning_effort, \
+             default_temperature, default_max_output_tokens, default_context_window, timeout_secs, \
+             created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&p.id)
         .bind(&p.name)
@@ -161,6 +182,13 @@ impl ConfigStore for SqliteSessionStore {
         .bind(&p.default_model)
         .bind(to_json(&p.extra_headers))
         .bind(p.is_enabled)
+        .bind(p.auto_retry.enabled)
+        .bind(p.auto_retry.max_attempts as i64)
+        .bind(p.defaults.reasoning_effort.as_str())
+        .bind(p.defaults.temperature.map(f64::from))
+        .bind(p.defaults.max_output_tokens.map(i64::from))
+        .bind(p.defaults.context_window.map(|v| v as i64))
+        .bind(i64::from(p.defaults.timeout_secs))
         .bind(p.created_at)
         .bind(p.updated_at)
         .execute(&self.pool)
@@ -172,7 +200,9 @@ impl ConfigStore for SqliteSessionStore {
     async fn update_provider(&self, p: &ProviderRecord) -> Result<(), StoreError> {
         let done = sqlx::query(
             "UPDATE providers SET name = ?, kind = ?, base_url = ?, api_key = ?, default_model = ?, \
-             extra_headers_json = ?, is_enabled = ?, updated_at = ? WHERE id = ?",
+             extra_headers_json = ?, is_enabled = ?, auto_retry = ?, auto_retry_max = ?, \
+             default_reasoning_effort = ?, default_temperature = ?, default_max_output_tokens = ?, \
+             default_context_window = ?, timeout_secs = ?, updated_at = ? WHERE id = ?",
         )
         .bind(&p.name)
         .bind(p.kind.as_str())
@@ -181,6 +211,13 @@ impl ConfigStore for SqliteSessionStore {
         .bind(&p.default_model)
         .bind(to_json(&p.extra_headers))
         .bind(p.is_enabled)
+        .bind(p.auto_retry.enabled)
+        .bind(p.auto_retry.max_attempts as i64)
+        .bind(p.defaults.reasoning_effort.as_str())
+        .bind(p.defaults.temperature.map(f64::from))
+        .bind(p.defaults.max_output_tokens.map(i64::from))
+        .bind(p.defaults.context_window.map(|v| v as i64))
+        .bind(i64::from(p.defaults.timeout_secs))
         .bind(p.updated_at)
         .bind(&p.id)
         .execute(&self.pool)
@@ -269,7 +306,8 @@ impl ConfigStore for SqliteSessionStore {
         sqlx::query(
             "INSERT INTO presets (id, name, description, provider_id, model, system_prompt, \
              mcp_server_ids_json, builtin_tools, approval_policy, skill_ids_json, builtin_groups_json, \
-             workspace_root, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             workspace_root, reasoning_effort, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&p.id)
         .bind(&p.name)
@@ -283,6 +321,7 @@ impl ConfigStore for SqliteSessionStore {
         .bind(to_json(&p.skill_ids))
         .bind(to_json(&p.builtin_groups))
         .bind(&p.workspace_root)
+        .bind(p.reasoning_effort.as_str())
         .bind(p.created_at)
         .bind(p.updated_at)
         .execute(&self.pool)
@@ -295,7 +334,8 @@ impl ConfigStore for SqliteSessionStore {
         let done = sqlx::query(
             "UPDATE presets SET name = ?, description = ?, provider_id = ?, model = ?, \
              system_prompt = ?, mcp_server_ids_json = ?, builtin_tools = ?, approval_policy = ?, \
-             skill_ids_json = ?, builtin_groups_json = ?, workspace_root = ?, updated_at = ? WHERE id = ?",
+             skill_ids_json = ?, builtin_groups_json = ?, workspace_root = ?, reasoning_effort = ?, \
+             updated_at = ? WHERE id = ?",
         )
         .bind(&p.name)
         .bind(&p.description)
@@ -308,6 +348,7 @@ impl ConfigStore for SqliteSessionStore {
         .bind(to_json(&p.skill_ids))
         .bind(to_json(&p.builtin_groups))
         .bind(&p.workspace_root)
+        .bind(p.reasoning_effort.as_str())
         .bind(p.updated_at)
         .bind(&p.id)
         .execute(&self.pool)

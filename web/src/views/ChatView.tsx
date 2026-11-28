@@ -1,7 +1,10 @@
+import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useMemo, useState } from "react";
-import { commands as commandsApi, errorText, sessions } from "../api";
+import { spring } from "../lib/motion";
+import { useT, type Key, type T } from "../i18n";
+import { commands as commandsApi, errorText, providers as providersApi, sessions } from "../api";
 import { useToast } from "../components/common/Toast";
-import type { ApprovalPolicy, InputRequest, TurnUsage } from "../api/types";
+import type { ApprovalPolicy, InputRequest, ReasoningEffort, TurnUsage } from "../api/types";
 import { Composer } from "../components/chat/Composer";
 import { Inspector } from "../components/chat/Inspector";
 import { lastPlan, PlanPill } from "../components/chat/PlanTracker";
@@ -14,22 +17,37 @@ import { useResource } from "../hooks/useResource";
 import { useSessionStream } from "../hooks/useSessionStream";
 import { formatResponse, type WidgetActions } from "../widgets/protocol";
 
-/** Japanese text for the command results the server reports in English. */
-const COMMAND_MESSAGES: Record<string, string> = {
-  "Compaction requested": "会話の要約を始めました",
-  "Approval: run every tool automatically": "承認ポリシー：すべて自動実行",
-  "Approval: read-only tools run automatically": "承認ポリシー：読み取りのみ自動",
-  "Approval: ask every time": "承認ポリシー：毎回確認",
-  Stopped: "応答を停止しました",
-  "Nothing was running": "実行中の応答はありません",
-  "Export ready": "書き出しを開始しました",
-  "New chat started": "新しい会話を始めました",
+/** Command results arrive in English from the server; shown in the UI language. */
+const COMMAND_MESSAGES: Record<string, Key> = {
+  "Compaction requested": "cmd.compacted",
+  "Approval: run every tool automatically": "cmd.policyAll",
+  "Approval: read-only tools run automatically": "cmd.policyReadonly",
+  "Approval: ask every time": "cmd.policyAsk",
+  Stopped: "cmd.stopped",
+  "Nothing was running": "cmd.nothingRunning",
+  "Export ready": "cmd.exportReady",
+  "New chat started": "cmd.newChat",
 };
-const commandMessage = (m: string) => COMMAND_MESSAGES[m.replace(/^✓\s*/, "")] ?? m;
-const commandError = (m: string) =>
-  /^\/approval takes/.test(m) ? "/approval の引数は auto・readonly・ask のいずれかです" : /needs an open conversation/.test(m) ? "このコマンドは会話を開いているときに使えます" : m;
+const commandMessage = (t: T, m: string) => {
+  const k = COMMAND_MESSAGES[m.replace(/^✓\s*/, "")];
+  return k ? t(k) : m;
+};
+const commandError = (t: T, m: string) =>
+  /^\/approval takes/.test(m) ? t("cmd.approvalArgs") : /needs an open conversation/.test(m) ? t("cmd.needsChat") : m;
 
-const STATUS: Record<string, string> = { running: "応答中", needs_approval: "承認待ち", halted: "停止", idle: "" };
+const modelCache = new Map<string, Promise<string[]>>();
+/** The provider's model ids; failures are not cached so a later visit can retry. */
+function modelList(providerId: string): Promise<string[]> {
+  let p = modelCache.get(providerId);
+  if (!p) {
+    p = providersApi.models(providerId).then((r) => r.models);
+    p.catch(() => modelCache.delete(providerId));
+    modelCache.set(providerId, p);
+  }
+  return p;
+}
+
+const STATUS: Record<string, Key | null> = { running: "status.running", needs_approval: "status.needsApproval", halted: "status.halted", idle: null };
 
 export function ChatView({ selected, onListChanged }: { selected: string | null; onListChanged: () => void }) {
   if (!selected || selected === "new") {
@@ -52,7 +70,9 @@ function Session({ id, onListChanged }: { id: string; onListChanged: () => void 
   });
   const commandList = useResource(commandsApi.list);
   const childList = useResource(() => sessions.children(id));
+  const [models, setModels] = useState<string[] | "failed">([]);
   const toast = useToast();
+  const t = useT();
   const [trace, setTrace] = useState<string | null>(null);
   // Children appear as subagents start; refresh their list when one is new.
   const knownChildren = Object.values(subagents).map((s) => s.subSessionId).join(",");
@@ -61,6 +81,25 @@ function Session({ id, onListChanged }: { id: string; onListChanged: () => void 
     reloadChildren();
   }, [knownChildren, detail?.raw.length, reloadChildren]);
   const [error, setError] = useState<string | null>(null);
+  // Pick up the automatic retry when it fires (its events start a new loop on the server).
+  const retryAt = detail?.last_error?.retry_at ?? null;
+  useEffect(() => {
+    if (retryAt == null) return;
+    const t = window.setTimeout(refresh, Math.max(0, retryAt - Date.now()) + 800);
+    return () => window.clearTimeout(t);
+  }, [retryAt, refresh]);
+  // Models of this chat's provider, for switching (cached per provider for the page's life).
+  const providerId = detail?.settings.provider_id ?? null;
+  useEffect(() => {
+    if (!providerId) return;
+    let live = true;
+    modelList(providerId)
+      .then((m) => live && setModels(m))
+      .catch(() => live && setModels("failed"));
+    return () => {
+      live = false;
+    };
+  }, [providerId]);
   const [inspector, setInspector] = useState(false);
   const [inspect, setInspect] = useState<TurnUsage | null>(null);
   const [title, setTitle] = useState<string | null>(null);
@@ -84,20 +123,23 @@ function Session({ id, onListChanged }: { id: string; onListChanged: () => void 
     }),
     [id], // eslint-disable-line react-hooks/exhaustive-deps
   );
-  const patch = async (req: { title?: string; approval_policy?: ApprovalPolicy }) => {
+  /** Returns whether the change was saved (errors are shown in the bar). */
+  const patch = async (req: { title?: string; approval_policy?: ApprovalPolicy; reasoning_effort?: ReasoningEffort; model?: string }) => {
     try {
       await sessions.patch(id, req);
       refresh();
       onListChanged();
+      return true;
     } catch (e) {
       setError(errorText(e));
+      return false;
     }
   };
 
   const runCommand = async (name: string, args: string) => {
     try {
       const r = await commandsApi.run(name, id, args);
-      toast(commandMessage(r.message));
+      toast(commandMessage(t, r.message));
       if (r.effect.download) window.location.href = r.effect.download;
       if (r.effect.navigate_session) {
         onListChanged();
@@ -105,7 +147,7 @@ function Session({ id, onListChanged }: { id: string; onListChanged: () => void 
       }
       refresh();
     } catch (e) {
-      toast(commandError(errorText(e)), "error");
+      toast(commandError(t, errorText(e)), "error");
       throw e;
     }
   };
@@ -121,7 +163,7 @@ function Session({ id, onListChanged }: { id: string; onListChanged: () => void 
         builtin_groups: detail.lineage.builtin_groups,
         workspace_root: detail.lineage.workspace_root ?? undefined,
         approval_policy: detail.approval_policy,
-        title: `${detail.title || "新しい会話"}（MCP 追加）`,
+        title: t("chat.mcpSessionTitle", { title: detail.title || t("chat.newSessionTitle") }),
       });
       onListChanged();
       navigate("chat", d.id);
@@ -130,43 +172,46 @@ function Session({ id, onListChanged }: { id: string; onListChanged: () => void 
     }
   };
 
-  if (!detail) return <Empty>{loadError ?? "読み込み中…"}</Empty>;
+  if (!detail) return <Empty>{loadError ?? t("common.loading")}</Empty>;
   const turns = detail.usage.per_turn;
   const prevTurn = inspect ? turns[turns.findIndex((t) => t.seq === inspect.seq) - 1] : undefined;
-  const busy = detail.status === "running";
-  const status = STATUS[detail.status];
+  const failed = !!detail.last_error;
+  const busy = detail.status === "running" && !failed;
+  const statusKey = failed ? (detail.last_error?.retry_at ? "status.retryPending" : "status.error") : STATUS[detail.status];
+  const status = statusKey ? t(statusKey) : "";
   const planSteps = plan ?? lastPlan(detail.raw);
 
   return (
-    <div className={`chat ${inspector ? "with-inspector" : ""}`}>
+    <div className="chat">
       <div className="chat-main">
         <header className="chat-top">
-          <input
-            className="chat-title"
-            value={title ?? detail.title}
-            placeholder="無題の会話"
-            onChange={(e) => setTitle(e.target.value)}
-            onBlur={() => {
-              if (title !== null && title !== detail.title) patch({ title });
-              setTitle(null);
-            }}
-            onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
-          />
-          {status && (
-            <span className={`status-chip ${detail.status}`}>
-              <span className="status-dot" />
-              {status}
-            </span>
-          )}
-          {planSteps && planSteps.length > 0 && <PlanPill steps={planSteps} />}
-          <span className="spacer" />
-          <span className="model-chip" title="この会話のモデル">
-            {detail.model}
-          </span>
-          {conn !== "open" && <span className="pill warn">{conn === "reconnecting" ? "再接続中…" : "接続中…"}</span>}
-          <button className={`btn ghost ${inspector ? "on" : ""}`} onClick={() => setInspector(!inspector)} title="キャッシュ・時間・内部状態">
-            透視
-          </button>
+          <div className="chat-top-left">
+            <input
+              className="chat-title"
+              value={title ?? detail.title}
+              placeholder={t("chat.titlePlaceholder")}
+              title={detail.title}
+              onChange={(e) => setTitle(e.target.value)}
+              onBlur={() => {
+                if (title !== null && title !== detail.title) patch({ title });
+                setTitle(null);
+              }}
+              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+            />
+            {status && (
+              <span className={`status-chip ${failed ? "failed" : detail.status}`}>
+                <span className="status-dot" />
+                {status}
+              </span>
+            )}
+          </div>
+          <div className="chat-top-right">
+            {planSteps && planSteps.length > 0 && <PlanPill steps={planSteps} />}
+            {conn !== "open" && <span className="pill warn nowrap">{conn === "reconnecting" ? t("status.reconnecting") : t("status.connecting")}</span>}
+            <button className={`btn ghost nowrap ${inspector ? "on" : ""}`} onClick={() => setInspector(!inspector)} title={t("chat.inspectorHint")}>
+              {t("chat.inspector")}
+            </button>
+          </div>
         </header>
         <ErrorBar error={error} onDismiss={() => setError(null)} />
         <Thread
@@ -182,6 +227,19 @@ function Session({ id, onListChanged }: { id: string; onListChanged: () => void 
           }}
           onAnswer={(callId, content) => send({ type: "approval", call_id: callId, decision: "answer", content })}
           onStartWithMcp={startWithMcp}
+          onRetry={async () => {
+            try {
+              await sessions.retry(id);
+              setError(null);
+              refresh();
+            } catch (e) {
+              setError(errorText(e));
+            }
+          }}
+          onCancelAutoRetry={async () => {
+            await sessions.cancel(id).catch((e) => setError(errorText(e)));
+            refresh();
+          }}
         />
         <Composer
           busy={busy}
@@ -189,13 +247,31 @@ function Session({ id, onListChanged }: { id: string; onListChanged: () => void 
           commands={commandList.data ?? []}
           policy={detail.approval_policy}
           onPolicy={(p) => patch({ approval_policy: p })}
+          reasoning={detail.reasoning_effort ?? "default"}
+          effectiveReasoning={detail.effective_reasoning_effort}
+          onReasoning={(r) => patch({ reasoning_effort: r })}
+          model={detail.model}
+          models={models === "failed" ? [] : models}
+          modelsFailed={models === "failed"}
+          onModel={async (m) => {
+            if (await patch({ model: m })) toast(t("composer.modelSwitched", { model: m }));
+          }}
           onSend={(text, skills) => send({ type: "steer", text, invoked_skills: skills })}
           onInterrupt={(text, skills) => send({ type: "interrupt", text, invoked_skills: skills })}
           onCommand={runCommand}
           onStop={() => sessions.cancel(id).catch((e) => setError(errorText(e)))}
         />
       </div>
+      <AnimatePresence initial={false}>
       {inspector && (
+        <motion.div
+          key="inspector"
+          className="inspector-wrap"
+          initial={{ width: 0, opacity: 0 }}
+          animate={{ width: 400, opacity: 1 }}
+          exit={{ width: 0, opacity: 0 }}
+          transition={spring}
+        >
         <Inspector
           trace={trace}
           onCloseTrace={() => setTrace(null)}
@@ -209,7 +285,9 @@ function Session({ id, onListChanged }: { id: string; onListChanged: () => void 
             setTrace(null);
           }}
         />
+        </motion.div>
       )}
+      </AnimatePresence>
       {inspect && <TurnInspector turn={inspect} prev={prevTurn} onClose={() => setInspect(null)} />}
     </div>
   );

@@ -198,6 +198,21 @@ fn plan(req: &ChatRequest) -> Plan {
     }
 
     let said = last.map(Message::text).unwrap_or_default();
+    if said.trim() == "!params" {
+        // Tests: echo the request parameters that are not part of the prefix.
+        return Plan {
+            thinking: None,
+            text: json!({
+                "thinking": req.thinking,
+                "temperature": req.temperature,
+                "max_tokens": req.max_tokens,
+                "model": req.model,
+            })
+            .to_string(),
+            calls: vec![],
+            slow: false,
+        };
+    }
     let lower = said.to_lowercase();
     let has_tool = |n: &str| req.tools.iter().any(|t| t.name == n);
     let mut calls = Vec::new();
@@ -241,9 +256,48 @@ fn plan(req: &ChatRequest) -> Plan {
     }
 }
 
+/// `!error <status> [once] <message>` in the last user message makes the call fail like a
+/// provider would (e.g. `!error 429 once quota exceeded`); `once` fails only the first attempt.
+fn simulated_error(req: &ChatRequest) -> Option<oort_llm::Error> {
+    static FAILED_ONCE: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let said = req
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == Role::User)?
+        .text();
+    let line = said
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("!error "))?;
+    let (status, rest) = line.split_once(' ').unwrap_or((line, ""));
+    let (once, message) = match rest.strip_prefix("once") {
+        Some(m) => (true, m.trim()),
+        None => (false, rest.trim()),
+    };
+    if once {
+        let mut failed = FAILED_ONCE.lock().unwrap_or_else(|e| e.into_inner());
+        if failed.contains(&said) {
+            return None;
+        }
+        failed.push(said.clone());
+    }
+    Some(oort_llm::Error::Api {
+        status: status.parse().ok(),
+        message: if message.is_empty() {
+            "simulated error".into()
+        } else {
+            message.into()
+        },
+        body: None,
+    })
+}
+
 #[async_trait]
 impl ModelClient for MockModel {
     async fn stream(&self, req: ChatRequest) -> Result<ChatStream, oort_llm::Error> {
+        if let Some(err) = simulated_error(&req) {
+            return Err(err);
+        }
         let plan = plan(&req);
         let total = estimate_tokens(&(&req.system, &req.tools, &req.messages));
         let prev_prefix = &req.messages[..req.messages.len().saturating_sub(1)];

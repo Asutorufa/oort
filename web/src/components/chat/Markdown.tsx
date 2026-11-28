@@ -1,8 +1,13 @@
 import { memo, useState, type ComponentProps } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
+import rehypeKatex from "rehype-katex";
+import remarkMath from "remark-math";
+import "katex/dist/katex.min.css";
 import remarkGfm from "remark-gfm";
 import { copyText } from "../common";
+import { prepareMath } from "./mathPrep";
+import { useT } from "../../i18n";
 
 interface HastNode {
   type: string;
@@ -18,6 +23,7 @@ const hastText = (n: HastNode | undefined): string =>
 /** `<pre>` with the language and a copy button (the raw text comes from the source AST). */
 function CodeBlock({ node, children, ...rest }: ComponentProps<"pre"> & { node?: HastNode }) {
   const [copied, setCopied] = useState(false);
+  const t = useT();
   const code = node?.children?.find((c) => c.tagName === "code");
   const lang = ((code?.properties?.className as string[] | undefined) ?? [])
     .find((c) => c.startsWith("language-"))
@@ -40,7 +46,7 @@ function CodeBlock({ node, children, ...rest }: ComponentProps<"pre"> & { node?:
             window.setTimeout(() => setCopied(false), 1200);
           }}
         >
-          {copied ? "コピーしました" : "コピー"}
+          {copied ? t("common.copied") : t("common.copy")}
         </button>
       </div>
       <pre {...rest}>{children}</pre>
@@ -53,12 +59,19 @@ const components = {
   a: (props: ComponentProps<"a">) => <a {...props} target="_blank" rel="noreferrer noopener" />,
 };
 
-/** GitHub-flavored Markdown with highlighted code blocks. Raw HTML is not rendered. */
+/** GitHub-flavored Markdown with math (KaTeX) and highlighted code blocks. Raw HTML is not rendered. */
 export default memo(function Markdown({ text }: { text: string }) {
   return (
     <div className="markdown">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: false, ignoreMissing: true }]]} components={components}>
-        {text}
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm, remarkMath]}
+        rehypePlugins={[
+          [rehypeKatex, { throwOnError: false, strict: "ignore" }],
+          [rehypeHighlight, { detect: false, ignoreMissing: true }],
+        ]}
+        components={components}
+      >
+        {prepareMath(text)}
       </ReactMarkdown>
     </div>
   );

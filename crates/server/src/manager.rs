@@ -25,8 +25,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::api::InvokedSkill;
 use crate::api::{
-    ApiError, CheckpointView, CreateSessionRequest, Envelope, InputRequest, PatchSessionRequest,
-    ProviderSummary, RawMessage, SessionDetail, SessionExport, SessionSummary,
+    ApiError, CheckpointView, CreateSessionRequest, Envelope, InputRequest, LoopError,
+    PatchSessionRequest, ProviderSummary, RawMessage, SessionDetail, SessionExport, SessionSummary,
 };
 use crate::approval::ApprovalHandle;
 use crate::config::{SessionConfig, SkillBinding};
@@ -42,6 +42,9 @@ struct ActiveSession {
     inbox: mpsc::Sender<LoopInput>,
     cancel: CancellationToken,
     approval: Arc<ApprovalHandle>,
+    /// Read by the context manager on every request.
+    thinking: oort_agent::LiveThinking,
+    model: oort_agent::LiveModel,
     /// Cancelled when the loop task has fully exited.
     finished: CancellationToken,
     generation: u64,
@@ -67,6 +70,10 @@ pub struct SessionManager {
     closing: CancellationToken,
     /// Skill subagents running for a session (cancelled by stop / delete / shutdown).
     skill_runs: Mutex<BTreeMap<String, Vec<CancellationToken>>>,
+    /// The error the last loop of a session exited with (until the loop runs again).
+    errors: Arc<Mutex<BTreeMap<String, LoopError>>>,
+    /// Automatic retries made since the last success or user action, per session.
+    retries: Arc<Mutex<BTreeMap<String, u32>>>,
     me: Weak<SessionManager>,
 }
 
@@ -81,6 +88,8 @@ impl SessionManager {
             boot: crate::new_id(),
             closing: CancellationToken::new(),
             skill_runs: Mutex::default(),
+            errors: Arc::default(),
+            retries: Arc::default(),
             me: me.clone(),
         })
     }
@@ -142,6 +151,10 @@ impl SessionManager {
             .approval_policy
             .or(preset.as_ref().map(|p| p.approval_policy))
             .unwrap_or_default();
+        let reasoning_effort = req.reasoning_effort.unwrap_or_default().or(preset
+            .as_ref()
+            .map(|p| p.reasoning_effort)
+            .unwrap_or_default());
 
         // Fail fast on unusable keys and unreachable servers, before anything is stored.
         let widgets = req.widgets.unwrap_or(true);
@@ -210,7 +223,10 @@ impl SessionManager {
             provider: provider.kind.as_str().into(),
             provider_id: Some(provider.id.clone()),
             model: model.clone(),
-            max_context_tokens: req.max_context_tokens.unwrap_or(200_000),
+            max_context_tokens: req
+                .max_context_tokens
+                .or(provider.defaults.context_window)
+                .unwrap_or(200_000),
             max_tokens: req.max_tokens,
             builtin_tools: builtin,
             mcp_servers: bindings,
@@ -259,6 +275,7 @@ impl SessionManager {
                 builtin_groups: groups.iter().map(|g| g.as_str().to_string()).collect(),
                 ..Default::default()
             },
+            reasoning_effort,
         };
         let id = self.store.create_session(meta, &state).await?;
         self.ensure_active(&id).await?;
@@ -267,6 +284,7 @@ impl SessionManager {
 
     pub async fn list(&self) -> Result<Vec<SessionSummary>, ApiError> {
         let active = self.active.lock().await;
+        let errors = self.errors.lock().await;
         Ok(self
             .store
             .list_sessions()
@@ -274,6 +292,7 @@ impl SessionManager {
             .into_iter()
             .map(|meta| SessionSummary {
                 active: active.contains_key(&meta.id),
+                failed: errors.contains_key(&meta.id),
                 meta,
             })
             .collect())
@@ -283,9 +302,14 @@ impl SessionManager {
     pub async fn detail(&self, id: &str) -> Result<SessionDetail, ApiError> {
         let stored = self.store.load_state(id).await?;
         let calls = self.store.list_llm_calls(id).await?;
-        let cfg = settings(&stored.meta.config)?;
+        let cfg = session_settings(&stored.meta)?;
         let active = self.active.lock().await.contains_key(id);
         let root = stored.meta.lineage.workspace_root.clone();
+        let effective = stored.meta.reasoning_effort.or(self
+            .registry
+            .provider_defaults(&cfg)
+            .await
+            .reasoning_effort);
         let mut detail = SessionDetail::build(
             stored.meta,
             active,
@@ -294,6 +318,8 @@ impl SessionManager {
             &stored.message_usage,
             &calls,
         );
+        detail.last_error = self.errors.lock().await.get(id).cloned();
+        detail.effective_reasoning_effort = effective;
         // What each approval card shows: a diff, the command, the settings, …
         let ctx = self.registry.builtin_context(root.map(Into::into), None);
         for p in &mut detail.pending_approvals {
@@ -306,6 +332,7 @@ impl SessionManager {
     pub async fn children(&self, id: &str) -> Result<Vec<SessionSummary>, ApiError> {
         self.store.load_state(id).await?;
         let active = self.active.lock().await;
+        let errors = self.errors.lock().await;
         Ok(self
             .store
             .list_children(id)
@@ -313,12 +340,14 @@ impl SessionManager {
             .into_iter()
             .map(|meta| SessionSummary {
                 active: active.contains_key(&meta.id),
+                failed: errors.contains_key(&meta.id),
                 meta,
             })
             .collect())
     }
 
     pub async fn input(&self, id: &str, input: InputRequest) -> Result<(), ApiError> {
+        self.retries.lock().await.remove(id);
         let input = match input {
             InputRequest::Steer {
                 text,
@@ -359,11 +388,38 @@ impl SessionManager {
                 a.approval.set(policy);
             }
         }
+        if let Some(model) = &req.model {
+            let model = model.trim();
+            if model.is_empty() || model.len() > 200 || model.chars().any(char::is_control) {
+                return Err(ApiError::BadRequest("`model` must be a model id".into()));
+            }
+            let meta = self.store.load_state(id).await?.meta;
+            if meta.lineage.parent_session_id.is_some() {
+                return Err(ApiError::Conflict(
+                    "subagent sessions keep their model".into(),
+                ));
+            }
+            self.store.set_model(id, model).await?;
+            if let Some(a) = self.active.lock().await.get(id) {
+                *a.model.write().unwrap_or_else(|e| e.into_inner()) = model.to_string();
+            }
+        }
+        if let Some(effort) = req.reasoning_effort {
+            self.store.set_reasoning_effort(id, effort).await?;
+            let cfg = session_settings(&self.store.load_state(id).await?.meta)?;
+            let fallback = self.registry.provider_defaults(&cfg).await.reasoning_effort;
+            if let Some(a) = self.active.lock().await.get(id) {
+                *a.thinking.write().unwrap_or_else(|e| e.into_inner()) =
+                    effort.or(fallback).thinking();
+            }
+        }
         let meta = self.store.load_state(id).await?.meta;
         self.hub(id).await.publish(|seq| Envelope::SessionUpdated {
             seq,
             title: meta.title,
             approval_policy: meta.approval_policy,
+            reasoning_effort: meta.reasoning_effort,
+            model: meta.model,
         });
         Ok(())
     }
@@ -385,6 +441,7 @@ impl SessionManager {
             ));
         }
         self.store.delete_session(id).await?;
+        self.errors.lock().await.remove(id);
         if let Some(hub) = self.hubs.lock().await.remove(id) {
             hub.publish(|seq| Envelope::Deleted { seq });
         }
@@ -394,7 +451,7 @@ impl SessionManager {
     pub async fn export(&self, id: &str) -> Result<SessionExport, ApiError> {
         let stored = self.store.load_state(id).await?;
         let calls = self.store.list_llm_calls(id).await?;
-        let cfg = settings(&stored.meta.config)?;
+        let cfg = session_settings(&stored.meta)?;
         let provider = match &cfg.provider_id {
             Some(pid) => {
                 self.registry
@@ -447,7 +504,35 @@ impl SessionManager {
         })
     }
 
+    /// Starts the loop again after it exited with an error (e.g. once a rate limit has passed).
+    pub async fn retry(&self, id: &str) -> Result<(), ApiError> {
+        self.store.load_state(id).await?;
+        self.retries.lock().await.remove(id);
+        self.errors.lock().await.remove(id);
+        self.ensure_active(id).await.map(|_| ())
+    }
+
+    /// Called by the retry timer: resumes only if the same failure is still waiting for it.
+    async fn auto_retry(&self, id: &str, at: i64) {
+        {
+            let mut errors = self.errors.lock().await;
+            match errors.get(id) {
+                Some(e) if e.at == at && e.retry_at.is_some() => {
+                    errors.remove(id);
+                }
+                _ => return,
+            }
+        }
+        *self.retries.lock().await.entry(id.to_string()).or_default() += 1;
+        if let Err(e) = self.ensure_active(id).await {
+            tracing::warn!(session = %id, error = %e, "automatic retry could not start");
+        }
+    }
+
     pub async fn cancel(&self, id: &str) -> Result<bool, ApiError> {
+        if let Some(e) = self.errors.lock().await.get_mut(id) {
+            e.retry_at = None;
+        }
         for t in self.skill_runs.lock().await.remove(id).unwrap_or_default() {
             t.cancel();
         }
@@ -473,7 +558,10 @@ impl SessionManager {
             .filter(|(boot, _)| *boot == self.boot)
             .and_then(|(_, seq)| seq.parse::<u64>().ok());
         let sub = self.hub(id).await.subscribe(after);
-        if stored.meta.status == SessionStatus::Running {
+        // A loop that failed (quota, network, …) waits for an explicit retry or new input instead
+        // of being resumed by every reconnect.
+        let failed = self.errors.lock().await.contains_key(id);
+        if stored.meta.status == SessionStatus::Running && !failed {
             self.ensure_active(id).await?;
         }
         let active = self.active.lock().await.contains_key(id);
@@ -530,10 +618,18 @@ impl SessionManager {
         if stored.meta.status == SessionStatus::Halted {
             return Err(ApiError::Conflict("session is halted".into()));
         }
-        let cfg = settings(&stored.meta.config)?;
+        let cfg = session_settings(&stored.meta)?;
         let hub = self.hub(id).await;
         let cancel = CancellationToken::new();
         let approval = ApprovalHandle::new(stored.meta.approval_policy);
+        let effort = stored.meta.reasoning_effort.or(self
+            .registry
+            .provider_defaults(&cfg)
+            .await
+            .reasoning_effort);
+        let thinking: oort_agent::LiveThinking =
+            Arc::new(std::sync::RwLock::new(effort.thinking()));
+        let live_model: oort_agent::LiveModel = Arc::new(std::sync::RwLock::new(cfg.model.clone()));
         let (ev_tx, mut ev_rx) = mpsc::channel(1024);
         let agent = self
             .registry
@@ -546,6 +642,8 @@ impl SessionManager {
                 approval.clone(),
                 ev_tx,
                 cancel.clone(),
+                Arc::clone(&thinking),
+                Some(Arc::clone(&live_model)),
             )
             .await?;
         let (in_tx, in_rx) = mpsc::channel(64);
@@ -582,6 +680,12 @@ impl SessionManager {
         });
 
         let registry = Arc::clone(&self.active);
+        let errors = Arc::clone(&self.errors);
+        errors.lock().await.remove(id);
+        let retries = Arc::clone(&self.retries);
+        let auto = self.registry.auto_retry(&cfg).await;
+        let me = self.me.clone();
+        let closing = self.closing.clone();
         let session_id = id.to_string();
         let mut state = stored.state;
         let done = finished.clone();
@@ -590,8 +694,41 @@ impl SessionManager {
             let result = agent.run_loop(&mut state, &mut inbox).await;
             drop(agent); // closes the event channel so the forwarder drains and ends
             let _ = forwarder.await;
-            if let Err(e) = &result {
-                tracing::warn!(session = %session_id, error = %e, "session loop exited with error");
+            match &result {
+                Ok(_) => {
+                    retries.lock().await.remove(&session_id);
+                }
+                Err(oort_agent::AgentError::Cancelled) => {}
+                Err(e) => {
+                    tracing::warn!(session = %session_id, error = %e, "session loop exited with error");
+                    let message = e.to_string();
+                    let at = crate::now_ms();
+                    let attempt = retries.lock().await.get(&session_id).copied().unwrap_or(0);
+                    let delay = (auto.enabled && attempt < auto.max_attempts && is_transient(e))
+                        .then(|| retry_delay(&message, attempt));
+                    errors.lock().await.insert(
+                        session_id.clone(),
+                        LoopError {
+                            message,
+                            at,
+                            retry_at: delay.map(|d| at + d.as_millis() as i64),
+                            attempt,
+                            max_attempts: auto.max_attempts,
+                        },
+                    );
+                    if let Some(delay) = delay {
+                        let id = session_id.clone();
+                        tokio::spawn(async move {
+                            tokio::select! {
+                                _ = tokio::time::sleep(delay) => {}
+                                _ = closing.cancelled() => return,
+                            }
+                            if let Some(m) = me.upgrade() {
+                                m.auto_retry(&id, at).await;
+                            }
+                        });
+                    }
+                }
             }
             hub.publish(|seq| Envelope::LoopExited {
                 seq,
@@ -613,11 +750,56 @@ impl SessionManager {
                 inbox: in_tx.clone(),
                 cancel,
                 approval,
+                thinking,
+                model: live_model,
                 finished,
                 generation,
             },
         );
         Ok(in_tx)
+    }
+}
+
+/// Rate limits, overloads, server errors and dropped connections: worth retrying unchanged.
+/// Extends [`oort_llm::Error::is_retryable`] with stream drops and status-less quota errors.
+fn is_transient(e: &oort_agent::AgentError) -> bool {
+    let oort_agent::AgentError::Llm(err) = e else {
+        return false;
+    };
+    match err {
+        oort_llm::Error::Stream(_) => true,
+        oort_llm::Error::Api {
+            status: None,
+            message,
+            ..
+        } => {
+            let m = message.to_ascii_lowercase();
+            ["rate limit", "resource_exhausted", "overloaded", "quota"]
+                .iter()
+                .any(|k| m.contains(k))
+        }
+        other => other.is_retryable(),
+    }
+}
+
+/// The provider's hint (`Please retry in 13.09s`, `"retryDelay": "13s"`) plus a second, or an
+/// exponential backoff (5s, 10s, 20s, …, at most 2 minutes).
+fn retry_delay(message: &str, attempt: u32) -> Duration {
+    let hinted = ["retry in ", "retryDelay\": \"", "retryDelay\":\""]
+        .iter()
+        .find_map(|k| {
+            let rest = &message[message.find(k)? + k.len()..];
+            let n: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_digit() || *c == '.')
+                .collect();
+            n.parse::<f64>().ok()
+        });
+    match hinted {
+        Some(secs) if secs.is_finite() && secs >= 0.0 => {
+            Duration::from_secs_f64(secs.min(600.0) + 1.0)
+        }
+        _ => Duration::from_secs(5u64.saturating_mul(1 << attempt.min(5)).min(120)),
     }
 }
 
@@ -714,7 +896,7 @@ impl SessionManager {
         user_text: String,
     ) -> Result<(), ApiError> {
         let stored = self.store.load_state(id).await?;
-        let cfg = settings(&stored.meta.config)?;
+        let cfg = session_settings(&stored.meta)?;
         let hub = self.hub(id).await;
         let cancel = CancellationToken::new();
         self.skill_runs
@@ -822,6 +1004,16 @@ fn canonical_workspace(root: &str) -> Result<String, ApiError> {
         )));
     }
     Ok(p.to_string_lossy().to_string())
+}
+
+/// The session's configuration with its current model (`sessions.model` can change; the
+/// stored config keeps the model the session was created with).
+fn session_settings(meta: &oort_agent::SessionMeta) -> Result<SessionConfig, ApiError> {
+    let mut cfg = settings(&meta.config)?;
+    if !meta.model.trim().is_empty() {
+        cfg.model = meta.model.clone();
+    }
+    Ok(cfg)
 }
 
 fn settings(raw: &serde_json::Value) -> Result<SessionConfig, ApiError> {

@@ -1,6 +1,8 @@
 import { useState } from "react";
+import { Checkbox, Select } from "../components/ui";
 import type { WidgetProps } from "./protocol";
 import { Done, WidgetCard } from "./WidgetCard";
+import { useT } from "../i18n";
 
 interface FieldSpec {
   name: string;
@@ -25,6 +27,7 @@ export function InteractiveForm({ id, spec, response, actions, disabled }: Widge
   const fields = (spec.data.fields as FieldSpec[]) ?? [];
   const [values, setValues] = useState<Values>(() => initial(fields));
   const [sending, setSending] = useState(false);
+  const t = useT();
   const [sent, setSent] = useState<Values | null>(null);
   const submitted = (response?.payload as Values | undefined) ?? sent;
   const shown = submitted ?? values;
@@ -45,7 +48,7 @@ export function InteractiveForm({ id, spec, response, actions, disabled }: Widge
   };
 
   return (
-    <WidgetCard title={spec.title} kind="form" status={submitted && <Done>送信済み</Done>}>
+    <WidgetCard title={spec.title} kind="form" status={submitted && <Done>{t("widget.submitted")}</Done>}>
       <form
         className={`wform ${submitted ? "locked" : ""}`}
         onSubmit={(e) => {
@@ -57,7 +60,7 @@ export function InteractiveForm({ id, spec, response, actions, disabled }: Widge
           const v = shown[f.name];
           const set = (nv: unknown) => setValues((s) => ({ ...s, [f.name]: nv }));
           return (
-            <label key={f.name} className={`wfield ${f.kind === "checkbox" ? "inline" : ""}`}>
+            <div key={f.name} className={`wfield ${f.kind === "checkbox" ? "inline" : ""}`}>
               {f.kind !== "checkbox" && (
                 <span className="wlabel">
                   {f.label}
@@ -67,18 +70,15 @@ export function InteractiveForm({ id, spec, response, actions, disabled }: Widge
               {f.kind === "textarea" ? (
                 <textarea rows={3} disabled={locked} value={String(v ?? "")} placeholder={f.placeholder} onChange={(e) => set(e.target.value)} />
               ) : f.kind === "select" ? (
-                <select disabled={locked} value={String(v ?? "")} onChange={(e) => set(e.target.value)}>
-                  {(f.options ?? []).map((o) => (
-                    <option key={o} value={o}>
-                      {o}
-                    </option>
-                  ))}
-                </select>
+                <Select
+                  ariaLabel={f.label}
+                  disabled={locked}
+                  value={v == null || v === "" ? null : String(v)}
+                  onChange={(x) => set(x)}
+                  options={(f.options ?? []).map((o) => ({ value: o, label: o }))}
+                />
               ) : f.kind === "checkbox" ? (
-                <>
-                  <input type="checkbox" disabled={locked} checked={!!v} onChange={(e) => set(e.target.checked)} />
-                  <span>{f.label}</span>
-                </>
+                <Checkbox disabled={locked} checked={!!v} onChange={(x) => set(x)} label={f.label} />
               ) : (
                 <input
                   type={f.kind === "number" ? "number" : "text"}
@@ -88,13 +88,13 @@ export function InteractiveForm({ id, spec, response, actions, disabled }: Widge
                   onChange={(e) => set(e.target.value)}
                 />
               )}
-            </label>
+            </div>
           );
         })}
         {!submitted && (
           <div className="wactions">
             <button type="submit" className="btn primary" disabled={locked || missing.length > 0}>
-              {sending ? "送信中…" : String(spec.data.submit_label ?? "送信")}
+              {sending ? t("widget.sending") : String(spec.data.submit_label ?? t("widget.submit"))}
             </button>
           </div>
         )}

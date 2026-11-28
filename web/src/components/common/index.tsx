@@ -1,4 +1,5 @@
 import { useEffect, type ReactNode } from "react";
+import { currentLocale, translate } from "../../i18n";
 
 export type Tone = "ok" | "warn" | "error" | "info" | "muted";
 
@@ -31,7 +32,7 @@ export function ErrorBar({ error, onDismiss }: { error: string | null; onDismiss
     <div className="error-bar" role="alert">
       <span>{error}</span>
       {onDismiss && (
-        <button className="ghost" onClick={onDismiss} aria-label="dismiss">
+        <button className="ghost" onClick={onDismiss} aria-label={translate(currentLocale(), "common.dismiss")}>
           ✕
         </button>
       )}
@@ -50,7 +51,7 @@ export function Modal({ title, onClose, children }: { title: ReactNode; onClose:
       <div className="modal" role="dialog" onMouseDown={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <h3>{title}</h3>
-          <button className="ghost" onClick={onClose} aria-label="close">
+          <button className="ghost" onClick={onClose} aria-label={translate(currentLocale(), "common.close")}>
             ✕
           </button>
         </div>
