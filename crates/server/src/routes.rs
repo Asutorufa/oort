@@ -47,6 +47,7 @@ pub fn router(manager: Arc<SessionManager>, web_dist: Option<&FsPath>) -> Router
         .route("/sessions/{id}/input", post(session_input))
         .route("/sessions/{id}/cancel", post(cancel_session))
         .route("/sessions/{id}/retry", post(retry_session))
+        .route("/sessions/{id}/title/regenerate", post(regenerate_title))
         .route("/sessions/{id}/export", get(export_session))
         .route("/sessions/{id}/children", get(session_children))
         .route("/commands", get(list_commands))
@@ -136,6 +137,14 @@ async fn patch_session(
     Json(req): Json<PatchSessionRequest>,
 ) -> ApiResult<SessionDetail> {
     m.patch(&id, req).await?;
+    Ok(Json(m.detail(&id).await?))
+}
+
+async fn regenerate_title(
+    State(m): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<SessionDetail> {
+    m.regenerate_title(&id).await?;
     Ok(Json(m.detail(&id).await?))
 }
 

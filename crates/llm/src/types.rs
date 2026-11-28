@@ -656,6 +656,10 @@ pub struct ChatRequest {
     /// Provider-hosted server tools (web search, URL context, code execution, file search).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub server_tools: Option<ServerToolConfig>,
+    /// Ask the provider to also return a conversation title (DeepSeek `title.enabled`; adapters
+    /// send nothing for other vendors). A top-level parameter outside the cached prefix.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub generate_title: bool,
     /// Optional top-level JSON fields merged into the request body (escape hatch for custom vendors).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extra_body: Option<Value>,
@@ -835,6 +839,10 @@ pub struct ChatResponse {
     pub stop_reason: Option<StopReason>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
+    /// Conversation title the provider generated (see [`ChatRequest::generate_title`]). Never
+    /// part of the history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 impl ChatResponse {
@@ -927,6 +935,8 @@ pub enum StreamEvent {
     Citation(Citation),
     /// Token usage update.
     Usage(Usage),
+    /// Provider-generated conversation title.
+    Title(String),
     /// Stream completion marker with optional stop reason.
     Done {
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -955,6 +965,7 @@ pub struct StreamCollector {
     citations: Vec<Citation>,
     stop_reason: Option<StopReason>,
     usage: Option<Usage>,
+    title: Option<String>,
 }
 
 impl StreamCollector {
@@ -1047,6 +1058,9 @@ impl StreamCollector {
             StreamEvent::Usage(usage) => {
                 self.usage = Some(usage.clone());
             }
+            StreamEvent::Title(title) => {
+                self.title = Some(title.clone());
+            }
             StreamEvent::Done { stop_reason } => {
                 if stop_reason.is_some() {
                     self.stop_reason = stop_reason.clone();
@@ -1079,8 +1093,28 @@ impl StreamCollector {
             citations: self.citations,
             stop_reason: self.stop_reason,
             usage: self.usage,
+            title: self.title,
         })
     }
+}
+
+/// Adds DeepSeek's native title request to a request body. Other vendors reject the field.
+pub(crate) fn apply_title_request(vendor: Vendor, request: &ChatRequest, body: &mut Value) {
+    if vendor == Vendor::Deepseek
+        && request.generate_title
+        && let Some(obj) = body.as_object_mut()
+    {
+        obj.insert("title".to_string(), json!({ "enabled": true }));
+    }
+}
+
+/// A non-empty title string from a response field of any JSON type.
+pub(crate) fn title_of(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(ToString::to_string)
 }
 
 /// Parses a tool call JSON arguments string into a [`serde_json::Value`].

@@ -1232,6 +1232,7 @@ fn parse_gemini_response(resp: GeminiGenerateContentResponse) -> Result<ChatResp
         .map(|r| map_gemini_finish_reason(r, !tool_calls.is_empty()));
 
     Ok(ChatResponse {
+        title: None,
         id: resp.response_id,
         model: resp.model_version,
         content,

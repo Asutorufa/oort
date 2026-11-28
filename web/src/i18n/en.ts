@@ -40,6 +40,7 @@ export const en = {
   "sidebar.failed": "Stopped with an error",
   "sidebar.menu": "More",
   "sidebar.rename": "Rename",
+  "sidebar.regenerateTitle": "Regenerate title",
   "sidebar.exportJson": "Export as JSON",
   "sidebar.empty": "No chats yet",
   "sidebar.theme": "Theme",

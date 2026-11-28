@@ -103,6 +103,8 @@ export const APPROVAL_POLICIES: { value: ApprovalPolicy; label: Key; hint: Key }
 export interface SessionMeta {
   id: string;
   title: string;
+  /** `manual` titles are the user's and are never replaced by generated ones. */
+  title_source: "default" | "auto" | "manual";
   provider: string;
   model: string;
   approval_policy: ApprovalPolicy;
@@ -278,6 +280,7 @@ export type AgentEvent =
   | { event: "llm_call"; stats: LlmCallStats }
   | { event: "subagent"; tool_call_id: string; sub_session_id: string; profile: string; inner: AgentEvent }
   | { event: "plan_updated"; steps: PlanStep[] }
+  | { event: "title_updated"; session_id: string; title: string }
   | { event: "phase_changed"; phase: string }
   | { event: "completed" }
   | { event: "halted"; reason: string };

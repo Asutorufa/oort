@@ -44,7 +44,13 @@ pub struct RequestParams {
     pub live_server_tools: Option<LiveServerTools>,
     /// Optional provider escape-hatch JSON merged into top-level request body.
     pub extra_body: Option<serde_json::Value>,
+    /// While set, the first request of a conversation (no reply yet) also asks the provider for
+    /// a title ([`ChatRequest::generate_title`]).
+    pub title_request: Option<TitleRequest>,
 }
+
+/// Shared "this session still needs a title" flag (see [`RequestParams::title_request`]).
+pub type TitleRequest = std::sync::Arc<std::sync::atomic::AtomicBool>;
 
 /// Shared, changeable model id (see [`RequestParams::live_model`]).
 pub type LiveModel = std::sync::Arc<std::sync::RwLock<String>>;
@@ -102,6 +108,12 @@ impl ContextManager for DefaultContextManager {
             None => p.server_tools.clone(),
         };
         req.extra_body = p.extra_body.clone();
+        req.generate_title = p
+            .title_request
+            .as_ref()
+            .is_some_and(|w| w.load(std::sync::atomic::Ordering::Relaxed))
+            && state.latest_checkpoint().is_none()
+            && !state.messages().iter().any(|m| m.role == Role::Assistant);
         if p.prompt_cache.as_ref().is_some_and(|c| c.enabled) {
             req.cache_breakpoints = cache_breakpoints(&req.messages);
         }

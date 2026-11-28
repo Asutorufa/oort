@@ -36,3 +36,5 @@ mod prefix_cache_tests;
 mod reasoning_tests;
 #[cfg(test)]
 mod server_tools_tests;
+#[cfg(test)]
+mod title_tests;

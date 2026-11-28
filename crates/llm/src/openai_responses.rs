@@ -17,7 +17,7 @@ use crate::sse::parse_sse_stream;
 use crate::types::{
     ChatRequest, ChatResponse, Citation, ContentPart, DocumentSource, ImageSource, Message, Role,
     StopReason, StreamEvent, ToolCall, ToolChoice, ToolDefinition, Usage, Vendor, extract_domain,
-    parse_tool_arguments,
+    parse_tool_arguments, apply_title_request, title_of,
 };
 
 /// HTTP client for the OpenAI Responses API (`/v1/responses`).
@@ -168,6 +168,7 @@ impl OpenAIResponsesClient {
     ) -> Result<Value, Error> {
         let body = self.build_request_body(request, stream)?;
         let mut val = serde_json::to_value(body)?;
+        apply_title_request(self.vendor, request, &mut val);
         merge_extra_body(&mut val, self.extra_body.as_ref());
         merge_extra_body(&mut val, request.extra_body.as_ref());
         Ok(val)
@@ -264,6 +265,7 @@ struct ResponsesApiResponse {
     #[serde(default)]
     output: Vec<Value>,
     usage: Option<ResponsesUsage>,
+    title: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -752,6 +754,7 @@ fn parse_responses_body(resp: ResponsesApiResponse) -> Result<ChatResponse, Erro
         citations,
         stop_reason,
         usage: resp.usage.map(map_responses_usage),
+        title: title_of(resp.title.as_ref()),
     })
 }
 
@@ -979,6 +982,9 @@ where
                             {
                                 st.queue
                                     .push_back(Ok(StreamEvent::Usage(map_responses_usage(usage))));
+                            }
+                            if let Some(title) = title_of(value.pointer("/response/title")) {
+                                st.queue.push_back(Ok(StreamEvent::Title(title)));
                             }
                             let stop_reason = if st.had_tool_calls {
                                 Some(StopReason::ToolUse)

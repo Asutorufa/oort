@@ -30,6 +30,7 @@ use crate::oauth::OAuthFlows;
 use crate::pool::McpPool;
 use crate::session_tools;
 use crate::subagent::{SpawnSubagent, SubagentLimits, SubagentRuntime};
+use crate::title::TitleHook;
 use oort_agent::{Lineage, MemoryStore};
 use oort_tools::builtin::utilities::WebFetchOptions;
 use oort_tools::{BuiltinContext, Group, PlanSink};
@@ -354,6 +355,22 @@ impl Registry {
         &self,
         cfg: &SessionConfig,
     ) -> Result<Arc<dyn ModelClient>, ApiError> {
+        Ok(self.model_from(self.session_client(cfg).await?))
+    }
+
+    /// The client of title requests: one attempt, no retries. `None` for the offline mock,
+    /// whose scripted replies are not titles.
+    pub async fn title_model(
+        &self,
+        cfg: &SessionConfig,
+    ) -> Result<Option<Arc<dyn ModelClient>>, ApiError> {
+        Ok(match self.session_client(cfg).await? {
+            Built::Mock => None,
+            Built::Llm(p) => Some(Arc::new(*p) as Arc<dyn ModelClient>),
+        })
+    }
+
+    async fn session_client(&self, cfg: &SessionConfig) -> Result<Built, ApiError> {
         let built = match &cfg.provider_id {
             Some(id) => {
                 let rec = self.config.get_provider(id).await.map_err(|e| match e {
@@ -372,7 +389,7 @@ impl Registry {
             }
             None => legacy_client(&cfg.provider, &cfg.model)?,
         };
-        Ok(self.model_from(built))
+        Ok(built)
     }
 
     /// Connectivity test: `list_models` (free), plus a 1-token chat when `ping` is set.
@@ -571,6 +588,7 @@ impl Registry {
         thinking: oort_agent::LiveThinking,
         model_id: Option<oort_agent::LiveModel>,
         server_tools: Option<oort_agent::LiveServerTools>,
+        title: Option<TitleHook>,
     ) -> Result<Agent, ApiError> {
         let model = self.session_model(cfg).await?;
         let provider_rec = self.provider_record(cfg).await;
@@ -618,11 +636,15 @@ impl Registry {
                 model_id,
                 server_tools,
                 extra_body,
+                title.as_ref().map(|t| t.wanted.clone()),
             )))
             .hook(Arc::new(TracingHook))
             .hook(Arc::new(DynamicApproval(approval)))
             .events(events)
             .session_cancel(cancel);
+        if let Some(title) = title {
+            b = b.hook(Arc::new(title));
+        }
         b = if cfg.provider == "mock" {
             b.compactor(Arc::new(RuleBasedCompactor {
                 max_chars_per_message: 120,

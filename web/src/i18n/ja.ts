@@ -38,6 +38,7 @@ export const ja: Dict = {
   "sidebar.failed": "エラーで停止しました",
   "sidebar.menu": "メニュー",
   "sidebar.rename": "名前を変更",
+  "sidebar.regenerateTitle": "タイトルを再生成",
   "sidebar.exportJson": "JSON でエクスポート",
   "sidebar.empty": "まだ会話がありません",
   "sidebar.theme": "テーマ",

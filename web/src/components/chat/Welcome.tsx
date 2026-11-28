@@ -32,11 +32,8 @@ export function Welcome({ onCreated }: { onCreated: (id: string) => void }) {
 
   const start = async (message: string) => {
     setError(null);
-    // The first line of the first message names the conversation (rename any time).
-    const firstLine = message.split("\n")[0].trim();
-    const title = firstLine.length > 40 ? `${firstLine.slice(0, 40)}…` : firstLine;
     const req: CreateSessionRequest = presetId
-      ? { preset_id: presetId, message, title }
+      ? { preset_id: presetId, message }
       : {
           provider_id: provider?.id,
           model: model.trim() || undefined,
@@ -45,7 +42,6 @@ export function Welcome({ onCreated }: { onCreated: (id: string) => void }) {
           builtin_groups: groups,
           workspace_root: groups.includes("workspace") ? workspace.trim() : undefined,
           message,
-          title,
         };
     localStorage.setItem("oort.groups", JSON.stringify(groups));
     localStorage.setItem("oort.workspace", workspace);
