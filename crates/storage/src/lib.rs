@@ -11,8 +11,8 @@ use async_trait::async_trait;
 use oort_agent::store::{assemble_state, canonical_tools_json};
 use oort_agent::{
     AgentState, ApprovalPolicyKind, CompactionCheckpoint, Lineage, LlmCallStats, NewSession,
-    ReasoningEffort, SessionId, SessionMeta, SessionSnapshot, SessionStatus, SessionStore,
-    StepDelta, StoreError, StoredSession,
+    ReasoningEffort, ServerToolConfig, SessionId, SessionMeta, SessionSnapshot, SessionStatus,
+    SessionStore, StepDelta, StoreError, StoredSession, ToolOutputBlob, ToolOutputBlobStore,
 };
 use oort_llm::{ContentPart, Message, Role, Usage};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow};
@@ -92,8 +92,9 @@ impl SessionStore for SqliteSessionStore {
             "INSERT INTO sessions (id, title, provider, model, config_json, approval_policy, system_prompt, \
              frozen_tools, status, halt_reason, pending_calls, pending_steers, compaction_requested, \
              turn, usage_json, created_at, updated_at, parent_session_id, parent_tool_call_id, depth, \
-             workspace_root, enabled_builtin_groups_json, loaded_skills_json, reasoning_effort) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             workspace_root, enabled_builtin_groups_json, loaded_skills_json, reasoning_effort, \
+             enabled_server_tools_json) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(&meta.title)
@@ -119,6 +120,7 @@ impl SessionStore for SqliteSessionStore {
         .bind(to_json(&meta.lineage.builtin_groups))
         .bind(to_json(&snap.loaded_skills))
         .bind(meta.reasoning_effort.as_str())
+        .bind(meta.enabled_server_tools.as_ref().map(to_json))
         .execute(&mut *tx)
         .await
         .map_err(classify)?;
@@ -348,6 +350,23 @@ impl SessionStore for SqliteSessionStore {
         found(done.rows_affected(), id)
     }
 
+    async fn set_server_tools(
+        &self,
+        id: &str,
+        tools: Option<&ServerToolConfig>,
+    ) -> Result<(), StoreError> {
+        let done = sqlx::query(
+            "UPDATE sessions SET enabled_server_tools_json = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(tools.map(to_json))
+        .bind(now_ms())
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(classify)?;
+        found(done.rows_affected(), id)
+    }
+
     async fn list_children(&self, id: &str) -> Result<Vec<SessionMeta>, StoreError> {
         let rows = sqlx::query(&format!(
             "{META_SELECT} WHERE s.parent_session_id = ? ORDER BY s.created_at, s.id"
@@ -381,7 +400,7 @@ impl SessionStore for SqliteSessionStore {
                 .map_err(classify)?;
         }
         for sid in &ids {
-            for table in ["llm_calls", "compactions", "messages"] {
+            for table in ["tool_output_blobs", "llm_calls", "compactions", "messages"] {
                 sqlx::query(&format!("DELETE FROM {table} WHERE session_id = ?"))
                     .bind(sid)
                     .execute(&mut *tx)
@@ -395,6 +414,77 @@ impl SessionStore for SqliteSessionStore {
                 .map_err(classify)?;
         }
         tx.commit().await.map_err(backend)
+    }
+}
+
+#[async_trait]
+impl ToolOutputBlobStore for SqliteSessionStore {
+    async fn save_tool_output_blob(&self, blob: &ToolOutputBlob) -> Result<(), StoreError> {
+        sqlx::query(
+            "INSERT OR REPLACE INTO tool_output_blobs \
+             (id, session_id, tool_name, source_hint, content, total_chars, total_lines, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&blob.id)
+        .bind(&blob.session_id)
+        .bind(&blob.tool_name)
+        .bind(&blob.source_hint)
+        .bind(&blob.content)
+        .bind(blob.total_chars as i64)
+        .bind(blob.total_lines as i64)
+        .bind(&blob.created_at)
+        .execute(&self.pool)
+        .await
+        .map_err(classify)?;
+        Ok(())
+    }
+
+    async fn get_tool_output_blob(&self, id: &str) -> Result<Option<ToolOutputBlob>, StoreError> {
+        let row = sqlx::query(
+            "SELECT id, session_id, tool_name, source_hint, content, total_chars, total_lines, created_at \
+             FROM tool_output_blobs WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(backend)?;
+        Ok(row.map(|r| ToolOutputBlob {
+            id: r.get("id"),
+            session_id: r.get("session_id"),
+            tool_name: r.get("tool_name"),
+            source_hint: r.get("source_hint"),
+            content: r.get("content"),
+            total_chars: r.get::<i64, _>("total_chars").max(0) as usize,
+            total_lines: r.get::<i64, _>("total_lines").max(0) as usize,
+            created_at: r.get("created_at"),
+        }))
+    }
+
+    async fn can_access_blob(
+        &self,
+        session_id: &str,
+        blob_session_id: &str,
+    ) -> Result<bool, StoreError> {
+        if session_id == blob_session_id {
+            return Ok(true);
+        }
+        // Allow a subagent session to access blobs belonging to any of its ancestor sessions
+        // (and vice versa: a parent can access its own subtree if needed, though primarily
+        // subagents inherit access to their root/parent session's blobs).
+        let found: Option<i64> = sqlx::query_scalar(
+            "WITH RECURSIVE ancestors(id) AS ( \
+                SELECT id FROM sessions WHERE id = ? \
+                UNION ALL \
+                SELECT s.parent_session_id FROM sessions s JOIN ancestors a ON s.id = a.id \
+                WHERE s.parent_session_id IS NOT NULL \
+             ) SELECT 1 FROM ancestors WHERE id = ? LIMIT 1",
+        )
+        .bind(session_id)
+        .bind(blob_session_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(backend)?;
+        Ok(found.is_some())
     }
 }
 
@@ -538,6 +628,10 @@ fn meta_from_row(row: &SqliteRow) -> Result<SessionMeta, StoreError> {
         config: from_json(row.get("config_json"), "config_json")?,
         approval_policy: ApprovalPolicyKind::parse(row.get("approval_policy"))?,
         reasoning_effort: ReasoningEffort::parse(row.get("reasoning_effort"))?,
+        enabled_server_tools: from_json_opt(
+            row.get("enabled_server_tools_json"),
+            "enabled_server_tools_json",
+        )?,
         lineage: Lineage {
             parent_session_id: row.get("parent_session_id"),
             parent_tool_call_id: row.get("parent_tool_call_id"),

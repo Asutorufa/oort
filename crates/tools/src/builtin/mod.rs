@@ -3,6 +3,7 @@
 pub mod core_ux;
 pub mod html;
 pub mod memory;
+pub mod output;
 pub mod self_config;
 pub mod utilities;
 pub mod workspace;
@@ -10,7 +11,10 @@ pub mod workspace;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use oort_agent::{ConfigStore, LocalToolExecutor, MemoryStore, PlanStep, SkillStore, ToolError};
+use oort_agent::{
+    ConfigStore, LocalToolExecutor, MemoryStore, PlanStep, SkillStore, ToolError,
+    ToolOutputBlobStore,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -72,6 +76,10 @@ pub struct BuiltinContext {
     pub skills: Option<Arc<dyn SkillStore>>,
     pub memories: Option<Arc<dyn MemoryStore>>,
     pub plan: Option<Arc<dyn PlanSink>>,
+    /// Session-scoped overflow cache for long `web_fetch` / `run_command` outputs.
+    pub output_blobs: Option<Arc<dyn ToolOutputBlobStore>>,
+    /// Current session id (used to scope `tool_output_blobs` access).
+    pub session_id: Option<String>,
     /// Canonical workspace root (required by the `workspace` group).
     pub workspace_root: Option<PathBuf>,
     pub web: utilities::WebFetchOptions,
@@ -85,20 +93,28 @@ fn missing(what: &str) -> ToolError {
 /// The local tools of the enabled groups (`subagent` is the application's).
 pub fn executor(groups: &[Group], ctx: &BuiltinContext) -> Result<LocalToolExecutor, String> {
     let mut ex = LocalToolExecutor::new();
+    let mut needs_output_reader = false;
     for g in groups {
         ex = match g {
             Group::SelfConfig => self_config::add(ex, ctx),
             Group::CoreUx => core_ux::add(ex, ctx),
             Group::Memory => memory::add(ex, ctx),
-            Group::Utilities => utilities::add(ex, ctx),
+            Group::Utilities => {
+                needs_output_reader = true;
+                utilities::add(ex, ctx)
+            }
             Group::Workspace => {
                 if ctx.workspace_root.is_none() {
                     return Err("the workspace group needs a workspace_root".into());
                 }
+                needs_output_reader = true;
                 workspace::add(ex, ctx)
             }
             Group::Subagent => ex,
         };
+    }
+    if needs_output_reader {
+        ex = output::add(ex, ctx);
     }
     Ok(ex)
 }

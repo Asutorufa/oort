@@ -10,17 +10,25 @@ use oort_agent::{
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
 
-use crate::{SqliteSessionStore, backend, classify, found, from_json, to_json};
+use crate::{SqliteSessionStore, backend, classify, found, from_json, from_json_opt, to_json};
 
 fn provider_from_row(r: &SqliteRow) -> Result<ProviderRecord, StoreError> {
+    let vendor_str: String = r.get("vendor");
+    let vendor = oort_agent::Vendor::parse(&vendor_str).unwrap_or(oort_agent::Vendor::Custom);
     Ok(ProviderRecord {
         id: r.get("id"),
         name: r.get("name"),
         kind: ProviderKind::parse(r.get("kind"))?,
+        vendor,
         base_url: r.get("base_url"),
         api_key: r.get("api_key"),
         default_model: r.get("default_model"),
         extra_headers: from_json(r.get("extra_headers_json"), "extra_headers_json")?,
+        default_server_tools: from_json(
+            r.get("default_server_tools_json"),
+            "default_server_tools_json",
+        )?,
+        extra_body: from_json_opt(r.get("extra_body_json"), "extra_body_json")?,
         is_enabled: r.get("is_enabled"),
         auto_retry: AutoRetry {
             enabled: r.get("auto_retry"),
@@ -76,6 +84,10 @@ fn preset_from_row(r: &SqliteRow) -> Result<PresetRecord, StoreError> {
         builtin_groups: from_json(r.get("builtin_groups_json"), "builtin_groups_json")?,
         workspace_root: r.get("workspace_root"),
         reasoning_effort: ReasoningEffort::parse(r.get("reasoning_effort"))?,
+        enabled_server_tools: from_json_opt(
+            r.get("enabled_server_tools_json"),
+            "enabled_server_tools_json",
+        )?,
         created_at: r.get("created_at"),
         updated_at: r.get("updated_at"),
     })
@@ -169,18 +181,22 @@ impl ConfigStore for SqliteSessionStore {
 
     async fn create_provider(&self, p: &ProviderRecord) -> Result<(), StoreError> {
         sqlx::query(
-            "INSERT INTO providers (id, name, kind, base_url, api_key, default_model, \
-             extra_headers_json, is_enabled, auto_retry, auto_retry_max, default_reasoning_effort, \
-             default_temperature, default_max_output_tokens, default_context_window, timeout_secs, \
-             created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO providers (id, name, kind, vendor, base_url, api_key, default_model, \
+             extra_headers_json, default_server_tools_json, extra_body_json, is_enabled, \
+             auto_retry, auto_retry_max, default_reasoning_effort, default_temperature, \
+             default_max_output_tokens, default_context_window, timeout_secs, \
+             created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&p.id)
         .bind(&p.name)
         .bind(p.kind.as_str())
+        .bind(p.vendor.as_str())
         .bind(&p.base_url)
         .bind(&p.api_key)
         .bind(&p.default_model)
         .bind(to_json(&p.extra_headers))
+        .bind(to_json(&p.default_server_tools))
+        .bind(p.extra_body.as_ref().map(to_json))
         .bind(p.is_enabled)
         .bind(p.auto_retry.enabled)
         .bind(p.auto_retry.max_attempts as i64)
@@ -199,17 +215,21 @@ impl ConfigStore for SqliteSessionStore {
 
     async fn update_provider(&self, p: &ProviderRecord) -> Result<(), StoreError> {
         let done = sqlx::query(
-            "UPDATE providers SET name = ?, kind = ?, base_url = ?, api_key = ?, default_model = ?, \
-             extra_headers_json = ?, is_enabled = ?, auto_retry = ?, auto_retry_max = ?, \
+            "UPDATE providers SET name = ?, kind = ?, vendor = ?, base_url = ?, api_key = ?, \
+             default_model = ?, extra_headers_json = ?, default_server_tools_json = ?, \
+             extra_body_json = ?, is_enabled = ?, auto_retry = ?, auto_retry_max = ?, \
              default_reasoning_effort = ?, default_temperature = ?, default_max_output_tokens = ?, \
              default_context_window = ?, timeout_secs = ?, updated_at = ? WHERE id = ?",
         )
         .bind(&p.name)
         .bind(p.kind.as_str())
+        .bind(p.vendor.as_str())
         .bind(&p.base_url)
         .bind(&p.api_key)
         .bind(&p.default_model)
         .bind(to_json(&p.extra_headers))
+        .bind(to_json(&p.default_server_tools))
+        .bind(p.extra_body.as_ref().map(to_json))
         .bind(p.is_enabled)
         .bind(p.auto_retry.enabled)
         .bind(p.auto_retry.max_attempts as i64)
@@ -306,8 +326,8 @@ impl ConfigStore for SqliteSessionStore {
         sqlx::query(
             "INSERT INTO presets (id, name, description, provider_id, model, system_prompt, \
              mcp_server_ids_json, builtin_tools, approval_policy, skill_ids_json, builtin_groups_json, \
-             workspace_root, reasoning_effort, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             workspace_root, reasoning_effort, enabled_server_tools_json, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&p.id)
         .bind(&p.name)
@@ -322,6 +342,7 @@ impl ConfigStore for SqliteSessionStore {
         .bind(to_json(&p.builtin_groups))
         .bind(&p.workspace_root)
         .bind(p.reasoning_effort.as_str())
+        .bind(p.enabled_server_tools.as_ref().map(to_json))
         .bind(p.created_at)
         .bind(p.updated_at)
         .execute(&self.pool)
@@ -335,7 +356,7 @@ impl ConfigStore for SqliteSessionStore {
             "UPDATE presets SET name = ?, description = ?, provider_id = ?, model = ?, \
              system_prompt = ?, mcp_server_ids_json = ?, builtin_tools = ?, approval_policy = ?, \
              skill_ids_json = ?, builtin_groups_json = ?, workspace_root = ?, reasoning_effort = ?, \
-             updated_at = ? WHERE id = ?",
+             enabled_server_tools_json = ?, updated_at = ? WHERE id = ?",
         )
         .bind(&p.name)
         .bind(&p.description)
@@ -349,6 +370,7 @@ impl ConfigStore for SqliteSessionStore {
         .bind(to_json(&p.builtin_groups))
         .bind(&p.workspace_root)
         .bind(p.reasoning_effort.as_str())
+        .bind(p.enabled_server_tools.as_ref().map(to_json))
         .bind(p.updated_at)
         .bind(&p.id)
         .execute(&self.pool)

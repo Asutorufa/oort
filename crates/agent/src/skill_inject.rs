@@ -43,7 +43,7 @@ fn dedupe_text(text: &str, loaded: &mut BTreeSet<String>) -> String {
 /// Deduplicates skill bodies in a message about to be appended, recording new ones.
 pub fn dedupe(message: &mut Message, loaded: &mut BTreeSet<String>) {
     for part in &mut message.content {
-        if let ContentPart::Text { text } = part
+        if let ContentPart::Text { text, .. } = part
             && text.contains(OPEN)
         {
             *text = dedupe_text(text, loaded);

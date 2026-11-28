@@ -18,11 +18,42 @@ export interface ToolResult {
   is_error: boolean;
 }
 
+export type Vendor = "openai" | "anthropic" | "gemini" | "deepseek" | "openrouter" | "qwen" | "ollama" | "custom";
+
+export interface WebSearchToolConfig {
+  enabled: boolean;
+  max_uses?: number | null;
+  allowed_domains?: string[];
+  blocked_domains?: string[];
+}
+
+export interface FileSearchToolConfig {
+  enabled: boolean;
+  vector_store_ids?: string[];
+}
+
+export interface ServerToolConfig {
+  web_search?: WebSearchToolConfig | null;
+  url_context?: boolean;
+  code_execution?: boolean;
+  file_search?: FileSearchToolConfig | null;
+}
+
+export interface Citation {
+  url: string;
+  title: string;
+  snippet?: string | null;
+  domain?: string | null;
+  raw_provider_payload?: unknown;
+}
+
 export type ContentPart =
-  | { kind: "text"; text: string }
+  | { kind: "text"; text: string; citations?: Citation[] }
   | { kind: "thinking"; thinking: string; signature?: string }
   | ({ kind: "tool_call" } & ToolCall)
   | ({ kind: "tool_result" } & ToolResult)
+  | { kind: "server_tool_use"; id: string; name: string; action?: string | null; input: unknown; raw_provider_payload?: unknown }
+  | { kind: "server_tool_result"; tool_use_id: string; name: string; summary: string; is_error: boolean; raw_provider_payload?: unknown }
   | { kind: "image"; source: unknown }
   | { kind: "document"; source: unknown; filename?: string };
 
@@ -77,6 +108,8 @@ export interface SessionMeta {
   approval_policy: ApprovalPolicy;
   /** Session override of the provider's thinking level. */
   reasoning_effort?: ReasoningEffort;
+  /** Session override of provider-hosted server tools. */
+  enabled_server_tools?: ServerToolConfig | null;
   lineage: Lineage;
   status: SessionStatus;
   turn: number;
@@ -194,6 +227,10 @@ export interface SessionDetail extends SessionMeta {
   last_error?: LoopError | null;
   /** What requests use: the session's level, or the provider's when it is `default`. */
   effective_reasoning_effort?: ReasoningEffort;
+  /** Vendor of this session's provider. */
+  provider_vendor?: Vendor;
+  /** Effective provider-hosted server tools (session override or provider defaults). */
+  effective_server_tools?: ServerToolConfig;
   settings: SessionSettings;
   phase: Phase;
   system_prompt: string;
@@ -227,6 +264,9 @@ export type AgentEvent =
   | { event: "text_delta"; step_index: number; block_id: string; delta: string }
   | { event: "thinking_delta"; step_index: number; block_id: string; delta: string }
   | { event: "thinking_end"; block_id: string; duration_ms: number }
+  | { event: "server_tool_use"; block_id: string; id: string; name: string; action?: string | null; input: unknown }
+  | { event: "server_tool_result"; block_id: string; tool_use_id: string; name: string; summary: string; is_error: boolean }
+  | { event: "citation"; block_id: string; citation: Citation }
   | { event: "assistant_message"; message: Message }
   | { event: "tool_started"; call: ToolCall }
   | { event: "tool_finished"; result: ToolResult }
@@ -335,12 +375,15 @@ export interface Provider {
   id: string;
   name: string;
   kind: ProviderKind;
+  vendor: Vendor;
   base_url: string | null;
   /** Masked (`AIza…9x2Q`) or an `env:NAME` reference. */
   api_key: string | null;
   api_key_source: SecretSource;
   default_model: string;
   extra_headers: Record<string, string>;
+  default_server_tools: ServerToolConfig;
+  extra_body: Record<string, unknown> | null;
   is_enabled: boolean;
   auto_retry: AutoRetry;
   defaults: ProviderDefaults;
@@ -351,11 +394,14 @@ export interface Provider {
 export interface ProviderInput {
   name?: string;
   kind?: ProviderKind;
+  vendor?: Vendor;
   base_url?: string;
   /** Empty or the masked value keeps the stored key. */
   api_key?: string;
   default_model?: string;
   extra_headers?: Record<string, string>;
+  default_server_tools?: ServerToolConfig;
+  extra_body?: Record<string, unknown> | null;
   is_enabled?: boolean;
   auto_retry?: AutoRetry;
   defaults?: ProviderDefaults;

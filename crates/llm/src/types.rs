@@ -121,12 +121,147 @@ impl ToolResult {
     }
 }
 
+/// Vendor identity, orthogonal to wire protocol (`OpenAIClient`, `OpenAIResponsesClient`,
+/// `AnthropicClient`, `GeminiClient`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Vendor {
+    Openai,
+    Anthropic,
+    Gemini,
+    Deepseek,
+    Openrouter,
+    Qwen,
+    Ollama,
+    #[default]
+    Custom,
+}
+
+impl Vendor {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Openai => "openai",
+            Self::Anthropic => "anthropic",
+            Self::Gemini => "gemini",
+            Self::Deepseek => "deepseek",
+            Self::Openrouter => "openrouter",
+            Self::Qwen => "qwen",
+            Self::Ollama => "ollama",
+            Self::Custom => "custom",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "openai" => Some(Self::Openai),
+            "anthropic" => Some(Self::Anthropic),
+            "gemini" => Some(Self::Gemini),
+            "deepseek" => Some(Self::Deepseek),
+            "openrouter" => Some(Self::Openrouter),
+            "qwen" => Some(Self::Qwen),
+            "ollama" => Some(Self::Ollama),
+            "custom" => Some(Self::Custom),
+            _ => None,
+        }
+    }
+}
+
+/// Configuration for provider-hosted web search.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebSearchToolConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_uses: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_domains: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked_domains: Vec<String>,
+}
+
+/// Configuration for OpenAI Responses `file_search` vector store retrieval.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileSearchToolConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vector_store_ids: Vec<String>,
+}
+
+/// Provider-hosted server-side tool capabilities enabled for a request or session.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServerToolConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_search: Option<WebSearchToolConfig>,
+    #[serde(default)]
+    pub url_context: bool,
+    #[serde(default)]
+    pub code_execution: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_search: Option<FileSearchToolConfig>,
+}
+
+impl ServerToolConfig {
+    pub fn web_search_enabled(&self) -> bool {
+        self.web_search.as_ref().is_some_and(|w| w.enabled)
+    }
+
+    pub fn file_search_enabled(&self) -> bool {
+        self.file_search
+            .as_ref()
+            .is_some_and(|f| f.enabled && !f.vector_store_ids.is_empty())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        !self.web_search_enabled()
+            && !self.url_context
+            && !self.code_execution
+            && !self.file_search_enabled()
+    }
+}
+
+/// Unified citation source attached to assistant text from provider-hosted search/grounding.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Citation {
+    pub url: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_provider_payload: Option<Value>,
+}
+
+impl Citation {
+    pub fn new(url: impl Into<String>, title: impl Into<String>) -> Self {
+        let url = url.into();
+        let domain = extract_domain(&url);
+        Self {
+            url,
+            title: title.into(),
+            snippet: None,
+            domain,
+            raw_provider_payload: None,
+        }
+    }
+}
+
+pub fn extract_domain(url: &str) -> Option<String> {
+    url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.trim_start_matches("www.").to_string()))
+}
+
 /// A typed content block inside a [`Message`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ContentPart {
     Text {
         text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        citations: Vec<Citation>,
     },
     Image {
         source: ImageSource,
@@ -143,11 +278,43 @@ pub enum ContentPart {
     },
     ToolCall(ToolCall),
     ToolResult(ToolResult),
+    /// Provider-hosted server tool invocation (never executed locally).
+    ServerToolUse {
+        id: String,
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        action: Option<String>,
+        #[serde(default)]
+        input: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        raw_provider_payload: Option<Value>,
+    },
+    /// Provider-hosted server tool result (preserves opaque encrypted payloads for replay).
+    ServerToolResult {
+        tool_use_id: String,
+        name: String,
+        #[serde(default)]
+        summary: String,
+        #[serde(default)]
+        is_error: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        raw_provider_payload: Option<Value>,
+    },
 }
 
 impl ContentPart {
     pub fn text(text: impl Into<String>) -> Self {
-        Self::Text { text: text.into() }
+        Self::Text {
+            text: text.into(),
+            citations: Vec::new(),
+        }
+    }
+
+    pub fn text_with_citations(text: impl Into<String>, citations: Vec<Citation>) -> Self {
+        Self::Text {
+            text: text.into(),
+            citations,
+        }
     }
 
     pub fn image_url(url: impl Into<String>) -> Self {
@@ -283,7 +450,7 @@ impl Message {
     pub fn text(&self) -> String {
         let mut out = String::new();
         for part in &self.content {
-            if let ContentPart::Text { text } = part {
+            if let ContentPart::Text { text, .. } = part {
                 out.push_str(text);
             }
         }
@@ -486,6 +653,12 @@ pub struct ChatRequest {
     /// Explicit, provider-agnostic cache boundaries (only honored when `prompt_cache` is enabled).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cache_breakpoints: Vec<CacheBreakpoint>,
+    /// Provider-hosted server tools (web search, URL context, code execution, file search).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_tools: Option<ServerToolConfig>,
+    /// Optional top-level JSON fields merged into the request body (escape hatch for custom vendors).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_body: Option<Value>,
 }
 
 impl ChatRequest {
@@ -553,6 +726,16 @@ impl ChatRequest {
 
     pub fn with_cache_breakpoints(mut self, breakpoints: Vec<CacheBreakpoint>) -> Self {
         self.cache_breakpoints = breakpoints;
+        self
+    }
+
+    pub fn with_server_tools(mut self, server_tools: ServerToolConfig) -> Self {
+        self.server_tools = Some(server_tools);
+        self
+    }
+
+    pub fn with_extra_body(mut self, extra_body: Value) -> Self {
+        self.extra_body = Some(extra_body);
         self
     }
 
@@ -642,6 +825,12 @@ pub struct ChatResponse {
     pub thinking_signature: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ToolCall>,
+    /// Chronological provider-hosted server tool uses and results (never executed locally).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub server_tool_blocks: Vec<ContentPart>,
+    /// Unified citations extracted from provider-hosted search/grounding.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub citations: Vec<Citation>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop_reason: Option<StopReason>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -666,8 +855,12 @@ impl ChatResponse {
                 signature: Some(signature),
             });
         }
-        if !self.content.is_empty() {
-            parts.push(ContentPart::Text { text: self.content });
+        parts.extend(self.server_tool_blocks);
+        if !self.content.is_empty() || !self.citations.is_empty() {
+            parts.push(ContentPart::Text {
+                text: self.content,
+                citations: self.citations,
+            });
         }
         for call in self.tool_calls {
             parts.push(ContentPart::ToolCall(call));
@@ -677,7 +870,7 @@ impl ChatResponse {
 }
 
 /// Incremental event emitted by [`crate::LlmClient::chat_stream`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamEvent {
     /// Initial response metadata (id, model).
@@ -708,6 +901,30 @@ pub enum StreamEvent {
     ToolCallEnd { index: usize },
     /// Reasoning signature attached to the tool call at `index` (Gemini).
     ToolCallSignature { index: usize, signature: String },
+    /// Provider-hosted server tool invocation observed in stream.
+    ServerToolUse {
+        id: String,
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        action: Option<String>,
+        #[serde(default)]
+        input: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        raw_provider_payload: Option<Value>,
+    },
+    /// Provider-hosted server tool result observed in stream.
+    ServerToolResult {
+        tool_use_id: String,
+        name: String,
+        #[serde(default)]
+        summary: String,
+        #[serde(default)]
+        is_error: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        raw_provider_payload: Option<Value>,
+    },
+    /// Citation source observed in stream.
+    Citation(Citation),
     /// Token usage update.
     Usage(Usage),
     /// Stream completion marker with optional stop reason.
@@ -734,6 +951,8 @@ pub struct StreamCollector {
     thinking: Option<String>,
     thinking_signature: Option<String>,
     tool_calls: BTreeMap<usize, PendingToolCall>,
+    server_tool_blocks: Vec<ContentPart>,
+    citations: Vec<Citation>,
     stop_reason: Option<StopReason>,
     usage: Option<Usage>,
 }
@@ -790,6 +1009,41 @@ impl StreamCollector {
                     self.tool_calls.entry(*index).or_default().signature = Some(signature.clone());
                 }
             }
+            StreamEvent::ServerToolUse {
+                id,
+                name,
+                action,
+                input,
+                raw_provider_payload,
+            } => {
+                self.server_tool_blocks.push(ContentPart::ServerToolUse {
+                    id: id.clone(),
+                    name: name.clone(),
+                    action: action.clone(),
+                    input: input.clone(),
+                    raw_provider_payload: raw_provider_payload.clone(),
+                });
+            }
+            StreamEvent::ServerToolResult {
+                tool_use_id,
+                name,
+                summary,
+                is_error,
+                raw_provider_payload,
+            } => {
+                self.server_tool_blocks.push(ContentPart::ServerToolResult {
+                    tool_use_id: tool_use_id.clone(),
+                    name: name.clone(),
+                    summary: summary.clone(),
+                    is_error: *is_error,
+                    raw_provider_payload: raw_provider_payload.clone(),
+                });
+            }
+            StreamEvent::Citation(c) => {
+                if !self.citations.iter().any(|existing| existing.url == c.url) {
+                    self.citations.push(c.clone());
+                }
+            }
             StreamEvent::Usage(usage) => {
                 self.usage = Some(usage.clone());
             }
@@ -821,6 +1075,8 @@ impl StreamCollector {
             thinking: self.thinking,
             thinking_signature: self.thinking_signature,
             tool_calls,
+            server_tool_blocks: self.server_tool_blocks,
+            citations: self.citations,
             stop_reason: self.stop_reason,
             usage: self.usage,
         })

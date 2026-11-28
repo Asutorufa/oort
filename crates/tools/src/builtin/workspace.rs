@@ -15,9 +15,13 @@ use oort_agent::{LocalTool, LocalToolExecutor, ToolContext, ToolError, ToolOutpu
 use serde_json::{Value, json};
 use tokio::io::AsyncReadExt;
 
+use super::output::{SPILL_THRESHOLD_CHARS, spill_if_needed};
 use super::{BuiltinContext, missing, str_arg, tool_def, trim_middle};
 
-const MAX_READ_BYTES: u64 = 256 * 1024;
+const MAX_FILE_INDEX_BYTES: u64 = 4 * 1024 * 1024;
+const DEFAULT_READ_LIMIT: usize = 200;
+const DEFAULT_READ_MAX_BYTES: usize = 32 * 1024;
+const HARD_READ_MAX_BYTES: usize = 256 * 1024;
 
 /// `run_command` limits.
 #[derive(Debug, Clone)]
@@ -111,13 +115,14 @@ pub struct ReadFile {
 }
 
 tool_def!(ReadFile, "read_file", true,
-"Read a text file in the workspace. Lines are numbered; use offset/limit for large files.",
+"Read a text file in the workspace. Lines are numbered; use offset/limit/max_bytes for pagination, or search_in_file to jump to specific content.",
 {
     "type": "object",
     "properties": {
         "path": { "type": "string", "description": "relative to the workspace root" },
-        "offset": { "type": "integer", "minimum": 1, "description": "first line (1-based)" },
-        "limit": { "type": "integer", "minimum": 1, "description": "number of lines" }
+        "offset": { "type": "integer", "minimum": 1, "description": "first line (1-based, default 1)" },
+        "limit": { "type": "integer", "minimum": 1, "description": "maximum number of lines (default 200)" },
+        "max_bytes": { "type": "integer", "minimum": 256, "maximum": 262144, "description": "maximum output bytes per call (default 32768)" }
     },
     "required": ["path"]
 });
@@ -133,7 +138,7 @@ impl LocalTool for ReadFile {
         let size = f.metadata().await.map(|m| m.len()).unwrap_or(0);
         let mut buf = Vec::new();
         (&mut f)
-            .take(MAX_READ_BYTES)
+            .take(MAX_FILE_INDEX_BYTES)
             .read_to_end(&mut buf)
             .await
             .map_err(|e| ToolError::Failed(e.to_string()))?;
@@ -146,21 +151,146 @@ impl LocalTool for ReadFile {
             .and_then(Value::as_u64)
             .unwrap_or(1)
             .max(1) as usize;
-        let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(2000) as usize;
+        let limit = args
+            .get("limit")
+            .and_then(Value::as_u64)
+            .map_or(DEFAULT_READ_LIMIT, |v| (v as usize).max(1));
+        let max_bytes = args
+            .get("max_bytes")
+            .and_then(Value::as_u64)
+            .map_or(DEFAULT_READ_MAX_BYTES, |v| {
+                (v as usize).clamp(256, HARD_READ_MAX_BYTES)
+            });
+
         let lines: Vec<&str> = text.lines().collect();
+        let total_lines = lines.len();
         let mut out = String::new();
+        let mut shown_end = offset.saturating_sub(1);
         for (i, l) in lines.iter().enumerate().skip(offset - 1).take(limit) {
-            out.push_str(&format!("{:>6}\t{l}\n", i + 1));
+            let formatted = format!("{:>4} | {l}\n", i + 1);
+            if !out.is_empty() && out.len() + formatted.len() > max_bytes {
+                break;
+            }
+            out.push_str(&formatted);
+            shown_end = i + 1;
         }
-        let shown_end = (offset - 1 + limit).min(lines.len());
-        if shown_end < lines.len() || size > MAX_READ_BYTES {
+        if shown_end < total_lines || size > MAX_FILE_INDEX_BYTES {
+            let next_offset = shown_end + 1;
+            let total_note = if size > MAX_FILE_INDEX_BYTES {
+                format!("{total_lines}+ (first {} MiB indexed)", MAX_FILE_INDEX_BYTES / (1024 * 1024))
+            } else {
+                total_lines.to_string()
+            };
             out.push_str(&format!(
-                "[showing lines {offset}-{shown_end}{}; use offset/limit for more]\n",
-                if size > MAX_READ_BYTES {
-                    format!(" of the first {} KiB", MAX_READ_BYTES / 1024)
-                } else {
-                    format!(" of {}", lines.len())
+                "[Showing lines {offset}-{shown_end} of {total_note} lines. \
+                 To continue reading, call read_file(path=\"{rel}\", offset={next_offset}, limit={limit}); \
+                 to locate specific content directly, use search_in_file.]\n"
+            ));
+        }
+        Ok(ToolOutput::ok(out))
+    }
+}
+
+// ----- search_in_file ------------------------------------------------------------------------
+
+pub struct SearchInFile {
+    ctx: BuiltinContext,
+}
+
+tool_def!(SearchInFile, "search_in_file", true,
+"Search for a keyword or regular expression inside a single workspace file and return matching line numbers with surrounding context.",
+{
+    "type": "object",
+    "properties": {
+        "path": { "type": "string", "description": "relative to the workspace root" },
+        "pattern": { "type": "string", "description": "keyword or regular expression to match" },
+        "context_lines": { "type": "integer", "minimum": 0, "maximum": 10, "description": "context lines before and after each match (default 2)" },
+        "max_matches": { "type": "integer", "minimum": 1, "maximum": 100, "description": "maximum number of matching lines to return (default 30)" }
+    },
+    "required": ["path", "pattern"]
+});
+
+#[async_trait]
+impl LocalTool for SearchInFile {
+    async fn run(&self, args: Value, _ctx: ToolContext) -> Result<ToolOutput, ToolError> {
+        let rel = str_arg(&args, "path")?;
+        let pattern = str_arg(&args, "pattern")?;
+        if pattern.is_empty() {
+            return Err(ToolError::InvalidArguments(
+                "`pattern` must not be empty".into(),
+            ));
+        }
+        let context_lines = args
+            .get("context_lines")
+            .and_then(Value::as_u64)
+            .map_or(2usize, |v| (v as usize).min(10));
+        let max_matches = args
+            .get("max_matches")
+            .and_then(Value::as_u64)
+            .map_or(30usize, |v| (v as usize).clamp(1, 100));
+
+        let re = regex::Regex::new(pattern)
+            .map_err(|e| ToolError::InvalidArguments(format!("invalid regex `{pattern}`: {e}")))?;
+
+        let path = resolve_existing(root(&self.ctx)?, rel)?;
+        let mut f = tokio::fs::File::open(&path)
+            .await
+            .map_err(|e| ToolError::Failed(format!("{rel}: {e}")))?;
+        let mut buf = Vec::new();
+        (&mut f)
+            .take(MAX_FILE_INDEX_BYTES)
+            .read_to_end(&mut buf)
+            .await
+            .map_err(|e| ToolError::Failed(e.to_string()))?;
+        if buf.iter().take(8192).any(|b| *b == 0) {
+            return Err(ToolError::Failed(format!("{rel} looks like a binary file")));
+        }
+        let text = String::from_utf8_lossy(&buf);
+        let lines: Vec<&str> = text.lines().collect();
+
+        let mut matches = Vec::new();
+        let mut total_matches = 0usize;
+        for (idx, line) in lines.iter().enumerate() {
+            if re.is_match(line) {
+                total_matches += 1;
+                if matches.len() < max_matches {
+                    matches.push(idx);
                 }
+            }
+        }
+        if matches.is_empty() {
+            return Ok(ToolOutput::ok(format!(
+                "[No matches for `{pattern}` in {rel} ({} lines)]",
+                lines.len()
+            )));
+        }
+
+        let mut out = format!(
+            "[Found {total_matches} match(es) in {rel} (showing {})]\n",
+            matches.len()
+        );
+        let mut last_printed: Option<usize> = None;
+        for &m in &matches {
+            let start = m.saturating_sub(context_lines);
+            let end = (m + context_lines + 1).min(lines.len());
+            if let Some(prev) = last_printed
+                && start > prev + 1
+            {
+                out.push_str("  ...\n");
+            }
+            for (i, line) in lines.iter().enumerate().take(end).skip(start) {
+                if last_printed.is_some_and(|p| i <= p) {
+                    continue;
+                }
+                let marker = if i == m { '>' } else { ' ' };
+                out.push_str(&format!("{marker}{:>4} | {line}\n", i + 1));
+                last_printed = Some(i);
+            }
+        }
+        if total_matches > matches.len() {
+            out.push_str(&format!(
+                "[... {} more match(es) omitted; increase max_matches or narrow pattern]\n",
+                total_matches - matches.len()
             ));
         }
         Ok(ToolOutput::ok(out))
@@ -388,22 +518,55 @@ impl LocalTool for RunCommand {
             let _ = child.wait().await;
         }
         let max = self.ctx.commands.max_output_chars;
-        let grab = |h: tokio::task::JoinHandle<Vec<u8>>| async move {
+        let grab_raw = |h: tokio::task::JoinHandle<Vec<u8>>| async move {
             match tokio::time::timeout(Duration::from_secs(2), h).await {
-                Ok(Ok(b)) => trim_middle(&String::from_utf8_lossy(&b), max),
+                Ok(Ok(b)) => String::from_utf8_lossy(&b).into_owned(),
                 _ => String::new(),
             }
         };
-        let stdout = grab(read_out).await;
-        let stderr = grab(read_err).await;
+        let raw_stdout = grab_raw(read_out).await;
+        let raw_stderr = grab_raw(read_err).await;
         let exit_code = status.and_then(|s| s.code());
-        let body = json!({
-            "exit_code": exit_code,
-            "timed_out": timed_out,
-            "stdout": stdout,
-            "stderr": stderr,
-        });
-        let text = serde_json::to_string_pretty(&body).unwrap_or_default();
+
+        let combined_chars = raw_stdout.chars().count() + raw_stderr.chars().count();
+        let threshold = max.min(SPILL_THRESHOLD_CHARS);
+        let full_combined = if raw_stderr.is_empty() {
+            raw_stdout.clone()
+        } else if raw_stdout.is_empty() {
+            format!("[stderr]\n{raw_stderr}")
+        } else {
+            format!("[stdout]\n{raw_stdout}\n\n[stderr]\n{raw_stderr}")
+        };
+
+        let text = if combined_chars > threshold
+            && let Some(spilled) = spill_if_needed(
+                &self.ctx,
+                "run_command",
+                Some(command),
+                &full_combined,
+                threshold,
+                4_000,
+                6_000,
+            )
+            .await
+        {
+            format!(
+                "exit_code: {}, timed_out: {timed_out}\n{spilled}",
+                exit_code
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "null".into())
+            )
+        } else {
+            let stdout = trim_middle(&raw_stdout, max);
+            let stderr = trim_middle(&raw_stderr, max);
+            let body = json!({
+                "exit_code": exit_code,
+                "timed_out": timed_out,
+                "stdout": stdout,
+                "stderr": stderr,
+            });
+            serde_json::to_string_pretty(&body).unwrap_or_default()
+        };
         Ok(if timed_out || exit_code != Some(0) {
             ToolOutput::error(if timed_out {
                 format!(
@@ -439,6 +602,7 @@ pub fn command_preview(args: &Value, ctx: &BuiltinContext) -> Option<Value> {
 
 pub(super) fn add(ex: LocalToolExecutor, ctx: &BuiltinContext) -> LocalToolExecutor {
     ex.with_tool(Arc::new(ReadFile { ctx: ctx.clone() }))
+        .with_tool(Arc::new(SearchInFile { ctx: ctx.clone() }))
         .with_tool(Arc::new(WriteFile { ctx: ctx.clone() }))
         .with_tool(Arc::new(RunCommand { ctx: ctx.clone() }))
 }

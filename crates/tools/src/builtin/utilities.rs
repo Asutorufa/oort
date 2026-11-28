@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use oort_agent::{LocalTool, LocalToolExecutor, ToolContext, ToolError, ToolOutput};
 use serde_json::{Value, json};
 
+use super::output::{SPILL_THRESHOLD_CHARS, spill_if_needed};
 use super::{BuiltinContext, html, str_arg, tool_def};
 
 pub struct CurrentTime;
@@ -100,11 +101,11 @@ pub fn is_blocked(ip: IpAddr) -> bool {
 }
 
 pub struct WebFetch {
-    opts: WebFetchOptions,
+    ctx: BuiltinContext,
 }
 
 tool_def!(WebFetch, "web_fetch", true,
-"Fetch an http(s) URL and return its readable text (HTML converted to Markdown). Long pages are trimmed.",
+"Fetch an http(s) URL and return its readable text (HTML converted to Markdown). Long pages are cached and can be paginated or searched with read_tool_output.",
 {
     "type": "object",
     "properties": {
@@ -147,10 +148,10 @@ impl WebFetch {
         let mut url =
             url::Url::parse(start).map_err(|e| ToolError::InvalidArguments(format!("url: {e}")))?;
         for _hop in 0..6 {
-            let addr = vet(&url, self.opts.allow_private).await?;
+            let addr = vet(&url, self.ctx.web.allow_private).await?;
             let host = url.host_str().unwrap_or_default().to_string();
             let client = reqwest::Client::builder()
-                .timeout(self.opts.timeout)
+                .timeout(self.ctx.web.timeout)
                 .redirect(reqwest::redirect::Policy::none())
                 .resolve(&host, addr)
                 .user_agent("oort-web-fetch/0.1")
@@ -201,7 +202,7 @@ impl WebFetch {
                 .map_err(|e| ToolError::Failed(e.to_string()))?
             {
                 body.extend_from_slice(&chunk);
-                if body.len() >= self.opts.max_bytes {
+                if body.len() >= self.ctx.web.max_bytes {
                     break;
                 }
             }
@@ -213,6 +214,21 @@ impl WebFetch {
             } else {
                 raw.to_string()
             };
+            let spill_threshold = max_chars.min(SPILL_THRESHOLD_CHARS);
+            let head_chars = 10_000usize.min(max_chars);
+            if let Some(spilled) = spill_if_needed(
+                &self.ctx,
+                "web_fetch",
+                Some(url.as_str()),
+                &text,
+                spill_threshold,
+                head_chars,
+                0,
+            )
+            .await
+            {
+                return Ok(format!("Source: {url}\n\n{spilled}"));
+            }
             let total = text.chars().count();
             let mut out: String = text.chars().take(max_chars).collect();
             if total > max_chars {
@@ -233,7 +249,7 @@ impl LocalTool for WebFetch {
         let max_chars = args
             .get("max_chars")
             .and_then(Value::as_u64)
-            .map_or(self.opts.max_chars, |m| (m as usize).clamp(500, 100_000));
+            .map_or(self.ctx.web.max_chars, |m| (m as usize).clamp(500, 100_000));
         tokio::select! {
             _ = ctx.cancel.cancelled() => Err(ToolError::Cancelled),
             r = self.fetch(url, max_chars) => r.map(ToolOutput::ok),
@@ -243,7 +259,5 @@ impl LocalTool for WebFetch {
 
 pub(super) fn add(ex: LocalToolExecutor, ctx: &BuiltinContext) -> LocalToolExecutor {
     ex.with_tool(Arc::new(CurrentTime))
-        .with_tool(Arc::new(WebFetch {
-            opts: ctx.web.clone(),
-        }))
+        .with_tool(Arc::new(WebFetch { ctx: ctx.clone() }))
 }

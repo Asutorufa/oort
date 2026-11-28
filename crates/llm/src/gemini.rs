@@ -10,10 +10,12 @@ use crate::Error;
 use crate::client::{ChatStream, LlmClient};
 use crate::error::extract_error_message_from_value;
 use crate::http::{apply_headers, bytes_stream, ensure_success, insert_header, normalize_base_url};
+use crate::openai_responses::merge_extra_body;
 use crate::sse::parse_sse_stream;
 use crate::types::{
-    ChatRequest, ChatResponse, ContentPart, DocumentSource, ImageSource, Message, ReasoningEffort,
-    Role, StopReason, StreamEvent, ToolCall, ToolChoice, ToolDefinition, Usage,
+    ChatRequest, ChatResponse, Citation, ContentPart, DocumentSource, ImageSource, Message,
+    ReasoningEffort, Role, StopReason, StreamEvent, ToolCall, ToolChoice, ToolDefinition, Usage,
+    Vendor, extract_domain,
 };
 
 pub const DEFAULT_GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
@@ -28,6 +30,8 @@ pub struct GeminiClient {
     project_id: Option<String>,
     location: Option<String>,
     model: String,
+    vendor: Vendor,
+    extra_body: Option<Value>,
     google_search: bool,
     extra_headers: HeaderMap,
 }
@@ -43,6 +47,8 @@ impl GeminiClient {
             project_id: None,
             location: None,
             model: model.into(),
+            vendor: Vendor::Gemini,
+            extra_body: None,
             google_search: false,
             extra_headers: HeaderMap::new(),
         }
@@ -65,9 +71,21 @@ impl GeminiClient {
             project_id: Some(project_id.into()),
             location: Some(location),
             model: model.into(),
+            vendor: Vendor::Gemini,
+            extra_body: None,
             google_search: false,
             extra_headers: HeaderMap::new(),
         }
+    }
+
+    pub fn with_vendor(mut self, vendor: Vendor) -> Self {
+        self.vendor = vendor;
+        self
+    }
+
+    pub fn with_extra_body(mut self, extra_body: Option<Value>) -> Self {
+        self.extra_body = extra_body;
+        self
     }
 
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
@@ -178,24 +196,32 @@ impl GeminiClient {
             }],
         });
 
-        let mut tools = Vec::new();
+        let mut tools: Vec<Value> = Vec::new();
         if !request.tools.is_empty() {
-            tools.push(GeminiTool {
-                function_declarations: Some(
-                    request
-                        .tools
-                        .iter()
-                        .map(encode_gemini_function_declaration)
-                        .collect(),
-                ),
-                google_search: None,
-            });
+            let decls: Vec<GeminiFunctionDeclaration> = request
+                .tools
+                .iter()
+                .map(encode_gemini_function_declaration)
+                .collect();
+            tools.push(json!({ "functionDeclarations": decls }));
         }
-        if self.google_search {
-            tools.push(GeminiTool {
-                function_declarations: None,
-                google_search: Some(GeminiGoogleSearch {}),
-            });
+        let enable_search = self.google_search
+            || request
+                .server_tools
+                .as_ref()
+                .is_some_and(|st| st.web_search_enabled());
+        if enable_search {
+            tools.push(json!({ "google_search": {} }));
+        }
+        if request.server_tools.as_ref().is_some_and(|st| st.url_context) {
+            tools.push(json!({ "url_context": {} }));
+        }
+        if request
+            .server_tools
+            .as_ref()
+            .is_some_and(|st| st.code_execution)
+        {
+            tools.push(json!({ "code_execution": {} }));
         }
 
         let tool_config = if !request.tools.is_empty() {
@@ -232,11 +258,22 @@ impl GeminiClient {
             },
         ))
     }
+
+    pub(crate) fn build_request_json(
+        &self,
+        request: &ChatRequest,
+    ) -> Result<(String, Value), Error> {
+        let (model, body) = self.build_request_body(request)?;
+        let mut val = serde_json::to_value(body)?;
+        merge_extra_body(&mut val, self.extra_body.as_ref());
+        merge_extra_body(&mut val, request.extra_body.as_ref());
+        Ok((model, val))
+    }
 }
 
 impl LlmClient for GeminiClient {
     async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, Error> {
-        let (model, body) = self.build_request_body(&request)?;
+        let (model, body) = self.build_request_json(&request)?;
         let url = self.action_url(&model, "generateContent");
         let req_builder = self.apply_auth(self.http.post(url).json(&body));
 
@@ -246,7 +283,7 @@ impl LlmClient for GeminiClient {
     }
 
     async fn chat_stream(&self, request: ChatRequest) -> Result<ChatStream, Error> {
-        let (model, body) = self.build_request_body(&request)?;
+        let (model, body) = self.build_request_json(&request)?;
         let url = self.action_url(&model, "streamGenerateContent");
         let req_builder = self.apply_auth(
             self.http
@@ -328,7 +365,7 @@ pub(crate) struct GeminiGenerateContentRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     system_instruction: Option<GeminiContent>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<Vec<GeminiTool>>,
+    tools: Option<Vec<Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_config: Option<GeminiToolConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -363,6 +400,10 @@ struct GeminiPart {
     function_call: Option<GeminiFunctionCall>,
     #[serde(skip_serializing_if = "Option::is_none")]
     function_response: Option<GeminiFunctionResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    executable_code: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code_execution_result: Option<Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -401,23 +442,11 @@ struct GeminiFunctionResponse {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct GeminiTool {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    function_declarations: Option<Vec<GeminiFunctionDeclaration>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    google_search: Option<GeminiGoogleSearch>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
 struct GeminiFunctionDeclaration {
     name: String,
     description: String,
     parameters: Value,
 }
-
-#[derive(Debug, Serialize)]
-struct GeminiGoogleSearch {}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -476,6 +505,8 @@ struct GeminiGenerateContentResponse {
 struct GeminiCandidate {
     content: Option<GeminiContent>,
     finish_reason: Option<String>,
+    grounding_metadata: Option<Value>,
+    url_context_metadata: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -659,7 +690,7 @@ fn encode_gemini_message(
     let mut parts = Vec::new();
     for part in &msg.content {
         match part {
-            ContentPart::Text { text } => {
+            ContentPart::Text { text, .. } => {
                 parts.push(GeminiPart {
                     text: Some(text.clone()),
                     ..Default::default()
@@ -780,6 +811,7 @@ fn encode_gemini_message(
                     ..Default::default()
                 });
             }
+            ContentPart::ServerToolUse { .. } | ContentPart::ServerToolResult { .. } => {}
         }
     }
 
@@ -809,6 +841,69 @@ fn map_gemini_usage(u: GeminiUsageMetadata) -> Usage {
     }
 }
 
+fn parse_gemini_grounding_citations(meta: &Value) -> Vec<Citation> {
+    let mut out = Vec::new();
+    let Some(chunks) = meta.get("groundingChunks").and_then(Value::as_array) else {
+        return out;
+    };
+    for chunk in chunks {
+        if let Some(web) = chunk.get("web")
+            && let Some(uri) = web.get("uri").and_then(Value::as_str)
+            && !uri.trim().is_empty()
+        {
+            let title = web
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            if !out.iter().any(|c: &Citation| c.url == uri) {
+                out.push(Citation {
+                    domain: extract_domain(uri),
+                    url: uri.to_string(),
+                    title,
+                    snippet: None,
+                    raw_provider_payload: Some(chunk.clone()),
+                });
+            }
+        }
+    }
+    out
+}
+
+fn parse_gemini_url_context_blocks(meta: &Value) -> Vec<ContentPart> {
+    let mut out = Vec::new();
+    let Some(entries) = meta.get("urlMetadata").and_then(Value::as_array) else {
+        return out;
+    };
+    for (i, entry) in entries.iter().enumerate() {
+        let url = entry
+            .get("retrievedUrl")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let status = entry
+            .get("urlRetrievalStatus")
+            .and_then(Value::as_str)
+            .unwrap_or("SUCCESS");
+        let is_error = status.contains("ERROR") || status.contains("UNSAFE");
+        let id = format!("url_ctx_{i}");
+        out.push(ContentPart::ServerToolUse {
+            id: id.clone(),
+            name: "url_context".to_string(),
+            action: Some("fetch".to_string()),
+            input: json!({ "url": url }),
+            raw_provider_payload: None,
+        });
+        out.push(ContentPart::ServerToolResult {
+            tool_use_id: id,
+            name: "url_context".to_string(),
+            summary: format!("{url} ({status})"),
+            is_error,
+            raw_provider_payload: Some(entry.clone()),
+        });
+    }
+    out
+}
+
 fn parse_gemini_response(resp: GeminiGenerateContentResponse) -> Result<ChatResponse, Error> {
     let Some(candidate) = resp.candidates.into_iter().next() else {
         return Err(Error::api("Gemini response contained no candidates"));
@@ -818,9 +913,38 @@ fn parse_gemini_response(resp: GeminiGenerateContentResponse) -> Result<ChatResp
     let mut thinking: Option<String> = None;
     let mut thinking_signature: Option<String> = None;
     let mut tool_calls = Vec::new();
+    let mut server_tool_blocks = Vec::new();
+    let mut citations = Vec::new();
+
+    if let Some(gm) = &candidate.grounding_metadata {
+        if let Some(queries) = gm.get("webSearchQueries").and_then(Value::as_array)
+            && !queries.is_empty()
+        {
+            server_tool_blocks.push(ContentPart::ServerToolUse {
+                id: "google_search_0".to_string(),
+                name: "google_search".to_string(),
+                action: Some("search".to_string()),
+                input: json!({ "queries": queries }),
+                raw_provider_payload: Some(gm.clone()),
+            });
+        }
+        citations = parse_gemini_grounding_citations(gm);
+        if !citations.is_empty() {
+            server_tool_blocks.push(ContentPart::ServerToolResult {
+                tool_use_id: "google_search_0".to_string(),
+                name: "google_search".to_string(),
+                summary: format!("{} sources", citations.len()),
+                is_error: false,
+                raw_provider_payload: None,
+            });
+        }
+    }
+    if let Some(uc) = &candidate.url_context_metadata {
+        server_tool_blocks.extend(parse_gemini_url_context_blocks(uc));
+    }
 
     if let Some(cand_content) = candidate.content {
-        for part in cand_content.parts {
+        for (pidx, part) in cand_content.parts.into_iter().enumerate() {
             // A signature on a function call belongs to that call; others to the thinking.
             // Gemini signatures are whole values per part: never concatenate them.
             let sig = part.thought_signature.filter(|s| !s.is_empty());
@@ -837,6 +961,32 @@ fn parse_gemini_response(resp: GeminiGenerateContentResponse) -> Result<ChatResp
                 } else {
                     content.push_str(&text);
                 }
+            }
+            if let Some(code) = part.executable_code {
+                server_tool_blocks.push(ContentPart::ServerToolUse {
+                    id: format!("code_exec_{pidx}"),
+                    name: "code_execution".to_string(),
+                    action: Some("execute".to_string()),
+                    input: code.clone(),
+                    raw_provider_payload: Some(code),
+                });
+            }
+            if let Some(res) = part.code_execution_result {
+                let outcome = res.get("outcome").and_then(Value::as_str).unwrap_or("OUTCOME_OK");
+                let summary = res
+                    .get("output")
+                    .and_then(Value::as_str)
+                    .unwrap_or(outcome)
+                    .chars()
+                    .take(160)
+                    .collect();
+                server_tool_blocks.push(ContentPart::ServerToolResult {
+                    tool_use_id: format!("code_exec_{}", pidx.saturating_sub(1)),
+                    name: "code_execution".to_string(),
+                    summary,
+                    is_error: outcome != "OUTCOME_OK",
+                    raw_provider_payload: Some(res),
+                });
             }
             if let Some(fc) = part.function_call {
                 let idx = tool_calls.len();
@@ -863,6 +1013,8 @@ fn parse_gemini_response(resp: GeminiGenerateContentResponse) -> Result<ChatResp
         thinking,
         thinking_signature,
         tool_calls,
+        server_tool_blocks,
+        citations,
         stop_reason,
         usage: resp.usage_metadata.map(map_gemini_usage),
     })
@@ -966,6 +1118,35 @@ where
                                         st.queue.push_back(Ok(StreamEvent::TextDelta(text)));
                                     }
                                 }
+                                if let Some(code) = part.executable_code {
+                                    st.queue.push_back(Ok(StreamEvent::ServerToolUse {
+                                        id: "code_exec".to_string(),
+                                        name: "code_execution".to_string(),
+                                        action: Some("execute".to_string()),
+                                        input: code.clone(),
+                                        raw_provider_payload: Some(code),
+                                    }));
+                                }
+                                if let Some(res) = part.code_execution_result {
+                                    let outcome = res
+                                        .get("outcome")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("OUTCOME_OK");
+                                    let summary = res
+                                        .get("output")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or(outcome)
+                                        .chars()
+                                        .take(160)
+                                        .collect();
+                                    st.queue.push_back(Ok(StreamEvent::ServerToolResult {
+                                        tool_use_id: "code_exec".to_string(),
+                                        name: "code_execution".to_string(),
+                                        summary,
+                                        is_error: outcome != "OUTCOME_OK",
+                                        raw_provider_payload: Some(res),
+                                    }));
+                                }
                                 if let Some(fc) = part.function_call {
                                     let idx = st.next_tool_index;
                                     st.next_tool_index += 1;
@@ -989,6 +1170,71 @@ where
                                     }
                                     st.queue
                                         .push_back(Ok(StreamEvent::ToolCallEnd { index: idx }));
+                                }
+                            }
+                        }
+
+                        if let Some(gm) = &candidate.grounding_metadata {
+                            if let Some(queries) =
+                                gm.get("webSearchQueries").and_then(Value::as_array)
+                                && !queries.is_empty()
+                            {
+                                st.queue.push_back(Ok(StreamEvent::ServerToolUse {
+                                    id: "google_search_0".to_string(),
+                                    name: "google_search".to_string(),
+                                    action: Some("search".to_string()),
+                                    input: json!({ "queries": queries }),
+                                    raw_provider_payload: Some(gm.clone()),
+                                }));
+                            }
+                            let cites = parse_gemini_grounding_citations(gm);
+                            if !cites.is_empty() {
+                                st.queue.push_back(Ok(StreamEvent::ServerToolResult {
+                                    tool_use_id: "google_search_0".to_string(),
+                                    name: "google_search".to_string(),
+                                    summary: format!("{} sources", cites.len()),
+                                    is_error: false,
+                                    raw_provider_payload: None,
+                                }));
+                                for c in cites {
+                                    st.queue.push_back(Ok(StreamEvent::Citation(c)));
+                                }
+                            }
+                        }
+                        if let Some(uc) = &candidate.url_context_metadata {
+                            for block in parse_gemini_url_context_blocks(uc) {
+                                match block {
+                                    ContentPart::ServerToolUse {
+                                        id,
+                                        name,
+                                        action,
+                                        input,
+                                        raw_provider_payload,
+                                    } => {
+                                        st.queue.push_back(Ok(StreamEvent::ServerToolUse {
+                                            id,
+                                            name,
+                                            action,
+                                            input,
+                                            raw_provider_payload,
+                                        }));
+                                    }
+                                    ContentPart::ServerToolResult {
+                                        tool_use_id,
+                                        name,
+                                        summary,
+                                        is_error,
+                                        raw_provider_payload,
+                                    } => {
+                                        st.queue.push_back(Ok(StreamEvent::ServerToolResult {
+                                            tool_use_id,
+                                            name,
+                                            summary,
+                                            is_error,
+                                            raw_provider_payload,
+                                        }));
+                                    }
+                                    _ => {}
                                 }
                             }
                         }
@@ -1226,7 +1472,7 @@ mod signature_tests {
             Message {
                 role: Role::Assistant,
                 content: vec![
-                    ContentPart::Text { text: "ok".into() },
+                    ContentPart::text("ok"),
                     ContentPart::ToolCall(call),
                     ContentPart::ToolCall(call2),
                 ],

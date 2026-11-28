@@ -166,6 +166,9 @@ pub struct NewSession {
     /// Mutable later via [`SessionStore::set_reasoning_effort`].
     #[serde(default)]
     pub reasoning_effort: crate::ReasoningEffort,
+    /// Mutable later via [`SessionStore::set_server_tools`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled_server_tools: Option<oort_llm::ServerToolConfig>,
 }
 
 /// Where a session sits in a subagent tree, and its immutable tool environment.
@@ -194,6 +197,9 @@ pub struct SessionMeta {
     pub lineage: Lineage,
     /// Session override of the provider's thinking level.
     pub reasoning_effort: crate::ReasoningEffort,
+    /// Session override of provider-hosted server tools.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled_server_tools: Option<oort_llm::ServerToolConfig>,
     pub status: SessionStatus,
     pub turn: u32,
     pub message_count: u64,
@@ -330,6 +336,15 @@ pub trait SessionStore: Send + Sync {
         id: &str,
         effort: crate::ReasoningEffort,
     ) -> Result<(), StoreError>;
+
+    /// Updates session-level provider-hosted server tools override.
+    async fn set_server_tools(
+        &self,
+        _id: &str,
+        _tools: Option<&oort_llm::ServerToolConfig>,
+    ) -> Result<(), StoreError> {
+        Ok(())
+    }
 
     /// Removes the session and all its logs. The only way history is ever deleted.
     async fn delete_session(&self, id: &str) -> Result<(), StoreError>;
@@ -483,4 +498,32 @@ impl LoopHook for PersistenceHook {
         }
         Ok(())
     }
+}
+
+/// Overflow cache entry for long built-in tool output (`web_fetch`, `run_command`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolOutputBlob {
+    pub id: String,
+    pub session_id: SessionId,
+    pub tool_name: String,
+    pub source_hint: Option<String>,
+    pub content: String,
+    pub total_chars: usize,
+    pub total_lines: usize,
+    pub created_at: String,
+}
+
+/// Persistence for spilled tool outputs, scoped to a session (and its subagent lineage).
+#[async_trait]
+pub trait ToolOutputBlobStore: Send + Sync {
+    async fn save_tool_output_blob(&self, blob: &ToolOutputBlob) -> Result<(), StoreError>;
+    async fn get_tool_output_blob(&self, id: &str) -> Result<Option<ToolOutputBlob>, StoreError>;
+    /// Returns `true` when `blob_session_id` equals `session_id` or is an ancestor session
+    /// (allowing subagents to read blobs created by their parent/root session, while blocking
+    /// cross-session access).
+    async fn can_access_blob(
+        &self,
+        session_id: &str,
+        blob_session_id: &str,
+    ) -> Result<bool, StoreError>;
 }

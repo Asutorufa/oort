@@ -15,8 +15,9 @@ use crate::openai::{
 };
 use crate::sse::parse_sse_stream;
 use crate::types::{
-    ChatRequest, ChatResponse, ContentPart, DocumentSource, ImageSource, Message, Role, StopReason,
-    StreamEvent, ToolCall, ToolChoice, ToolDefinition, Usage, parse_tool_arguments,
+    ChatRequest, ChatResponse, Citation, ContentPart, DocumentSource, ImageSource, Message, Role,
+    StopReason, StreamEvent, ToolCall, ToolChoice, ToolDefinition, Usage, Vendor, extract_domain,
+    parse_tool_arguments,
 };
 
 /// HTTP client for the OpenAI Responses API (`/v1/responses`).
@@ -26,6 +27,8 @@ pub struct OpenAIResponsesClient {
     base_url: String,
     api_key: String,
     model: String,
+    vendor: Vendor,
+    extra_body: Option<Value>,
     extra_headers: HeaderMap,
 }
 
@@ -36,8 +39,20 @@ impl OpenAIResponsesClient {
             base_url: DEFAULT_OPENAI_BASE_URL.to_string(),
             api_key: api_key.into(),
             model: model.into(),
+            vendor: Vendor::Openai,
+            extra_body: None,
             extra_headers: HeaderMap::new(),
         }
+    }
+
+    pub fn with_vendor(mut self, vendor: Vendor) -> Self {
+        self.vendor = vendor;
+        self
+    }
+
+    pub fn with_extra_body(mut self, extra_body: Option<Value>) -> Self {
+        self.extra_body = extra_body;
+        self
     }
 
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
@@ -85,17 +100,30 @@ impl OpenAIResponsesClient {
             encode_responses_input(msg, &mut input);
         }
 
-        let tools = if request.tools.is_empty() {
+        let mut tool_list: Vec<Value> = request.tools.iter().map(encode_responses_tool).collect();
+        if let Some(st) = &request.server_tools {
+            append_responses_server_tools(self.vendor, st, &mut tool_list);
+        }
+        let tools = if tool_list.is_empty() {
             None
         } else {
-            Some(request.tools.iter().map(encode_responses_tool).collect())
+            Some(tool_list)
         };
 
         let tool_choice = if tools.is_some() {
-            request
-                .tool_choice
-                .as_ref()
-                .map(encode_responses_tool_choice)
+            request.tool_choice.as_ref().and_then(|c| {
+                if self.vendor == Vendor::Deepseek
+                    && matches!(
+                        c,
+                        ToolChoice::Tool { name }
+                            if name == "deepseek_web_search" || name == "deepseek_read_url"
+                    )
+                {
+                    None
+                } else {
+                    Some(encode_responses_tool_choice(c))
+                }
+            })
         } else {
             None
         };
@@ -129,11 +157,23 @@ impl OpenAIResponsesClient {
             stream: Some(stream),
         })
     }
+
+    pub(crate) fn build_request_json(
+        &self,
+        request: &ChatRequest,
+        stream: bool,
+    ) -> Result<Value, Error> {
+        let body = self.build_request_body(request, stream)?;
+        let mut val = serde_json::to_value(body)?;
+        merge_extra_body(&mut val, self.extra_body.as_ref());
+        merge_extra_body(&mut val, request.extra_body.as_ref());
+        Ok(val)
+    }
 }
 
 impl LlmClient for OpenAIResponsesClient {
     async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, Error> {
-        let body = self.build_request_body(&request, false)?;
+        let body = self.build_request_json(&request, false)?;
 
         let mut req_builder = self.http.post(self.responses_url()).json(&body);
         if !self.api_key.trim().is_empty() {
@@ -147,7 +187,7 @@ impl LlmClient for OpenAIResponsesClient {
     }
 
     async fn chat_stream(&self, request: ChatRequest) -> Result<ChatStream, Error> {
-        let body = self.build_request_body(&request, true)?;
+        let body = self.build_request_json(&request, true)?;
 
         let mut req_builder = self
             .http
@@ -219,7 +259,7 @@ struct ResponsesApiResponse {
     error: Option<Value>,
     incomplete_details: Option<ResponsesIncompleteDetails>,
     #[serde(default)]
-    output: Vec<ResponsesOutputItem>,
+    output: Vec<Value>,
     usage: Option<ResponsesUsage>,
 }
 
@@ -229,25 +269,13 @@ struct ResponsesIncompleteDetails {
 }
 
 #[derive(Debug, Deserialize)]
-struct ResponsesOutputItem {
-    #[serde(rename = "type", default)]
-    item_type: String,
-    #[serde(default)]
-    content: Vec<ResponsesContentPart>,
-    #[serde(default)]
-    summary: Vec<ResponsesContentPart>,
-    call_id: Option<String>,
-    id: Option<String>,
-    name: Option<String>,
-    arguments: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
 struct ResponsesContentPart {
     #[serde(rename = "type", default)]
     part_type: String,
     #[serde(default)]
     text: String,
+    #[serde(default)]
+    annotations: Vec<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -272,6 +300,174 @@ struct ResponsesOutputTokensDetails {
 }
 
 // --- Helpers ---
+
+pub(crate) fn merge_extra_body(target: &mut Value, extra: Option<&Value>) {
+    if let (Some(dst), Some(Value::Object(src))) = (target.as_object_mut(), extra) {
+        for (k, v) in src {
+            dst.insert(k.clone(), v.clone());
+        }
+    }
+}
+
+fn append_responses_server_tools(
+    vendor: Vendor,
+    st: &crate::types::ServerToolConfig,
+    out: &mut Vec<Value>,
+) {
+    match vendor {
+        Vendor::Deepseek => {
+            if st.web_search_enabled() {
+                out.push(json!({ "type": "deepseek_web_search" }));
+            }
+            if st.url_context {
+                out.push(json!({ "type": "deepseek_read_url" }));
+            }
+        }
+        Vendor::Openrouter => {
+            if st.web_search_enabled() {
+                out.push(json!({ "type": "openrouter:web_search" }));
+            }
+            if st.url_context {
+                out.push(json!({ "type": "openrouter:web_fetch" }));
+            }
+        }
+        Vendor::Qwen => {
+            if st.web_search_enabled() {
+                out.push(json!({ "type": "web_search" }));
+            }
+            if st.url_context {
+                out.push(json!({ "type": "web_extractor" }));
+            }
+            if st.code_execution {
+                out.push(json!({ "type": "code_interpreter" }));
+            }
+        }
+        Vendor::Openai | Vendor::Custom => {
+            if let Some(ws) = &st.web_search
+                && ws.enabled
+            {
+                let mut tool = serde_json::Map::new();
+                tool.insert("type".to_string(), Value::String("web_search".to_string()));
+                if !ws.allowed_domains.is_empty() {
+                    tool.insert(
+                        "filters".to_string(),
+                        json!({ "allowed_domains": ws.allowed_domains }),
+                    );
+                }
+                out.push(Value::Object(tool));
+            }
+            if st.code_execution {
+                out.push(json!({
+                    "type": "code_interpreter",
+                    "container": { "type": "auto" }
+                }));
+            }
+            if let Some(fs) = &st.file_search
+                && fs.enabled
+                && !fs.vector_store_ids.is_empty()
+            {
+                out.push(json!({
+                    "type": "file_search",
+                    "vector_store_ids": fs.vector_store_ids
+                }));
+            }
+        }
+        Vendor::Anthropic | Vendor::Gemini | Vendor::Ollama => {}
+    }
+}
+
+fn is_responses_server_tool_item_type(t: &str) -> bool {
+    matches!(
+        t,
+        "web_search_call"
+            | "code_interpreter_call"
+            | "file_search_call"
+            | "deepseek_web_search_call"
+            | "deepseek_read_url_call"
+            | "web_extractor_call"
+    )
+}
+
+fn parse_responses_server_tool_item(item: &Value) -> Option<(ContentPart, Option<ContentPart>)> {
+    let item_type = item.get("type").and_then(Value::as_str)?;
+    if !is_responses_server_tool_item_type(item_type) {
+        return None;
+    }
+    let id = item
+        .get("id")
+        .or_else(|| item.get("call_id"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let action = item
+        .pointer("/action/type")
+        .and_then(Value::as_str)
+        .or_else(|| item.get("action").and_then(Value::as_str))
+        .map(ToString::to_string);
+    let input = item
+        .get("action")
+        .cloned()
+        .or_else(|| item.get("code").cloned().map(|c| json!({ "code": c })))
+        .or_else(|| item.get("queries").cloned().map(|q| json!({ "queries": q })))
+        .unwrap_or_else(|| json!({}));
+    let use_block = ContentPart::ServerToolUse {
+        id: id.clone(),
+        name: item_type.to_string(),
+        action,
+        input,
+        raw_provider_payload: Some(item.clone()),
+    };
+    let status = item.get("status").and_then(Value::as_str).unwrap_or("");
+    let res_block = if status == "completed" || status == "failed" || item.get("results").is_some() || item.get("outputs").is_some() {
+        let summary = if let Some(results) = item.get("results").and_then(Value::as_array) {
+            format!("{} results", results.len())
+        } else if let Some(outputs) = item.get("outputs").and_then(Value::as_array) {
+            format!("{} outputs", outputs.len())
+        } else if !status.is_empty() {
+            status.to_string()
+        } else {
+            "completed".to_string()
+        };
+        Some(ContentPart::ServerToolResult {
+            tool_use_id: id,
+            name: item_type.to_string(),
+            summary,
+            is_error: status == "failed",
+            raw_provider_payload: None,
+        })
+    } else {
+        None
+    };
+    Some((use_block, res_block))
+}
+
+pub(crate) fn parse_url_citation(ann: &Value) -> Option<Citation> {
+    if ann.get("type").and_then(Value::as_str) != Some("url_citation") {
+        return None;
+    }
+    let inner = ann.get("url_citation").unwrap_or(ann);
+    let url = inner.get("url").and_then(Value::as_str)?.trim().to_string();
+    if url.is_empty() {
+        return None;
+    }
+    let title = inner
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let snippet = inner
+        .get("content")
+        .or_else(|| inner.get("snippet"))
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+    Some(Citation {
+        domain: extract_domain(&url),
+        url,
+        title,
+        snippet,
+        raw_provider_payload: Some(ann.clone()),
+    })
+}
 
 fn encode_responses_tool(tool: &ToolDefinition) -> Value {
     json!({
@@ -310,7 +506,7 @@ fn encode_responses_input(msg: &Message, out: &mut Vec<Value>) {
             let mut content = Vec::new();
             for part in &msg.content {
                 match part {
-                    ContentPart::Text { text } => {
+                    ContentPart::Text { text, .. } => {
                         content.push(json!({ "type": "input_text", "text": text }));
                     }
                     ContentPart::Image { source } => {
@@ -367,9 +563,10 @@ fn encode_responses_input(msg: &Message, out: &mut Vec<Value>) {
         Role::Assistant => {
             let mut text_parts = Vec::new();
             let mut tool_items = Vec::new();
+            let mut server_items = Vec::new();
             for part in &msg.content {
                 match part {
-                    ContentPart::Text { text } if !text.is_empty() => {
+                    ContentPart::Text { text, .. } if !text.is_empty() => {
                         text_parts.push(json!({ "type": "output_text", "text": text }));
                     }
                     ContentPart::ToolCall(call) => {
@@ -380,9 +577,20 @@ fn encode_responses_input(msg: &Message, out: &mut Vec<Value>) {
                             "arguments": call.arguments_json_string(),
                         }));
                     }
+                    ContentPart::ServerToolUse {
+                        raw_provider_payload: Some(raw),
+                        ..
+                    } => {
+                        if let Some(t) = raw.get("type").and_then(Value::as_str)
+                            && is_responses_server_tool_item_type(t)
+                        {
+                            server_items.push(raw.clone());
+                        }
+                    }
                     _ => {}
                 }
             }
+            out.extend(server_items);
             if !text_parts.is_empty() {
                 out.push(json!({
                     "type": "message",
@@ -434,12 +642,25 @@ fn parse_responses_body(resp: ResponsesApiResponse) -> Result<ChatResponse, Erro
     let mut content = String::new();
     let mut thinking: Option<String> = None;
     let mut tool_calls = Vec::new();
+    let mut server_tool_blocks = Vec::new();
+    let mut citations: Vec<Citation> = Vec::new();
 
     for item in resp.output {
-        if item.item_type == "function_call" {
-            let id = item.call_id.or(item.id).unwrap_or_default();
-            let name = item.name.unwrap_or_default();
-            let arguments = parse_tool_arguments(item.arguments.as_deref().unwrap_or(""))?;
+        let item_type = item.get("type").and_then(Value::as_str).unwrap_or("");
+        if item_type == "function_call" {
+            let id = item
+                .get("call_id")
+                .or_else(|| item.get("id"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let name = item
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let arguments =
+                parse_tool_arguments(item.get("arguments").and_then(Value::as_str).unwrap_or(""))?;
             tool_calls.push(ToolCall {
                 id,
                 name,
@@ -448,19 +669,43 @@ fn parse_responses_body(resp: ResponsesApiResponse) -> Result<ChatResponse, Erro
             });
             continue;
         }
+        if let Some((use_block, res_block)) = parse_responses_server_tool_item(&item) {
+            server_tool_blocks.push(use_block);
+            if let Some(rb) = res_block {
+                server_tool_blocks.push(rb);
+            }
+            continue;
+        }
 
-        for part in item.content {
-            match part.part_type.as_str() {
-                "output_text" | "text" => content.push_str(&part.text),
-                "reasoning" | "summary_text" | "reasoning_text" => {
-                    append_thinking(&mut thinking, &part.text);
+        if let Some(parts) = item.get("content").and_then(Value::as_array) {
+            for part_val in parts {
+                if let Ok(part) = serde_json::from_value::<ResponsesContentPart>(part_val.clone()) {
+                    match part.part_type.as_str() {
+                        "output_text" | "text" => {
+                            content.push_str(&part.text);
+                            for ann in &part.annotations {
+                                if let Some(c) = parse_url_citation(ann)
+                                    && !citations.iter().any(|x| x.url == c.url)
+                                {
+                                    citations.push(c);
+                                }
+                            }
+                        }
+                        "reasoning" | "summary_text" | "reasoning_text" => {
+                            append_thinking(&mut thinking, &part.text);
+                        }
+                        _ => {}
+                    }
                 }
-                _ => {}
             }
         }
-        for part in item.summary {
-            if matches!(part.part_type.as_str(), "summary_text" | "reasoning") {
-                append_thinking(&mut thinking, &part.text);
+        if let Some(summary) = item.get("summary").and_then(Value::as_array) {
+            for part_val in summary {
+                if let Ok(part) = serde_json::from_value::<ResponsesContentPart>(part_val.clone())
+                    && matches!(part.part_type.as_str(), "summary_text" | "reasoning")
+                {
+                    append_thinking(&mut thinking, &part.text);
+                }
             }
         }
     }
@@ -489,6 +734,8 @@ fn parse_responses_body(resp: ResponsesApiResponse) -> Result<ChatResponse, Erro
         thinking,
         thinking_signature: None,
         tool_calls,
+        server_tool_blocks,
+        citations,
         stop_reason,
         usage: resp.usage.map(map_responses_usage),
     })
@@ -636,18 +883,78 @@ where
                                 }));
                             }
                         }
-                        Some("response.output_item.done") => {
-                            if value.pointer("/item/type").and_then(Value::as_str)
-                                == Some("function_call")
+                        Some("response.output_text.annotation.added") => {
+                            if let Some(ann) = value.get("annotation")
+                                && let Some(c) = parse_url_citation(ann)
                             {
-                                let idx = value
-                                    .get("output_index")
-                                    .and_then(Value::as_u64)
-                                    .unwrap_or(0)
-                                    as usize;
-                                if st.open_tool_calls.remove(&idx) {
-                                    st.queue
-                                        .push_back(Ok(StreamEvent::ToolCallEnd { index: idx }));
+                                st.queue.push_back(Ok(StreamEvent::Citation(c)));
+                            }
+                        }
+                        Some("response.output_item.done") => {
+                            if let Some(item) = value.get("item") {
+                                let item_type =
+                                    item.get("type").and_then(Value::as_str).unwrap_or("");
+                                if item_type == "function_call" {
+                                    let idx = value
+                                        .get("output_index")
+                                        .and_then(Value::as_u64)
+                                        .unwrap_or(0)
+                                        as usize;
+                                    if st.open_tool_calls.remove(&idx) {
+                                        st.queue.push_back(Ok(StreamEvent::ToolCallEnd {
+                                            index: idx,
+                                        }));
+                                    }
+                                } else if let Some((use_block, res_block)) =
+                                    parse_responses_server_tool_item(item)
+                                {
+                                    if let ContentPart::ServerToolUse {
+                                        id,
+                                        name,
+                                        action,
+                                        input,
+                                        raw_provider_payload,
+                                    } = use_block
+                                    {
+                                        st.queue.push_back(Ok(StreamEvent::ServerToolUse {
+                                            id,
+                                            name,
+                                            action,
+                                            input,
+                                            raw_provider_payload,
+                                        }));
+                                    }
+                                    if let Some(ContentPart::ServerToolResult {
+                                        tool_use_id,
+                                        name,
+                                        summary,
+                                        is_error,
+                                        raw_provider_payload,
+                                    }) = res_block
+                                    {
+                                        st.queue.push_back(Ok(StreamEvent::ServerToolResult {
+                                            tool_use_id,
+                                            name,
+                                            summary,
+                                            is_error,
+                                            raw_provider_payload,
+                                        }));
+                                    }
+                                } else if item_type == "message"
+                                    && let Some(parts) =
+                                        item.get("content").and_then(Value::as_array)
+                                {
+                                    for part in parts {
+                                        if let Some(anns) =
+                                            part.get("annotations").and_then(Value::as_array)
+                                        {
+                                            for ann in anns {
+                                                if let Some(c) = parse_url_citation(ann) {
+                                                    st.queue.push_back(Ok(StreamEvent::Citation(c)));
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }

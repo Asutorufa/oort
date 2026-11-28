@@ -86,6 +86,28 @@ pub enum AgentEvent {
         block_id: String,
         duration_ms: u64,
     },
+    /// A provider-hosted server tool invocation observed during streaming.
+    ServerToolUse {
+        block_id: String,
+        id: String,
+        name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        action: Option<String>,
+        input: serde_json::Value,
+    },
+    /// A provider-hosted server tool result observed during streaming.
+    ServerToolResult {
+        block_id: String,
+        tool_use_id: String,
+        name: String,
+        summary: String,
+        is_error: bool,
+    },
+    /// A citation observed during streaming.
+    Citation {
+        block_id: String,
+        citation: oort_llm::Citation,
+    },
     /// A complete assistant message was committed to history.
     AssistantMessage {
         message: Message,

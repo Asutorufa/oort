@@ -4,7 +4,8 @@ import { spring } from "../lib/motion";
 import { useT, type Key, type T } from "../i18n";
 import { commands as commandsApi, errorText, providers as providersApi, sessions } from "../api";
 import { useToast } from "../components/common/Toast";
-import type { ApprovalPolicy, InputRequest, ReasoningEffort, TurnUsage } from "../api/types";
+import type { ApprovalPolicy, InputRequest, ReasoningEffort, ServerToolConfig, TurnUsage } from "../api/types";
+import { supportsWebSearch } from "../api/vendorCatalog";
 import { Composer } from "../components/chat/Composer";
 import { Inspector } from "../components/chat/Inspector";
 import { lastPlan, PlanPill } from "../components/chat/PlanTracker";
@@ -124,7 +125,13 @@ function Session({ id, onListChanged }: { id: string; onListChanged: () => void 
     [id], // eslint-disable-line react-hooks/exhaustive-deps
   );
   /** Returns whether the change was saved (errors are shown in the bar). */
-  const patch = async (req: { title?: string; approval_policy?: ApprovalPolicy; reasoning_effort?: ReasoningEffort; model?: string }) => {
+  const patch = async (req: {
+    title?: string;
+    approval_policy?: ApprovalPolicy;
+    reasoning_effort?: ReasoningEffort;
+    model?: string;
+    enabled_server_tools?: ServerToolConfig;
+  }) => {
     try {
       await sessions.patch(id, req);
       refresh();
@@ -255,6 +262,18 @@ function Session({ id, onListChanged }: { id: string; onListChanged: () => void 
           modelsFailed={models === "failed"}
           onModel={async (m) => {
             if (await patch({ model: m })) toast(t("composer.modelSwitched", { model: m }));
+          }}
+          webSearchSupported={supportsWebSearch(detail.provider_vendor, detail.provider)}
+          webSearch={!!detail.effective_server_tools?.web_search?.enabled}
+          onWebSearch={async (enabled) => {
+            const cur = detail.effective_server_tools ?? {};
+            const next: ServerToolConfig = {
+              ...cur,
+              web_search: enabled ? { enabled: true, max_uses: cur.web_search?.max_uses ?? 5 } : null,
+            };
+            if (await patch({ enabled_server_tools: next })) {
+              toast(enabled ? t("composer.webSearchOn") : t("composer.webSearchOff"));
+            }
           }}
           onSend={(text, skills) => send({ type: "steer", text, invoked_skills: skills })}
           onInterrupt={(text, skills) => send({ type: "interrupt", text, invoked_skills: skills })}

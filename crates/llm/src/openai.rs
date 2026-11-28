@@ -10,11 +10,12 @@ use crate::Error;
 use crate::client::{ChatStream, LlmClient};
 use crate::error::extract_error_message_from_value;
 use crate::http::{apply_headers, bytes_stream, ensure_success, insert_header, normalize_base_url};
+use crate::openai_responses::{merge_extra_body, parse_url_citation};
 use crate::sse::parse_sse_stream;
 use crate::types::{
-    CacheTtl, ChatRequest, ChatResponse, ContentPart, DocumentSource, ImageSource, Message,
-    PromptCacheConfig, ReasoningEffort, Role, StopReason, StreamEvent, ToolCall, ToolChoice,
-    ToolDefinition, Usage, parse_tool_arguments,
+    CacheTtl, ChatRequest, ChatResponse, Citation, ContentPart, DocumentSource, ImageSource,
+    Message, PromptCacheConfig, ReasoningEffort, Role, StopReason, StreamEvent, ToolCall,
+    ToolChoice, ToolDefinition, Usage, Vendor, extract_domain, parse_tool_arguments,
 };
 
 pub const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
@@ -26,6 +27,8 @@ pub struct OpenAIClient {
     base_url: String,
     api_key: String,
     model: String,
+    vendor: Vendor,
+    extra_body: Option<Value>,
     extra_headers: HeaderMap,
     include_stream_usage: bool,
 }
@@ -38,9 +41,21 @@ impl OpenAIClient {
             base_url: DEFAULT_OPENAI_BASE_URL.to_string(),
             api_key: api_key.into(),
             model: model.into(),
+            vendor: Vendor::Openai,
+            extra_body: None,
             extra_headers: HeaderMap::new(),
             include_stream_usage: true,
         }
+    }
+
+    pub fn with_vendor(mut self, vendor: Vendor) -> Self {
+        self.vendor = vendor;
+        self
+    }
+
+    pub fn with_extra_body(mut self, extra_body: Option<Value>) -> Self {
+        self.extra_body = extra_body;
+        self
     }
 
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
@@ -210,24 +225,85 @@ impl OpenAIClient {
             encode_openai_message(msg, &mut messages);
         }
 
-        let tools = if request.tools.is_empty() {
+        let mut tool_list: Vec<Value> = request.tools.iter().map(encode_openai_tool).collect();
+        let mut web_search_options: Option<Value> = None;
+        let mut enable_search: Option<bool> = None;
+        let mut search_options: Option<Value> = None;
+
+        if let Some(st) = &request.server_tools {
+            match self.vendor {
+                Vendor::Openai => {
+                    if st.web_search_enabled() {
+                        web_search_options = Some(json!({ "search_context_size": "medium" }));
+                    }
+                }
+                Vendor::Deepseek => {
+                    if st.web_search_enabled() {
+                        tool_list.push(json!({ "type": "deepseek_web_search" }));
+                    }
+                    if st.url_context {
+                        tool_list.push(json!({ "type": "deepseek_read_url" }));
+                    }
+                }
+                Vendor::Openrouter => {
+                    if st.web_search_enabled() {
+                        tool_list.push(json!({ "type": "openrouter:web_search" }));
+                    }
+                    if st.url_context {
+                        tool_list.push(json!({ "type": "openrouter:web_fetch" }));
+                    }
+                }
+                Vendor::Qwen => {
+                    if st.web_search_enabled() {
+                        enable_search = Some(true);
+                        search_options = Some(json!({
+                            "enable_source": true,
+                            "enable_citation": true
+                        }));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let tools = if tool_list.is_empty() {
             None
         } else {
-            Some(request.tools.iter().map(encode_openai_tool).collect())
+            Some(tool_list)
         };
 
         let tool_choice = if tools.is_some() {
-            request.tool_choice.as_ref().map(encode_openai_tool_choice)
+            request.tool_choice.as_ref().and_then(|c| {
+                if self.vendor == Vendor::Deepseek
+                    && matches!(
+                        c,
+                        ToolChoice::Tool { name }
+                            if name == "deepseek_web_search" || name == "deepseek_read_url"
+                    )
+                {
+                    None
+                } else {
+                    Some(encode_openai_tool_choice(c))
+                }
+            })
         } else {
             None
         };
 
-        let reasoning_effort = request
-            .thinking
-            .as_ref()
-            .filter(|t| t.enabled)
-            .and_then(|t| t.effort)
-            .map(reasoning_effort_str);
+        let (reasoning_effort, deepseek_thinking) = if self.vendor == Vendor::Deepseek {
+            let t = request.thinking.as_ref().map(|t| {
+                json!({ "type": if t.enabled { "enabled" } else { "disabled" } })
+            });
+            (None, t)
+        } else {
+            let eff = request
+                .thinking
+                .as_ref()
+                .filter(|t| t.enabled)
+                .and_then(|t| t.effort)
+                .map(reasoning_effort_str);
+            (eff, None)
+        };
 
         let stop = if request.stop_sequences.is_empty() {
             None
@@ -257,17 +333,33 @@ impl OpenAIClient {
             top_p: request.top_p.filter(|_| reasoning_effort.is_none()),
             stop,
             reasoning_effort,
+            thinking: deepseek_thinking,
+            web_search_options,
+            enable_search,
+            search_options,
             prompt_cache_key,
             prompt_cache_retention,
             stream: Some(stream),
             stream_options,
         })
     }
+
+    pub(crate) fn build_request_json(
+        &self,
+        request: &ChatRequest,
+        stream: bool,
+    ) -> Result<Value, Error> {
+        let body = self.build_request_body(request, stream)?;
+        let mut val = serde_json::to_value(body)?;
+        merge_extra_body(&mut val, self.extra_body.as_ref());
+        merge_extra_body(&mut val, request.extra_body.as_ref());
+        Ok(val)
+    }
 }
 
 impl LlmClient for OpenAIClient {
     async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, Error> {
-        let body = self.build_request_body(&request, false)?;
+        let body = self.build_request_json(&request, false)?;
 
         let mut req_builder = self.http.post(self.chat_completions_url()).json(&body);
         if !self.api_key.trim().is_empty() {
@@ -281,7 +373,7 @@ impl LlmClient for OpenAIClient {
     }
 
     async fn chat_stream(&self, request: ChatRequest) -> Result<ChatStream, Error> {
-        let body = self.build_request_body(&request, true)?;
+        let body = self.build_request_json(&request, true)?;
 
         let mut req_builder = self
             .http
@@ -500,6 +592,14 @@ pub(crate) struct OpenAIChatRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_effort: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    web_search_options: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    enable_search: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    search_options: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     prompt_cache_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     prompt_cache_retention: Option<&'static str>,
@@ -562,6 +662,8 @@ struct OpenAIResponseMessage {
     reasoning: Option<String>,
     #[serde(default)]
     tool_calls: Vec<OpenAIToolCallWire>,
+    #[serde(default)]
+    annotations: Vec<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -608,6 +710,8 @@ struct OpenAIStreamDelta {
     thought: Option<String>,
     #[serde(default)]
     tool_calls: Vec<OpenAIStreamToolCallDelta>,
+    #[serde(default)]
+    annotations: Vec<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -718,7 +822,7 @@ fn encode_openai_message(msg: &Message, out: &mut Vec<OpenAIMessage>) {
                 let mut parts = Vec::new();
                 for part in &msg.content {
                     match part {
-                        ContentPart::Text { text } => {
+                        ContentPart::Text { text, .. } => {
                             parts.push(json!({ "type": "text", "text": text }));
                         }
                         ContentPart::Image { source } => {
@@ -787,7 +891,7 @@ fn encode_openai_message(msg: &Message, out: &mut Vec<OpenAIMessage>) {
 
             for part in &msg.content {
                 match part {
-                    ContentPart::Text { text: t } => text.push_str(t),
+                    ContentPart::Text { text: t, .. } => text.push_str(t),
                     ContentPart::Thinking { thinking: t, .. } => thinking.push_str(t),
                     ContentPart::ToolCall(call) => {
                         tool_calls.push(OpenAIToolCallWire {
@@ -889,6 +993,15 @@ fn parse_chat_response(resp: OpenAIChatResponse) -> Result<ChatResponse, Error> 
         .as_deref()
         .map(map_openai_finish_reason);
 
+    let mut citations: Vec<Citation> = Vec::new();
+    for ann in &choice.message.annotations {
+        if let Some(c) = parse_url_citation(ann)
+            && !citations.iter().any(|x| x.url == c.url)
+        {
+            citations.push(c);
+        }
+    }
+
     Ok(ChatResponse {
         id: resp.id,
         model: resp.model,
@@ -896,6 +1009,8 @@ fn parse_chat_response(resp: OpenAIChatResponse) -> Result<ChatResponse, Error> 
         thinking,
         thinking_signature: None,
         tool_calls,
+        server_tool_blocks: Vec::new(),
+        citations,
         stop_reason,
         usage: resp.usage.map(map_openai_usage),
     })
@@ -961,6 +1076,31 @@ where
                         return Some((Err(Error::api(msg)), st));
                     }
 
+                    // Extract Qwen `search_info.search_results` citations if present on chunk
+                    if let Some(results) = raw
+                        .pointer("/search_info/search_results")
+                        .and_then(Value::as_array)
+                    {
+                        for item in results {
+                            if let Some(url) = item.get("url").and_then(Value::as_str)
+                                && !url.trim().is_empty()
+                            {
+                                let title = item
+                                    .get("title")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("")
+                                    .to_string();
+                                st.queue.push_back(Ok(StreamEvent::Citation(Citation {
+                                    domain: extract_domain(url),
+                                    url: url.to_string(),
+                                    title,
+                                    snippet: None,
+                                    raw_provider_payload: Some(item.clone()),
+                                })));
+                            }
+                        }
+                    }
+
                     let chunk: OpenAIStreamChunk = match serde_json::from_value(raw) {
                         Ok(c) => c,
                         Err(e) => {
@@ -1022,6 +1162,12 @@ where
                             }
                         }
 
+                        for ann in &choice.delta.annotations {
+                            if let Some(c) = parse_url_citation(ann) {
+                                st.queue.push_back(Ok(StreamEvent::Citation(c)));
+                            }
+                        }
+
                         if let Some(reason) = choice.finish_reason {
                             st.finish_reason = Some(map_openai_finish_reason(&reason));
                         }
@@ -1072,6 +1218,8 @@ fn parse_text_completion_response(
         thinking: None,
         thinking_signature: None,
         tool_calls: Vec::new(),
+        server_tool_blocks: Vec::new(),
+        citations: Vec::new(),
         stop_reason: choice
             .finish_reason
             .as_deref()
@@ -1160,6 +1308,7 @@ where
                         if !choice.text.is_empty() {
                             st.queue.push_back(Ok(StreamEvent::TextDelta(choice.text)));
                         }
+
                         if let Some(reason) = choice.finish_reason {
                             st.finish_reason = Some(map_openai_finish_reason(&reason));
                         }

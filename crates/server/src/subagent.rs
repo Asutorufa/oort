@@ -371,6 +371,7 @@ pub async fn run_subagent(
         approval_policy: ApprovalPolicyKind::AutoAll,
         lineage: child_runtime(String::new()).lineage,
         reasoning_effort: Default::default(),
+        enabled_server_tools: None,
     };
     let sub_id = parent.store.create_session(meta, &state).await?;
     drop(parent_view);

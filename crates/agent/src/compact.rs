@@ -233,7 +233,7 @@ fn render_transcript(messages: &[Message], max_chars: usize) -> String {
     for m in messages {
         for part in &m.content {
             let line = match part {
-                ContentPart::Text { text } => format!("[{:?}] {text}", m.role),
+                ContentPart::Text { text, .. } => format!("[{:?}] {text}", m.role),
                 ContentPart::ToolCall(c) => format!("[tool_call {}] {}", c.name, c.arguments),
                 ContentPart::ToolResult(r) => {
                     format!(

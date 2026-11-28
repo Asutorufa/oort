@@ -10,11 +10,12 @@ use crate::Error;
 use crate::client::{ChatStream, LlmClient};
 use crate::error::extract_error_message_from_value;
 use crate::http::{apply_headers, bytes_stream, ensure_success, insert_header, normalize_base_url};
+use crate::openai_responses::merge_extra_body;
 use crate::sse::parse_sse_stream;
 use crate::types::{
-    CacheBreakpoint, CacheTtl, ChatRequest, ChatResponse, ContentPart, DocumentSource, ImageSource,
-    Message, PromptCacheConfig, Role, StopReason, StreamEvent, ToolCall, ToolChoice,
-    ToolDefinition, Usage,
+    CacheBreakpoint, CacheTtl, ChatRequest, ChatResponse, Citation, ContentPart, DocumentSource,
+    ImageSource, Message, PromptCacheConfig, Role, StopReason, StreamEvent, ToolCall, ToolChoice,
+    ToolDefinition, Usage, Vendor, extract_domain,
 };
 
 pub const DEFAULT_ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com";
@@ -31,6 +32,8 @@ pub struct AnthropicClient {
     base_url: String,
     api_key: String,
     model: String,
+    vendor: Vendor,
+    extra_body: Option<Value>,
     anthropic_version: String,
     extra_headers: HeaderMap,
 }
@@ -42,9 +45,21 @@ impl AnthropicClient {
             base_url: DEFAULT_ANTHROPIC_BASE_URL.to_string(),
             api_key: api_key.into(),
             model: model.into(),
+            vendor: Vendor::Anthropic,
+            extra_body: None,
             anthropic_version: DEFAULT_ANTHROPIC_VERSION.to_string(),
             extra_headers: HeaderMap::new(),
         }
+    }
+
+    pub fn with_vendor(mut self, vendor: Vendor) -> Self {
+        self.vendor = vendor;
+        self
+    }
+
+    pub fn with_extra_body(mut self, extra_body: Option<Value>) -> Self {
+        self.extra_body = extra_body;
+        self
     }
 
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
@@ -108,17 +123,15 @@ impl AnthropicClient {
         let (system_text, _) = request.split_system_messages();
         let cache_control = build_cache_control(request.prompt_cache.as_ref());
 
-        // Tools: preserve exact order; attach cache_control to the last tool when caching is enabled.
-        let mut tools = if request.tools.is_empty() {
+        // Tools: preserve exact order; append server tools; attach cache_control to the last tool when caching is enabled.
+        let mut tool_list: Vec<Value> = request.tools.iter().map(encode_anthropic_tool).collect();
+        if let Some(st) = &request.server_tools {
+            append_anthropic_server_tools(self.vendor, st, &mut tool_list);
+        }
+        let mut tools = if tool_list.is_empty() {
             None
         } else {
-            Some(
-                request
-                    .tools
-                    .iter()
-                    .map(encode_anthropic_tool)
-                    .collect::<Vec<_>>(),
-            )
+            Some(tool_list)
         };
         // Explicit breakpoints override the default placement (last tool + system + latest tail).
         let explicit = !request.cache_breakpoints.is_empty();
@@ -218,27 +231,43 @@ impl AnthropicClient {
         }
 
         let tool_choice = if tools.is_some() {
-            request
-                .tool_choice
-                .as_ref()
-                .map(encode_anthropic_tool_choice)
+            request.tool_choice.as_ref().and_then(|c| {
+                if self.vendor == Vendor::Deepseek
+                    && matches!(
+                        c,
+                        ToolChoice::Tool { name }
+                            if name == "deepseek_web_search" || name == "deepseek_read_url"
+                    )
+                {
+                    None
+                } else {
+                    Some(encode_anthropic_tool_choice(c))
+                }
+            })
         } else {
             None
         };
 
         let thinking = request.thinking.as_ref().map(|t| {
             if t.enabled {
-                AnthropicThinkingConfig::Enabled {
-                    budget_tokens: t
-                        .budget_tokens
-                        .or(t.effort.map(anthropic_budget))
-                        .unwrap_or(DEFAULT_THINKING_BUDGET_TOKENS),
+                if self.vendor == Vendor::Deepseek {
+                    AnthropicThinkingConfig::EnabledNoBudget
+                } else {
+                    AnthropicThinkingConfig::Enabled {
+                        budget_tokens: t
+                            .budget_tokens
+                            .or(t.effort.map(anthropic_budget))
+                            .unwrap_or(DEFAULT_THINKING_BUDGET_TOKENS),
+                    }
                 }
             } else {
                 AnthropicThinkingConfig::Disabled
             }
         });
-        let thinking_on = matches!(thinking, Some(AnthropicThinkingConfig::Enabled { .. }));
+        let thinking_on = matches!(
+            thinking,
+            Some(AnthropicThinkingConfig::Enabled { .. } | AnthropicThinkingConfig::EnabledNoBudget)
+        );
 
         // `max_tokens` must exceed the thinking budget.
         let max_tokens = match (request.max_tokens, &thinking) {
@@ -276,6 +305,18 @@ impl AnthropicClient {
             stream: Some(stream),
         })
     }
+
+    pub(crate) fn build_request_json(
+        &self,
+        request: &ChatRequest,
+        stream: bool,
+    ) -> Result<Value, Error> {
+        let body = self.build_request_body(request, stream)?;
+        let mut val = serde_json::to_value(body)?;
+        merge_extra_body(&mut val, self.extra_body.as_ref());
+        merge_extra_body(&mut val, request.extra_body.as_ref());
+        Ok(val)
+    }
 }
 
 /// Thinking budget for an effort level.
@@ -289,7 +330,7 @@ fn anthropic_budget(effort: crate::ReasoningEffort) -> u32 {
 
 impl LlmClient for AnthropicClient {
     async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, Error> {
-        let body = self.build_request_body(&request, false)?;
+        let body = self.build_request_json(&request, false)?;
 
         let mut req_builder = self
             .http
@@ -306,7 +347,7 @@ impl LlmClient for AnthropicClient {
     }
 
     async fn chat_stream(&self, request: ChatRequest) -> Result<ChatStream, Error> {
-        let body = self.build_request_body(&request, true)?;
+        let body = self.build_request_json(&request, true)?;
 
         let mut req_builder = self
             .http
@@ -408,6 +449,8 @@ struct AnthropicMessage {
 #[serde(tag = "type", rename_all = "lowercase")]
 enum AnthropicThinkingConfig {
     Enabled { budget_tokens: u32 },
+    #[serde(rename = "enabled")]
+    EnabledNoBudget,
     Disabled,
 }
 
@@ -455,6 +498,127 @@ fn build_cache_control(cache: Option<&PromptCacheConfig>) -> Option<Value> {
     }
 }
 
+fn append_anthropic_server_tools(
+    vendor: Vendor,
+    st: &crate::types::ServerToolConfig,
+    out: &mut Vec<Value>,
+) {
+    match vendor {
+        Vendor::Deepseek => {
+            if st.web_search_enabled() {
+                out.push(json!({
+                    "type": "deepseek_web_search",
+                    "name": "deepseek_web_search"
+                }));
+            }
+            if st.url_context {
+                out.push(json!({
+                    "type": "deepseek_read_url",
+                    "name": "deepseek_read_url"
+                }));
+            }
+        }
+        _ => {
+            if let Some(ws) = &st.web_search
+                && ws.enabled
+            {
+                let mut tool = serde_json::Map::new();
+                tool.insert(
+                    "type".to_string(),
+                    Value::String("web_search_20250305".to_string()),
+                );
+                tool.insert("name".to_string(), Value::String("web_search".to_string()));
+                tool.insert(
+                    "max_uses".to_string(),
+                    Value::from(ws.max_uses.unwrap_or(5)),
+                );
+                if !ws.allowed_domains.is_empty() {
+                    tool.insert("allowed_domains".to_string(), json!(ws.allowed_domains));
+                }
+                if !ws.blocked_domains.is_empty() {
+                    tool.insert("blocked_domains".to_string(), json!(ws.blocked_domains));
+                }
+                out.push(Value::Object(tool));
+            }
+            if st.url_context {
+                out.push(json!({
+                    "type": "web_fetch_20250910",
+                    "name": "web_fetch",
+                    "max_uses": 5
+                }));
+            }
+            if st.code_execution {
+                out.push(json!({
+                    "type": "code_execution_20250825",
+                    "name": "code_execution"
+                }));
+            }
+        }
+    }
+}
+
+fn is_anthropic_server_block_type(t: &str) -> bool {
+    matches!(
+        t,
+        "server_tool_use"
+            | "web_search_tool_result"
+            | "web_fetch_tool_result"
+            | "code_execution_tool_result"
+            | "bash_code_execution_tool_result"
+            | "text_editor_code_execution_tool_result"
+    )
+}
+
+fn parse_anthropic_citation(c: &Value) -> Option<Citation> {
+    let url = c.get("url").and_then(Value::as_str)?.trim().to_string();
+    if url.is_empty() {
+        return None;
+    }
+    let title = c
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let snippet = c
+        .get("cited_text")
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+    Some(Citation {
+        domain: extract_domain(&url),
+        url,
+        title,
+        snippet,
+        raw_provider_payload: Some(c.clone()),
+    })
+}
+
+fn summarize_anthropic_server_result(block: &Value) -> (String, bool) {
+    let content = block.get("content");
+    let is_error = content
+        .and_then(|c| c.get("type"))
+        .and_then(Value::as_str)
+        .is_some_and(|t| t.contains("error"));
+    let summary = if is_error {
+        content
+            .and_then(|c| c.get("error_code"))
+            .and_then(Value::as_str)
+            .unwrap_or("error")
+            .to_string()
+    } else if let Some(arr) = content.and_then(Value::as_array) {
+        format!("{} results", arr.len())
+    } else if let Some(url) = content.and_then(|c| c.get("url")).and_then(Value::as_str) {
+        url.to_string()
+    } else if let Some(stdout) = content
+        .and_then(|c| c.get("stdout"))
+        .and_then(Value::as_str)
+    {
+        stdout.chars().take(120).collect()
+    } else {
+        "completed".to_string()
+    };
+    (summary, is_error)
+}
+
 fn encode_anthropic_tool(tool: &ToolDefinition) -> Value {
     json!({
         "name": tool.name,
@@ -481,8 +645,25 @@ fn encode_anthropic_message(msg: &Message) -> (&'static str, Vec<Value>) {
     let mut blocks = Vec::new();
     for part in &msg.content {
         match part {
-            ContentPart::Text { text } => {
-                blocks.push(json!({ "type": "text", "text": text }));
+            ContentPart::Text { text, citations } => {
+                let mut obj = serde_json::Map::new();
+                obj.insert("type".to_string(), Value::String("text".to_string()));
+                obj.insert("text".to_string(), Value::String(text.clone()));
+                // Replay raw Anthropic citations verbatim (preserves encrypted_index).
+                let raw_cites: Vec<Value> = citations
+                    .iter()
+                    .filter_map(|c| c.raw_provider_payload.as_ref())
+                    .filter(|v| {
+                        v.get("type")
+                            .and_then(Value::as_str)
+                            .is_some_and(|t| t == "web_search_result_location" || t == "char_location")
+                    })
+                    .cloned()
+                    .collect();
+                if !raw_cites.is_empty() {
+                    obj.insert("citations".to_string(), Value::Array(raw_cites));
+                }
+                blocks.push(Value::Object(obj));
             }
             ContentPart::Image { source } => match source {
                 ImageSource::Base64 { media_type, data } => {
@@ -562,6 +743,23 @@ fn encode_anthropic_message(msg: &Message) -> (&'static str, Vec<Value>) {
                 }
                 blocks.push(Value::Object(obj));
             }
+            ContentPart::ServerToolUse {
+                raw_provider_payload,
+                ..
+            }
+            | ContentPart::ServerToolResult {
+                raw_provider_payload,
+                ..
+            } => {
+                // Replay verbatim when the raw block is an Anthropic/DeepSeek-Anthropic server
+                // block (preserves encrypted_content & signature); safely skip foreign blocks.
+                if let Some(raw) = raw_provider_payload
+                    && let Some(t) = raw.get("type").and_then(Value::as_str)
+                    && is_anthropic_server_block_type(t)
+                {
+                    blocks.push(raw.clone());
+                }
+            }
         }
     }
 
@@ -595,12 +793,23 @@ fn parse_anthropic_response(resp: AnthropicMessagesResponse) -> ChatResponse {
     let mut thinking: Option<String> = None;
     let mut thinking_signature: Option<String> = None;
     let mut tool_calls = Vec::new();
+    let mut server_tool_blocks = Vec::new();
+    let mut citations: Vec<Citation> = Vec::new();
 
     for block in resp.content {
         match block.get("type").and_then(Value::as_str) {
             Some("text") => {
                 if let Some(text) = block.get("text").and_then(Value::as_str) {
                     content.push_str(text);
+                }
+                if let Some(cites) = block.get("citations").and_then(Value::as_array) {
+                    for c in cites {
+                        if let Some(parsed) = parse_anthropic_citation(c)
+                            && !citations.iter().any(|x| x.url == parsed.url)
+                        {
+                            citations.push(parsed);
+                        }
+                    }
                 }
             }
             Some("thinking") => {
@@ -636,6 +845,47 @@ fn parse_anthropic_response(resp: AnthropicMessagesResponse) -> ChatResponse {
                     signature: None,
                 });
             }
+            Some("server_tool_use") => {
+                let id = block
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let name = block
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let input = block.get("input").cloned().unwrap_or_else(|| json!({}));
+                server_tool_blocks.push(ContentPart::ServerToolUse {
+                    id,
+                    name,
+                    action: None,
+                    input,
+                    raw_provider_payload: Some(block),
+                });
+            }
+            Some(
+                t @ ("web_search_tool_result"
+                | "web_fetch_tool_result"
+                | "code_execution_tool_result"
+                | "bash_code_execution_tool_result"
+                | "text_editor_code_execution_tool_result"),
+            ) => {
+                let tool_use_id = block
+                    .get("tool_use_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let (summary, is_error) = summarize_anthropic_server_result(&block);
+                server_tool_blocks.push(ContentPart::ServerToolResult {
+                    tool_use_id,
+                    name: t.to_string(),
+                    summary,
+                    is_error,
+                    raw_provider_payload: Some(block),
+                });
+            }
             _ => {}
         }
     }
@@ -647,9 +897,18 @@ fn parse_anthropic_response(resp: AnthropicMessagesResponse) -> ChatResponse {
         thinking,
         thinking_signature,
         tool_calls,
+        server_tool_blocks,
+        citations,
         stop_reason: resp.stop_reason.as_deref().map(map_anthropic_stop_reason),
         usage: resp.usage.as_ref().map(map_anthropic_usage),
     }
+}
+
+struct PendingServerToolBlock {
+    id: String,
+    name: String,
+    partial_json: String,
+    raw_block: Value,
 }
 
 struct AnthropicStreamState<S> {
@@ -657,6 +916,8 @@ struct AnthropicStreamState<S> {
     queue: VecDeque<Result<StreamEvent, Error>>,
     /// Maps Anthropic content block index -> tool call ordinal index.
     tool_block_indices: BTreeMap<usize, usize>,
+    /// Maps Anthropic content block index -> in-progress server_tool_use block.
+    server_tool_blocks: BTreeMap<usize, PendingServerToolBlock>,
     next_tool_index: usize,
     usage: AnthropicUsage,
     has_usage: bool,
@@ -674,6 +935,7 @@ where
         sse,
         queue: VecDeque::new(),
         tool_block_indices: BTreeMap::new(),
+        server_tool_blocks: BTreeMap::new(),
         next_tool_index: 0,
         usage: AnthropicUsage::default(),
         has_usage: false,
@@ -779,6 +1041,49 @@ where
                                             )));
                                         }
                                     }
+                                    Some("server_tool_use") => {
+                                        let id = block
+                                            .get("id")
+                                            .and_then(Value::as_str)
+                                            .unwrap_or_default()
+                                            .to_string();
+                                        let name = block
+                                            .get("name")
+                                            .and_then(Value::as_str)
+                                            .unwrap_or_default()
+                                            .to_string();
+                                        st.server_tool_blocks.insert(
+                                            block_idx,
+                                            PendingServerToolBlock {
+                                                id,
+                                                name,
+                                                partial_json: String::new(),
+                                                raw_block: block.clone(),
+                                            },
+                                        );
+                                    }
+                                    Some(
+                                        t @ ("web_search_tool_result"
+                                        | "web_fetch_tool_result"
+                                        | "code_execution_tool_result"
+                                        | "bash_code_execution_tool_result"
+                                        | "text_editor_code_execution_tool_result"),
+                                    ) => {
+                                        let tool_use_id = block
+                                            .get("tool_use_id")
+                                            .and_then(Value::as_str)
+                                            .unwrap_or_default()
+                                            .to_string();
+                                        let (summary, is_error) =
+                                            summarize_anthropic_server_result(block);
+                                        st.queue.push_back(Ok(StreamEvent::ServerToolResult {
+                                            tool_use_id,
+                                            name: t.to_string(),
+                                            summary,
+                                            is_error,
+                                            raw_provider_payload: Some(block.clone()),
+                                        }));
+                                    }
                                     _ => {}
                                 }
                             }
@@ -823,13 +1128,28 @@ where
                                         if let Some(partial) =
                                             delta.get("partial_json").and_then(Value::as_str)
                                             && !partial.is_empty()
-                                            && let Some(&tool_idx) =
-                                                st.tool_block_indices.get(&block_idx)
                                         {
-                                            st.queue.push_back(Ok(StreamEvent::ToolCallDelta {
-                                                index: tool_idx,
-                                                arguments_delta: partial.to_string(),
-                                            }));
+                                            if let Some(&tool_idx) =
+                                                st.tool_block_indices.get(&block_idx)
+                                            {
+                                                st.queue.push_back(Ok(
+                                                    StreamEvent::ToolCallDelta {
+                                                        index: tool_idx,
+                                                        arguments_delta: partial.to_string(),
+                                                    },
+                                                ));
+                                            } else if let Some(pending) =
+                                                st.server_tool_blocks.get_mut(&block_idx)
+                                            {
+                                                pending.partial_json.push_str(partial);
+                                            }
+                                        }
+                                    }
+                                    Some("citations_delta") => {
+                                        if let Some(cite) = delta.get("citation")
+                                            && let Some(parsed) = parse_anthropic_citation(cite)
+                                        {
+                                            st.queue.push_back(Ok(StreamEvent::Citation(parsed)));
                                         }
                                     }
                                     _ => {}
@@ -842,6 +1162,28 @@ where
                             if let Some(tool_idx) = st.tool_block_indices.remove(&block_idx) {
                                 st.queue
                                     .push_back(Ok(StreamEvent::ToolCallEnd { index: tool_idx }));
+                            }
+                            if let Some(mut pending) = st.server_tool_blocks.remove(&block_idx) {
+                                let input = if pending.partial_json.trim().is_empty() {
+                                    pending
+                                        .raw_block
+                                        .get("input")
+                                        .cloned()
+                                        .unwrap_or_else(|| json!({}))
+                                } else {
+                                    serde_json::from_str::<Value>(&pending.partial_json)
+                                        .unwrap_or_else(|_| json!({ "raw": pending.partial_json }))
+                                };
+                                if let Some(obj) = pending.raw_block.as_object_mut() {
+                                    obj.insert("input".to_string(), input.clone());
+                                }
+                                st.queue.push_back(Ok(StreamEvent::ServerToolUse {
+                                    id: pending.id,
+                                    name: pending.name,
+                                    action: None,
+                                    input,
+                                    raw_provider_payload: Some(pending.raw_block),
+                                }));
                             }
                         }
                         Some("message_delta") => {

@@ -129,6 +129,7 @@ pub async fn run(m: &SessionManager, req: RunCommand) -> Result<CommandResult, A
                     approval_policy: Some(policy),
                     reasoning_effort: None,
                     model: None,
+                    enabled_server_tools: None,
                 },
             )
             .await?;

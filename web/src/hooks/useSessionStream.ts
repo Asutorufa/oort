@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { errorText, sessions } from "../api";
-import type { AgentEvent, ContentPart, Envelope, LiveTurnWire, PlanStep, SessionDetail, ToolCall } from "../api/types";
+import type { AgentEvent, Citation, ContentPart, Envelope, LiveTurnWire, PlanStep, SessionDetail, ToolCall } from "../api/types";
 
 /** Live progress of one subagent (keyed by the parent's tool call id). */
 export interface SubagentLive {
@@ -24,6 +24,10 @@ export interface LiveStep {
   /** Set once reasoning has ended. */
   thinkingMs: number | null;
   text: string;
+  /** Provider-hosted server tool events observed during streaming. */
+  serverTools: ContentPart[];
+  /** Citations observed during streaming. */
+  citations: Citation[];
   /** The committed message; `null` while streaming. */
   parts: ContentPart[] | null;
 }
@@ -38,7 +42,16 @@ export interface Live {
 export const EMPTY_LIVE: Live = { turn: null, steps: [], runningTools: [] };
 
 const seqOf = (blockId: string) => Number(blockId.split(":")[0]);
-const emptyStep = (seq: number): LiveStep => ({ seq, thinking: "", thinkingStartedAt: null, thinkingMs: null, text: "", parts: null });
+const emptyStep = (seq: number): LiveStep => ({
+  seq,
+  thinking: "",
+  thinkingStartedAt: null,
+  thinkingMs: null,
+  text: "",
+  serverTools: [],
+  citations: [],
+  parts: null,
+});
 
 function updateStep(live: Live, blockId: string, update: (s: LiveStep) => LiveStep): Live {
   const seq = seqOf(blockId);
@@ -192,6 +205,36 @@ export function useSessionStream(id: string | null, onDeleted?: () => void) {
           return;
         case "thinking_end":
           setLive((l) => updateStep(l, ev.block_id, (s) => ({ ...s, thinkingMs: ev.duration_ms })));
+          return;
+        case "server_tool_use":
+          setLive((l) =>
+            updateStep(l, ev.block_id, (s) => ({
+              ...s,
+              serverTools: [
+                ...s.serverTools,
+                { kind: "server_tool_use", id: ev.id, name: ev.name, action: ev.action, input: ev.input },
+              ],
+            })),
+          );
+          return;
+        case "server_tool_result":
+          setLive((l) =>
+            updateStep(l, ev.block_id, (s) => ({
+              ...s,
+              serverTools: [
+                ...s.serverTools,
+                { kind: "server_tool_result", tool_use_id: ev.tool_use_id, name: ev.name, summary: ev.summary, is_error: ev.is_error },
+              ],
+            })),
+          );
+          return;
+        case "citation":
+          setLive((l) =>
+            updateStep(l, ev.block_id, (s) => ({
+              ...s,
+              citations: s.citations.some((c) => c.url === ev.citation.url) ? s.citations : [...s.citations, ev.citation],
+            })),
+          );
           return;
         case "turn_started":
           setLive((l) => ({ ...committedOnly(l), turn: ev.turn, runningTools: [] }));

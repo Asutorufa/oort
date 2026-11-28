@@ -1,9 +1,11 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import type { RawMessage, SessionDetail, SessionSummary, ToolResult } from "../../api/types";
+import type { Citation, RawMessage, SessionDetail, SessionSummary, ToolResult } from "../../api/types";
+import { ExternalLinkIcon, GlobeIcon, SearchIcon } from "../../brand/Icons";
 import { OortMark, type MarkState } from "../../brand/OortMark";
 import type { Live, SubagentLive, ToolTimes } from "../../hooks/useSessionStream";
 import { asWidget, parseResponse, responsesById, type WidgetActions } from "../../widgets/protocol";
 import { Widget } from "../../widgets/WidgetRegistry";
+import { JsonView } from "../common";
 import { Markdown } from "./LazyMarkdown";
 import { RowCard, SubagentCard } from "./SubagentCard";
 import { LoopErrorCard } from "./LoopErrorCard";
@@ -11,7 +13,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { enter } from "../../lib/motion";
 import { ApprovalCard, AskUserCard, McpConfiguredCard } from "./ToolCards";
 import { useT } from "../../i18n";
-import { buildBlocks, fromLive, fromRaw, segments, type SourceMessage, type TurnBlock } from "./blocks";
+import { buildBlocks, fromLive, fromRaw, segments, type ServerToolBlock, type SourceMessage, type TurnBlock } from "./blocks";
 import { WorkSegment, type Folds } from "./WorkSegment";
 
 const RENDER_WIDGET = "render_widget";
@@ -145,6 +147,80 @@ function UserBubble({ msg, widgetTitles }: { msg: RawMessage; widgetTitles: Map<
   );
 }
 
+function serverToolHint(b: ServerToolBlock): string {
+  const inp = (b.input && typeof b.input === "object" ? b.input : {}) as Record<string, unknown>;
+  if (typeof inp.query === "string" && inp.query.trim()) return inp.query;
+  if (Array.isArray(inp.queries) && inp.queries.length > 0) return String(inp.queries[0]);
+  if (typeof inp.url === "string" && inp.url.trim()) return inp.url;
+  if (b.action) return b.action;
+  return "";
+}
+
+function ServerToolLine({ block }: { block: ServerToolBlock }) {
+  const t = useT();
+  const hint = serverToolHint(block);
+  const state = block.result ? (block.result.is_error ? "error" : "ok") : "running";
+  return (
+    <details className={`server-tool-line ${state}`}>
+      <summary>
+        <span className="server-tool-icon">
+          {block.name.includes("search") ? <SearchIcon size={13} /> : <GlobeIcon size={13} />}
+        </span>
+        <span className="server-tool-name mono">{block.name}</span>
+        {hint && <span className="server-tool-hint">{hint}</span>}
+        <span className="spacer" />
+        {block.result?.summary && <span className="muted">{block.result.summary}</span>}
+      </summary>
+      <div className="tool-detail">
+        <div className="label">{t("thread.input")}</div>
+        <JsonView value={block.input} />
+        {block.result && (
+          <>
+            <div className="label">{block.result.is_error ? t("common.error") : t("thread.result")}</div>
+            <pre className={block.result.is_error ? "error-text" : ""}>{block.result.summary}</pre>
+          </>
+        )}
+      </div>
+    </details>
+  );
+}
+
+function CitationBar({ citations }: { citations: Citation[] }) {
+  const t = useT();
+  if (!citations.length) return null;
+  return (
+    <div className="citation-bar" aria-label={t("thread.citations")}>
+      <span className="citation-label">{t("thread.citations")}</span>
+      <div className="citation-pills">
+        {citations.map((c, i) => {
+          const domain = c.domain || (() => {
+            try {
+              return new URL(c.url).hostname.replace(/^www\./, "");
+            } catch {
+              return c.url;
+            }
+          })();
+          return (
+            <a
+              key={`${c.url}-${i}`}
+              className="citation-pill"
+              href={c.url}
+              target="_blank"
+              rel="noreferrer noopener"
+              title={c.snippet || c.title || c.url}
+            >
+              <GlobeIcon size={11} />
+              <span className="citation-domain">{domain}</span>
+              {c.title && c.title !== domain && <span className="citation-title">{c.title}</span>}
+              <ExternalLinkIcon size={10} />
+            </a>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ----- assistant turn ------------------------------------------------------------------------
 
 interface ThreadProps {
@@ -206,7 +282,14 @@ export function Thread({ detail, live, toolTimes, actions, subagents, children, 
   const renderBlock = (b: Exclude<TurnBlock, { type: "thinking" | "tool_group" }>) => {
     switch (b.type) {
       case "text":
-        return <Markdown text={b.text} />;
+        return (
+          <div className="text-block-wrap">
+            {b.text.trim() && <Markdown text={b.text} streaming={b.status === "streaming"} />}
+            {b.citations.length > 0 && <CitationBar citations={b.citations} />}
+          </div>
+        );
+      case "server_tool":
+        return <ServerToolLine block={b} />;
       case "approval":
         return (
           <motion.div variants={enter} initial="hidden" animate="shown">

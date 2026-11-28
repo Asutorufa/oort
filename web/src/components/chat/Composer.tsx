@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowUpIcon, BrainIcon, CubeIcon, ShieldIcon, StopIcon, XIcon } from "../../brand/Icons";
+import { ArrowUpIcon, BrainIcon, CubeIcon, GlobeIcon, ShieldIcon, StopIcon, XIcon } from "../../brand/Icons";
 import { APPROVAL_POLICIES, REASONING_LEVELS, type ApprovalPolicy, type CommandInfo, type InvokedSkill, type ReasoningEffort } from "../../api/types";
 import { popover, snappy, tap } from "../../lib/motion";
 import { Select } from "../ui";
@@ -40,6 +40,9 @@ export function Composer({
   models,
   onModel,
   modelsFailed,
+  webSearch,
+  webSearchSupported,
+  onWebSearch,
   onSend,
   onInterrupt,
   onCommand,
@@ -61,6 +64,9 @@ export function Composer({
   models?: string[];
   onModel?: (m: string) => void;
   modelsFailed?: boolean;
+  webSearch?: boolean;
+  webSearchSupported?: boolean;
+  onWebSearch?: (enabled: boolean) => void;
   onSend: (text: string, skills: InvokedSkill[]) => Promise<void>;
   onInterrupt?: (text: string, skills: InvokedSkill[]) => Promise<void>;
   onCommand?: (name: string, args: string) => Promise<void>;
@@ -276,6 +282,19 @@ export function Composer({
                 <span className="mono">{model}</span>
               </span>
             )
+          )}
+          {webSearchSupported && onWebSearch && (
+            <motion.button
+              type="button"
+              whileTap={tap}
+              className={`dock-toggle-pill ${webSearch ? "on" : ""}`}
+              aria-pressed={!!webSearch}
+              title={webSearch ? t("composer.webSearchOn") : t("composer.webSearch")}
+              onClick={() => onWebSearch(!webSearch)}
+            >
+              <GlobeIcon size={13} />
+              <span>{t("composer.webSearch")}</span>
+            </motion.button>
           )}
           <span className="spacer" />
           <AnimatePresence mode="popLayout" initial={false}>

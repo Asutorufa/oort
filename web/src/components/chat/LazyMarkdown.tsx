@@ -4,10 +4,10 @@ import { lazy, Suspense } from "react";
 // plainly until then.
 const Impl = lazy(() => import("./Markdown"));
 
-export function Markdown({ text }: { text: string }) {
+export function Markdown({ text, streaming }: { text: string; streaming?: boolean }) {
   return (
     <Suspense fallback={<div className="plain">{text}</div>}>
-      <Impl text={text} />
+      <Impl text={text} streaming={streaming} />
     </Suspense>
   );
 }

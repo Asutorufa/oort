@@ -1,7 +1,8 @@
 //! Separation of the raw event history (`AgentState`) from the request view sent to the LLM.
 
 use oort_llm::{
-    CacheBreakpoint, ChatRequest, Message, PromptCacheConfig, Role, ThinkingConfig, ToolChoice,
+    CacheBreakpoint, ChatRequest, Message, PromptCacheConfig, Role, ServerToolConfig,
+    ThinkingConfig, ToolChoice,
 };
 
 use crate::compact::{CompactionPolicy, select_boundary};
@@ -37,6 +38,12 @@ pub struct RequestParams {
     /// When set, replaces `model` on every request (a chat may switch models; the history,
     /// system prompt and tools are untouched).
     pub live_model: Option<LiveModel>,
+    /// Static provider-hosted server tool config.
+    pub server_tools: Option<ServerToolConfig>,
+    /// When set, replaces `server_tools` on every request (e.g. Composer web-search toggle).
+    pub live_server_tools: Option<LiveServerTools>,
+    /// Optional provider escape-hatch JSON merged into top-level request body.
+    pub extra_body: Option<serde_json::Value>,
 }
 
 /// Shared, changeable model id (see [`RequestParams::live_model`]).
@@ -44,6 +51,9 @@ pub type LiveModel = std::sync::Arc<std::sync::RwLock<String>>;
 
 /// Shared, changeable thinking setting (see [`RequestParams::live_thinking`]).
 pub type LiveThinking = std::sync::Arc<std::sync::RwLock<Option<ThinkingConfig>>>;
+
+/// Shared, changeable server tools setting (see [`RequestParams::live_server_tools`]).
+pub type LiveServerTools = std::sync::Arc<std::sync::RwLock<Option<ServerToolConfig>>>;
 
 /// Default view: `[System, Tools, latest_summary?, messages[up_to_index..]]` with cache
 /// breakpoints at the static prefix, the previous request's tail, and the current tail.
@@ -87,6 +97,11 @@ impl ContextManager for DefaultContextManager {
         };
         req.tool_choice = p.tool_choice.clone();
         req.prompt_cache = p.prompt_cache.clone();
+        req.server_tools = match &p.live_server_tools {
+            Some(live) => live.read().unwrap_or_else(|e| e.into_inner()).clone(),
+            None => p.server_tools.clone(),
+        };
+        req.extra_body = p.extra_body.clone();
         if p.prompt_cache.as_ref().is_some_and(|c| c.enabled) {
             req.cache_breakpoints = cache_breakpoints(&req.messages);
         }

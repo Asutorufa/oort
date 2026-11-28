@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use oort_agent::secret::{self, SecretSource};
 use oort_agent::{
     ApprovalPolicyKind, AutoRetry, McpAuth, McpServerRecord, McpTransportKind, PresetRecord,
-    ProviderDefaults, ProviderKind, ProviderRecord, ReasoningEffort,
+    ProviderDefaults, ProviderKind, ProviderRecord, ReasoningEffort, ServerToolConfig, Vendor,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -38,11 +38,14 @@ pub struct ProviderView {
     pub id: String,
     pub name: String,
     pub kind: ProviderKind,
+    pub vendor: Vendor,
     pub base_url: Option<String>,
     pub api_key: Option<String>,
     pub api_key_source: SecretSource,
     pub default_model: String,
     pub extra_headers: BTreeMap<String, String>,
+    pub default_server_tools: ServerToolConfig,
+    pub extra_body: Option<Value>,
     pub is_enabled: bool,
     pub auto_retry: AutoRetry,
     pub defaults: ProviderDefaults,
@@ -56,11 +59,14 @@ impl From<&ProviderRecord> for ProviderView {
             id: p.id.clone(),
             name: p.name.clone(),
             kind: p.kind,
+            vendor: p.vendor,
             base_url: p.base_url.clone(),
             api_key: p.api_key.as_deref().map(secret::mask),
             api_key_source: secret::source(p.api_key.as_deref()),
             default_model: p.default_model.clone(),
             extra_headers: secret::mask_map(&p.extra_headers),
+            default_server_tools: p.default_server_tools.clone(),
+            extra_body: p.extra_body.clone(),
             is_enabled: p.is_enabled,
             auto_retry: p.auto_retry,
             defaults: p.defaults,
@@ -74,11 +80,14 @@ impl From<&ProviderRecord> for ProviderView {
 pub struct ProviderInput {
     pub name: Option<String>,
     pub kind: Option<ProviderKind>,
+    pub vendor: Option<Vendor>,
     pub base_url: Option<String>,
     /// Empty, missing or the masked value: keep the stored key.
     pub api_key: Option<String>,
     pub default_model: Option<String>,
     pub extra_headers: Option<BTreeMap<String, String>>,
+    pub default_server_tools: Option<ServerToolConfig>,
+    pub extra_body: Option<Value>,
     pub is_enabled: Option<bool>,
     pub auto_retry: Option<AutoRetry>,
     /// Replaces all generation defaults when present.
@@ -88,19 +97,43 @@ pub struct ProviderInput {
     pub ping: bool,
 }
 
+fn default_vendor_for_kind(kind: ProviderKind) -> Vendor {
+    match kind {
+        ProviderKind::Openai => Vendor::Openai,
+        ProviderKind::Anthropic => Vendor::Anthropic,
+        ProviderKind::Gemini => Vendor::Gemini,
+        ProviderKind::OpenaiCompatible | ProviderKind::Mock => Vendor::Custom,
+    }
+}
+
+fn normalize_extra_body(v: Option<Value>) -> Result<Option<Value>, ApiError> {
+    match v {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Object(m)) if m.is_empty() => Ok(None),
+        Some(v @ Value::Object(_)) => Ok(Some(v)),
+        Some(_) => Err(ApiError::BadRequest(
+            "`extra_body` must be a JSON object".into(),
+        )),
+    }
+}
+
 impl ProviderInput {
     pub fn create(self) -> Result<ProviderRecord, ApiError> {
         let now = now_ms();
+        let kind = self
+            .kind
+            .ok_or_else(|| ApiError::BadRequest("`kind` is required".into()))?;
         let rec = ProviderRecord {
             id: new_id(),
             name: required(self.name, "name")?,
-            kind: self
-                .kind
-                .ok_or_else(|| ApiError::BadRequest("`kind` is required".into()))?,
+            kind,
+            vendor: self.vendor.unwrap_or_else(|| default_vendor_for_kind(kind)),
             base_url: merge_opt(None, self.base_url),
             api_key: secret::merge(None, self.api_key.as_deref()),
             default_model: self.default_model.unwrap_or_default().trim().to_string(),
             extra_headers: secret::merge_map(&BTreeMap::new(), self.extra_headers.as_ref()),
+            default_server_tools: self.default_server_tools.unwrap_or_default(),
+            extra_body: normalize_extra_body(self.extra_body)?,
             is_enabled: self.is_enabled.unwrap_or(true),
             auto_retry: self.auto_retry.unwrap_or_default(),
             defaults: self.defaults.unwrap_or_default(),
@@ -121,6 +154,10 @@ impl ProviderInput {
                 "`kind` cannot be changed; create a new provider instead".into(),
             ));
         }
+        let extra_body = match self.extra_body {
+            Some(v) => normalize_extra_body(Some(v))?,
+            None => cur.extra_body.clone(),
+        };
         let rec = ProviderRecord {
             id: cur.id.clone(),
             name: match self.name {
@@ -128,6 +165,7 @@ impl ProviderInput {
                 None => cur.name.clone(),
             },
             kind: cur.kind,
+            vendor: self.vendor.unwrap_or(cur.vendor),
             base_url: merge_opt(cur.base_url.clone(), self.base_url),
             api_key: secret::merge(cur.api_key.as_deref(), self.api_key.as_deref()),
             default_model: self
@@ -135,6 +173,10 @@ impl ProviderInput {
                 .map(|m| m.trim().to_string())
                 .unwrap_or_else(|| cur.default_model.clone()),
             extra_headers: secret::merge_map(&cur.extra_headers, self.extra_headers.as_ref()),
+            default_server_tools: self
+                .default_server_tools
+                .unwrap_or_else(|| cur.default_server_tools.clone()),
+            extra_body,
             is_enabled: self.is_enabled.unwrap_or(cur.is_enabled),
             auto_retry: self.auto_retry.unwrap_or(cur.auto_retry),
             defaults: self.defaults.unwrap_or(cur.defaults),
@@ -460,6 +502,7 @@ pub struct PresetInput {
     /// Empty string clears it.
     pub workspace_root: Option<String>,
     pub reasoning_effort: Option<ReasoningEffort>,
+    pub enabled_server_tools: Option<ServerToolConfig>,
 }
 
 impl PresetInput {
@@ -479,6 +522,7 @@ impl PresetInput {
             builtin_groups: vec![],
             workspace_root: None,
             reasoning_effort: ReasoningEffort::Default,
+            enabled_server_tools: None,
             created_at: now,
             updated_at: now,
         };
@@ -496,6 +540,9 @@ impl PresetInput {
         }
         Ok(PresetRecord {
             reasoning_effort: self.reasoning_effort.unwrap_or(cur.reasoning_effort),
+            enabled_server_tools: self
+                .enabled_server_tools
+                .or_else(|| cur.enabled_server_tools.clone()),
             builtin_groups: self
                 .builtin_groups
                 .clone()

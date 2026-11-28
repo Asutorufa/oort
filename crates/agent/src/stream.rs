@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use oort_llm::{ChatResponse, StopReason, StreamEvent, ToolCall, Usage};
+use oort_llm::{ChatResponse, Citation, ContentPart, StopReason, StreamEvent, ToolCall, Usage};
 use serde_json::{Value, json};
 
 use crate::tool::INVALID_ARGUMENTS_KEY;
@@ -26,6 +26,8 @@ pub(crate) struct TurnAccumulator {
     thinking: Option<String>,
     signature: Option<String>,
     calls: BTreeMap<usize, PendingCall>,
+    server_tool_blocks: Vec<ContentPart>,
+    citations: Vec<Citation>,
     usage: Option<Usage>,
     stop_reason: Option<StopReason>,
 }
@@ -68,6 +70,41 @@ impl TurnAccumulator {
                     self.calls.entry(*index).or_default().signature = Some(signature.clone());
                 }
             }
+            StreamEvent::ServerToolUse {
+                id,
+                name,
+                action,
+                input,
+                raw_provider_payload,
+            } => {
+                self.server_tool_blocks.push(ContentPart::ServerToolUse {
+                    id: id.clone(),
+                    name: name.clone(),
+                    action: action.clone(),
+                    input: input.clone(),
+                    raw_provider_payload: raw_provider_payload.clone(),
+                });
+            }
+            StreamEvent::ServerToolResult {
+                tool_use_id,
+                name,
+                summary,
+                is_error,
+                raw_provider_payload,
+            } => {
+                self.server_tool_blocks.push(ContentPart::ServerToolResult {
+                    tool_use_id: tool_use_id.clone(),
+                    name: name.clone(),
+                    summary: summary.clone(),
+                    is_error: *is_error,
+                    raw_provider_payload: raw_provider_payload.clone(),
+                });
+            }
+            StreamEvent::Citation(c) => {
+                if !self.citations.iter().any(|existing| existing.url == c.url) {
+                    self.citations.push(c.clone());
+                }
+            }
             StreamEvent::Usage(u) => self.usage = Some(u.clone()),
             StreamEvent::Done { stop_reason } => {
                 if stop_reason.is_some() {
@@ -90,6 +127,8 @@ impl TurnAccumulator {
             thinking: self.thinking,
             thinking_signature: self.signature,
             tool_calls,
+            server_tool_blocks: self.server_tool_blocks,
+            citations: self.citations,
             stop_reason: self.stop_reason,
             usage: self.usage,
         }
