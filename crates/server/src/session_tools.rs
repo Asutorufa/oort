@@ -202,10 +202,9 @@ pub fn validate_widget(args: &Value) -> Result<(&str, &Value), String> {
             let series = arr(data, "series")?;
             each_has(series, "series", &["name", "points"])?;
             for (si, s) in series.iter().enumerate() {
-                let pts = s
-                    .get("points")
-                    .and_then(Value::as_array)
-                    .ok_or_else(|| format!("series[{si}].points must be an array of {{\"x\", \"y\"}} objects"))?;
+                let pts = s.get("points").and_then(Value::as_array).ok_or_else(|| {
+                    format!("series[{si}].points must be an array of {{\"x\", \"y\"}} objects")
+                })?;
                 for (pi, p) in pts.iter().enumerate() {
                     let ok = p.is_object()
                         && p.get("x").is_some()
@@ -240,7 +239,10 @@ pub fn validate_widget(args: &Value) -> Result<(&str, &Value), String> {
             each_has(fields, "fields", &["name", "label", "kind"])?;
             for (i, f) in fields.iter().enumerate() {
                 let fkind = f.get("kind").and_then(Value::as_str).unwrap_or("");
-                if !matches!(fkind, "text" | "textarea" | "number" | "select" | "checkbox") {
+                if !matches!(
+                    fkind,
+                    "text" | "textarea" | "number" | "select" | "checkbox"
+                ) {
                     return Err(format!(
                         "fields[{i}].kind `{fkind}` must be one of text, textarea, number, select, checkbox"
                     ));

@@ -93,7 +93,8 @@ pub fn router(manager: Arc<SessionManager>, web_dist: Option<&FsPath>) -> Router
         );
     let api = api
         .merge(crate::analytics_api::routes())
-        .merge(crate::attachments::routes());
+        .merge(crate::attachments::routes())
+        .merge(crate::fs_api::routes());
     let mut app = Router::new()
         .nest("/api", api)
         .with_state(manager)
@@ -540,6 +541,7 @@ async fn create_preset(
     let rec = input.create()?;
     check_preset_refs(&m, &rec).await?;
     m.registry().config.create_preset(&rec).await?;
+    remember_preset_workspace(&m, &rec).await;
     Ok(Json(rec))
 }
 
@@ -549,10 +551,22 @@ async fn update_preset(
     Json(input): Json<PresetInput>,
 ) -> ApiResult<PresetRecord> {
     let cfg = &m.registry().config;
-    let rec = input.apply(&cfg.get_preset(&id).await?)?;
+    let current = cfg.get_preset(&id).await?;
+    let rec = input.apply(&current)?;
+    // Saving other fields of a preset is not another use of its folder.
+    let workspace_changed = rec.workspace_root != current.workspace_root;
     check_preset_refs(&m, &rec).await?;
     cfg.update_preset(&rec).await?;
+    if workspace_changed {
+        remember_preset_workspace(&m, &rec).await;
+    }
     Ok(Json(rec))
+}
+
+async fn remember_preset_workspace(m: &SessionManager, rec: &PresetRecord) {
+    if let Some(root) = &rec.workspace_root {
+        crate::fs_api::remember(&m.registry().workspaces, root).await;
+    }
 }
 
 async fn delete_preset(

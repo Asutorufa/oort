@@ -297,8 +297,7 @@ fn test_tool_definition_order_is_strictly_preserved_across_all_providers() {
     assert_eq!(resp_names, expected);
 
     let anthropic = AnthropicClient::new("k", "claude-sonnet-4-20250514");
-    let ant_val =
-        serde_json::to_value(anthropic.build_request_body(&req, false).unwrap()).unwrap();
+    let ant_val = serde_json::to_value(anthropic.build_request_body(&req, false).unwrap()).unwrap();
     let ant_names: Vec<&str> = ant_val["tools"]
         .as_array()
         .unwrap()
@@ -482,7 +481,10 @@ fn test_anthropic_default_five_minute_ttl_omits_ttl_field() {
         .with_prompt_cache(PromptCacheConfig::enabled().with_ttl(CacheTtl::FiveMinutes));
 
     let body = serde_json::to_value(client.build_request_body(&req, false).unwrap()).unwrap();
-    assert_eq!(body["system"][0]["cache_control"], json!({"type": "ephemeral"}));
+    assert_eq!(
+        body["system"][0]["cache_control"],
+        json!({"type": "ephemeral"})
+    );
     assert_eq!(
         body["messages"][0]["content"][0]["cache_control"],
         json!({"type": "ephemeral"})
@@ -530,8 +532,9 @@ fn test_gemini_multi_turn_implicit_prefix_stability_and_explicit_cached_content(
     );
 
     // Verify explicit cachedContent resource name forwarding.
-    let explicit_req = ChatRequest::new(vec![Message::user("Use cache")])
-        .with_prompt_cache(PromptCacheConfig::enabled().with_cached_content("cachedContents/abc123"));
+    let explicit_req = ChatRequest::new(vec![Message::user("Use cache")]).with_prompt_cache(
+        PromptCacheConfig::enabled().with_cached_content("cachedContents/abc123"),
+    );
     let explicit_val =
         serde_json::to_value(client.build_request_body(&explicit_req).unwrap().1).unwrap();
     assert_eq!(explicit_val["cachedContent"], "cachedContents/abc123");
@@ -711,16 +714,16 @@ fn test_openai_legacy_completion_prefix_cache_stability() {
         .with_max_tokens(128)
         .with_prompt_cache(cache);
 
-    let v1a = serde_json::to_string(&client.build_completion_request_body(&req1, true).unwrap())
-        .unwrap();
-    let v1b = serde_json::to_string(&client.build_completion_request_body(&req1, true).unwrap())
-        .unwrap();
+    let v1a =
+        serde_json::to_string(&client.build_completion_request_body(&req1, true).unwrap()).unwrap();
+    let v1b =
+        serde_json::to_string(&client.build_completion_request_body(&req1, true).unwrap()).unwrap();
     assert_eq!(v1a, v1b);
 
-    let j1 = serde_json::to_value(client.build_completion_request_body(&req1, true).unwrap())
-        .unwrap();
-    let j2 = serde_json::to_value(client.build_completion_request_body(&req2, true).unwrap())
-        .unwrap();
+    let j1 =
+        serde_json::to_value(client.build_completion_request_body(&req1, true).unwrap()).unwrap();
+    let j2 =
+        serde_json::to_value(client.build_completion_request_body(&req2, true).unwrap()).unwrap();
 
     assert_eq!(j1["prompt_cache_key"], "cmpl-session-1");
     assert_eq!(j1["prompt_cache_retention"], "24h");
@@ -762,8 +765,14 @@ fn test_multimodal_image_and_pdf_encoding_and_prefix_stability() {
     let oa2 = serde_json::to_value(oa.build_request_body(&req2, false).unwrap()).unwrap();
     let oa_parts = oa1["messages"][1]["content"].as_array().unwrap();
     assert_eq!(oa_parts[1]["type"], "image_url");
-    assert_eq!(oa_parts[1]["image_url"]["url"], "data:image/png;base64,iVBORw0KGgo=");
-    assert_eq!(oa_parts[2]["image_url"]["url"], "https://example.com/chart.jpg");
+    assert_eq!(
+        oa_parts[1]["image_url"]["url"],
+        "data:image/png;base64,iVBORw0KGgo="
+    );
+    assert_eq!(
+        oa_parts[2]["image_url"]["url"],
+        "https://example.com/chart.jpg"
+    );
     assert_eq!(oa_parts[3]["type"], "file");
     assert_eq!(oa_parts[3]["file"]["filename"], "report.pdf");
     assert_eq!(
@@ -771,7 +780,11 @@ fn test_multimodal_image_and_pdf_encoding_and_prefix_stability() {
         "data:application/pdf;base64,JVBERi0xLjQK"
     );
     assert_eq!(oa_parts[5]["file"]["file_id"], "file-abc123");
-    assert_json_array_is_prefix(&oa1["messages"], &oa2["messages"], "OpenAI multimodal t1->t2");
+    assert_json_array_is_prefix(
+        &oa1["messages"],
+        &oa2["messages"],
+        "OpenAI multimodal t1->t2",
+    );
 
     // OpenAI Responses API
     let resp = OpenAIResponsesClient::new("k", "gpt-4.1");
@@ -787,7 +800,11 @@ fn test_multimodal_image_and_pdf_encoding_and_prefix_stability() {
     );
     assert_eq!(r_parts[4]["file_url"], "https://example.com/spec.pdf");
     assert_eq!(r_parts[5]["file_id"], "file-abc123");
-    assert_json_array_is_prefix(&r1["input"], &r2["input"], "OpenAI Responses multimodal t1->t2");
+    assert_json_array_is_prefix(
+        &r1["input"],
+        &r2["input"],
+        "OpenAI Responses multimodal t1->t2",
+    );
 
     // Anthropic Messages API
     let ant = AnthropicClient::new("k", "claude-sonnet-4-20250514");
@@ -816,11 +833,17 @@ fn test_multimodal_image_and_pdf_encoding_and_prefix_stability() {
     let g2 = serde_json::to_value(gem.build_request_body(&req2).unwrap().1).unwrap();
     let g_parts = g1["contents"][0]["parts"].as_array().unwrap();
     assert_eq!(g_parts[1]["inlineData"]["mimeType"], "image/png");
-    assert_eq!(g_parts[2]["fileData"]["fileUri"], "https://example.com/chart.jpg");
+    assert_eq!(
+        g_parts[2]["fileData"]["fileUri"],
+        "https://example.com/chart.jpg"
+    );
     assert_eq!(g_parts[3]["inlineData"]["mimeType"], "application/pdf");
     assert_eq!(g_parts[3]["inlineData"]["data"], "JVBERi0xLjQK");
     assert_eq!(g_parts[4]["fileData"]["mimeType"], "application/pdf");
-    assert_eq!(g_parts[4]["fileData"]["fileUri"], "https://example.com/spec.pdf");
+    assert_eq!(
+        g_parts[4]["fileData"]["fileUri"],
+        "https://example.com/spec.pdf"
+    );
     assert_eq!(g_parts[5]["fileData"]["fileUri"], "file-abc123");
     assert_json_array_is_prefix(&g1["contents"], &g2["contents"], "Gemini multimodal t1->t2");
 }

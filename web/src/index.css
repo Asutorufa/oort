@@ -685,6 +685,7 @@ select:disabled { cursor: default; opacity: .7; }
 .group-toggles.compact .toggle-row { justify-content: center; }
 .group-toggles .toggle-chip { font-size: 12.5px; }
 .workspace-input { max-width: 520px; }
+.group-toggles.compact .workspace-input { align-self: center; }
 
 /* ----- subagent trace ----- */
 .trace-meta { margin-bottom: 10px; }

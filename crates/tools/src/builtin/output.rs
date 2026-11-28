@@ -156,16 +156,15 @@ impl LocalTool for ReadToolOutput {
         let limit = args
             .get("limit")
             .and_then(Value::as_u64)
-            .map_or(DEFAULT_LIMIT_CHARS, |v| (v as usize).clamp(100, MAX_LIMIT_CHARS));
+            .map_or(DEFAULT_LIMIT_CHARS, |v| {
+                (v as usize).clamp(100, MAX_LIMIT_CHARS)
+            });
 
         if let Some(query) = opt_str(&args, "query") {
             return Ok(ToolOutput::ok(search_blob(&blob, query, limit)));
         }
 
-        let offset = args
-            .get("offset")
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as usize;
+        let offset = args.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize;
         if offset >= blob.total_chars {
             return Ok(ToolOutput::ok(format!(
                 "[End of output `{output_id}`: offset {offset} >= total {} chars]",

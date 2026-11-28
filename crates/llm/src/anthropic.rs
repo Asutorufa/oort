@@ -266,7 +266,9 @@ impl AnthropicClient {
         });
         let thinking_on = matches!(
             thinking,
-            Some(AnthropicThinkingConfig::Enabled { .. } | AnthropicThinkingConfig::EnabledNoBudget)
+            Some(
+                AnthropicThinkingConfig::Enabled { .. } | AnthropicThinkingConfig::EnabledNoBudget
+            )
         );
 
         // `max_tokens` must exceed the thinking budget.
@@ -449,7 +451,9 @@ struct AnthropicMessage {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 enum AnthropicThinkingConfig {
-    Enabled { budget_tokens: u32 },
+    Enabled {
+        budget_tokens: u32,
+    },
     #[serde(rename = "enabled")]
     EnabledNoBudget,
     Disabled,
@@ -656,9 +660,9 @@ fn encode_anthropic_message(msg: &Message, vendor: Vendor) -> (&'static str, Vec
                     .iter()
                     .filter_map(|c| c.raw_provider_payload.as_ref())
                     .filter(|v| {
-                        v.get("type")
-                            .and_then(Value::as_str)
-                            .is_some_and(|t| t == "web_search_result_location" || t == "char_location")
+                        v.get("type").and_then(Value::as_str).is_some_and(|t| {
+                            t == "web_search_result_location" || t == "char_location"
+                        })
                     })
                     .cloned()
                     .collect();

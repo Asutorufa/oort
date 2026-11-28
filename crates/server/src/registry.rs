@@ -20,6 +20,7 @@ use oort_mcp::{ClientOptions, McpConfig, McpError, ServerEntry};
 use oort_skills::SkillRegistry;
 use oort_storage::analytics::{AnalyticsStore, CallPurpose};
 use oort_storage::attachments::AttachmentStore;
+use oort_storage::workspaces::WorkspaceStore;
 use serde::Serialize;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -96,6 +97,8 @@ pub struct Registry {
     pub attachments: Arc<dyn AttachmentStore>,
     /// Usage ledgers, budget and custom prices.
     pub analytics: Arc<dyn AnalyticsStore>,
+    /// Recently used and starred workspace folders.
+    pub workspaces: Arc<dyn WorkspaceStore>,
     pub subagents: SubagentLimits,
     builtin: Arc<dyn ToolExecutor>,
     mock_word_delay: Duration,
@@ -111,6 +114,7 @@ pub trait Stores:
     + oort_agent::ToolOutputBlobStore
     + AnalyticsStore
     + AttachmentStore
+    + WorkspaceStore
     + 'static
 {
 }
@@ -122,6 +126,7 @@ impl<
         + oort_agent::ToolOutputBlobStore
         + AnalyticsStore
         + AttachmentStore
+        + WorkspaceStore
         + 'static,
 > Stores for T
 {
@@ -172,6 +177,7 @@ impl Registry {
             output_blobs: store.clone(),
             attachments: store.clone(),
             analytics: store.clone(),
+            workspaces: store.clone(),
             subagents: SubagentLimits::default(),
             web: WebFetchOptions::default(),
             config: store.clone(),

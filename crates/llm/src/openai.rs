@@ -297,9 +297,10 @@ impl OpenAIClient {
         };
 
         let (reasoning_effort, deepseek_thinking) = if self.vendor == Vendor::Deepseek {
-            let t = request.thinking.as_ref().map(|t| {
-                json!({ "type": if t.enabled { "enabled" } else { "disabled" } })
-            });
+            let t = request
+                .thinking
+                .as_ref()
+                .map(|t| json!({ "type": if t.enabled { "enabled" } else { "disabled" } }));
             (None, t)
         } else {
             let eff = request

@@ -27,6 +27,7 @@ pub mod analytics;
 pub mod attachments;
 mod config;
 pub mod pricing;
+pub mod workspaces;
 
 /// [`SessionStore`] and [`oort_agent::ConfigStore`] backed by one SQLite database.
 #[derive(Debug, Clone)]

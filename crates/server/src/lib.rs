@@ -9,6 +9,7 @@ pub mod attachments;
 pub mod commands;
 pub mod config;
 pub mod config_api;
+pub mod fs_api;
 pub mod hub;
 pub mod manager;
 pub mod metering;

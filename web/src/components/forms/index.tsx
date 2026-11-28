@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { BUILTIN_GROUPS, type SecretSource } from "../../api/types";
 import { EyeIcon, EyeOffIcon, PlusIcon, TrashIcon } from "../../brand/Icons";
 import { Switch } from "../ui";
+import { WorkspacePathPicker } from "../workspace/WorkspacePathPicker";
 import { useT, type Key } from "../../i18n";
 
 export function Field({ label, hint, children }: { label: string; hint?: ReactNode; children: ReactNode }) {
@@ -284,11 +285,12 @@ export function GroupToggles({
         ))}
       </div>
       {on("workspace") && (
-        <input
-          className="mono workspace-input"
+        <WorkspacePathPicker
+          className="workspace-input"
           value={workspaceRoot}
           placeholder={t("groups.workspacePlaceholder")}
-          onChange={(e) => onWorkspaceRoot(e.target.value)}
+          ariaLabel={t("groups.workspace")}
+          onChange={onWorkspaceRoot}
         />
       )}
     </div>
