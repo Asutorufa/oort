@@ -66,10 +66,20 @@ const committedOnly = (live: Live): Live => ({ ...live, steps: live.steps.filter
 export type ConnState = "connecting" | "open" | "reconnecting" | "closed";
 
 export interface LogEntry {
+  /** Stable across new entries (the server's `seq` can be missing). */
+  id: number;
   seq: number | null;
-  label: string;
+  /** Event name, e.g. `connected` or `tool_finished`. */
+  type: string;
+  /** Short supplement shown on the same line. */
+  text: string;
+  error: boolean;
+  /** The payload, shown when the line is expanded. */
+  data?: unknown;
   at: number;
 }
+
+let logId = 0;
 
 /** Client-measured tool durations (`tool_started` → `tool_finished`), kept per browser tab. */
 export type ToolTimes = Record<string, { startedAt: number; ms?: number }>;
@@ -88,37 +98,43 @@ function fromWire(l: LiveTurnWire): Live {
   return { turn: l.turn, steps: step ? [step] : [], runningTools: l.running_tools };
 }
 
+/** Supplement for a log line; the event name is shown separately. */
 function describe(ev: AgentEvent): string {
   switch (ev.event) {
     case "turn_started":
-      return `turn ${ev.turn} started`;
+      return `turn ${ev.turn}`;
     case "subagent":
-      return `subagent ${ev.profile}: ${describe(ev.inner)}`;
+      return `${ev.profile}: ${ev.inner.event} ${describe(ev.inner)}`;
     case "plan_updated":
-      return `plan: ${ev.steps.filter((s) => s.status === "done").length}/${ev.steps.length} done`;
+      return `${ev.steps.filter((s) => s.status === "done").length}/${ev.steps.length} done`;
     case "tool_started":
-      return `tool ${ev.call.name} started`;
+      return ev.call.name;
     case "tool_finished":
-      return `tool ${ev.result.name ?? ev.result.tool_call_id} ${ev.result.is_error ? "failed" : "ok"}`;
+      return `${ev.result.name ?? ev.result.tool_call_id} ${ev.result.is_error ? "failed" : "ok"}`;
     case "approval_required":
-      return `approval required: ${ev.calls.map((c) => c.name).join(", ")}`;
+      return `${ev.calls.map((c) => c.name).join(", ")}`;
     case "interrupted":
-      return `interrupted during ${ev.during}`;
+      return `during ${ev.during}`;
     case "compacted":
-      return `compacted epoch ${ev.epoch} (up to #${ev.up_to_index})`;
+      return `epoch ${ev.epoch} (up to #${ev.up_to_index})`;
     case "usage":
-      return `usage in=${ev.usage.input_tokens} cached=${ev.usage.cache_read_tokens ?? 0} out=${ev.usage.output_tokens}`;
+      return `in=${ev.usage.input_tokens} cached=${ev.usage.cache_read_tokens ?? 0} out=${ev.usage.output_tokens}`;
     case "llm_call":
-      return `llm call ttft=${ev.stats.ttft_ms ?? "—"}ms total=${ev.stats.latency_ms}ms`;
+      return `ttft=${ev.stats.ttft_ms ?? "—"}ms total=${ev.stats.latency_ms}ms`;
     case "phase_changed":
-      return `phase → ${ev.phase}`;
+      return `→ ${ev.phase}`;
     case "steer_applied":
-      return `steer applied (${ev.count})`;
+      return `${ev.count}`;
     case "halted":
-      return `halted: ${ev.reason}`;
+      return `${ev.reason}`;
     default:
-      return ev.event;
+      return "";
   }
+}
+
+function isError(ev: AgentEvent): boolean {
+  if (ev.event === "subagent") return isError(ev.inner);
+  return ev.event === "halted" || (ev.event === "tool_finished" && ev.result.is_error) || /error|failed/.test(ev.event);
 }
 
 const timesKey = (id: string) => `oort.toolTimes.${id}`;
@@ -179,8 +195,10 @@ export function useSessionStream(id: string | null, onDeleted?: () => void) {
     let retry: number | undefined;
     let backoff = 1000;
     let stopped = false;
-    const push = (seq: number | null, label: string) =>
-      setLog((l) => [...l.slice(-299), { seq, label, at: Date.now() }]);
+    const push = (seq: number | null, type: string, text = "", data?: unknown, error = false) => {
+      const entry: LogEntry = { id: ++logId, seq, type, text, error, data, at: Date.now() };
+      setLog((l) => [...l.slice(-299), entry]);
+    };
     const recordTime = (callId: string, update: (t: ToolTimes[string] | undefined) => ToolTimes[string]) =>
       setToolTimes((all) => {
         const next = { ...all, [callId]: update(all[callId]) };
@@ -329,7 +347,7 @@ export function useSessionStream(id: string | null, onDeleted?: () => void) {
           case "hello":
             backoff = 1000;
             setConn("open");
-            push(env.seq, env.resumed ? "reconnected (missed events replayed)" : "connected");
+            push(env.seq, env.resumed ? "reconnected" : "connected", env.resumed ? "missed events replayed" : "");
             if (!env.resumed) {
               setLive(fromWire(env.live));
               refresh();
@@ -339,27 +357,27 @@ export function useSessionStream(id: string | null, onDeleted?: () => void) {
             apply(env.event);
             const inner = env.event.event === "subagent" ? env.event.inner : env.event;
             if (inner.event !== "text_delta" && inner.event !== "thinking_delta") {
-              push(env.seq, describe(env.event));
+              push(env.seq, env.event.event, describe(env.event), env.event, isError(env.event));
             }
             return;
           case "loop_exited":
-            push(env.seq, `loop exited${env.error ? `: ${env.error}` : ""}`);
+            push(env.seq, "loop_exited", env.error ?? "", env, !!env.error);
             setLive((l) => ({ ...committedOnly(l), runningTools: [] }));
             scheduleRefresh();
             return;
           case "session_updated":
-            push(env.seq, `updated: ${env.approval_policy}`);
+            push(env.seq, "session_updated", env.approval_policy, env);
             scheduleRefresh();
             return;
           case "deleted":
-            push(env.seq, "session deleted");
+            push(env.seq, "deleted");
             stopped = true;
             es?.close();
             setConn("closed");
             onDeletedRef.current?.();
             return;
           case "lagged":
-            push(null, `lagged (${env.skipped} events skipped) — resynced`);
+            push(null, "lagged", `${env.skipped} events skipped, resynced`, env);
             scheduleRefresh();
             return;
         }

@@ -333,6 +333,7 @@ function Session({ id, visible, onListChanged }: { id: string; visible: boolean;
           onCloseTrace={() => setTrace(null)}
           detail={detail}
           log={log}
+          conn={conn}
           onInspect={setInspect}
           onCompact={() => send({ type: "compact" }).catch(() => {})}
           onStop={() => sessions.cancel(id).catch((e) => setError(errorText(e)))}

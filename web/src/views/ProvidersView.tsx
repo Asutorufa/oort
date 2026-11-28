@@ -269,6 +269,7 @@ export function ProvidersView({ selected }: { selected: string | null }) {
   }, [current?.id, current?.updated_at, isNew]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setForm((f) => ({ ...f, [k]: v }));
+  const dirty = !!current && JSON.stringify(form) !== JSON.stringify(toForm(current));
   const setD = <K extends keyof ProviderDefaults>(k: K, v: ProviderDefaults[K]) => setForm((f) => ({ ...f, defaults: { ...f.defaults, [k]: v } }));
   const { t, fmt } = useI18n();
   const preset = getVendorPreset(form.vendor);
@@ -806,20 +807,26 @@ export function ProvidersView({ selected }: { selected: string | null }) {
 
             <div className="pf-footer">
               <ResultBanner result={formTest} />
+              {/* Two blocks that wrap as units: testing on the left, committing the form on the right. */}
               <div className="pf-actions">
-                <motion.button whileTap={tap} className="btn" onClick={testForm} disabled={formTest === "running"} title={t("prov.testHint")}>
-                  {formTest === "running" ? <Spinner size={13} /> : null}
-                  {t("prov.testConnection")}
-                </motion.button>
-                <Checkbox checked={ping} onChange={setPing} label={t("prov.ping")} />
-                <span className="spacer" />
-                <button className="btn ghost" onClick={() => (current ? setForm(toForm(current)) : navigate("models"))}>
-                  {current ? t("prov.revert") : t("common.cancel")}
-                </button>
-                <motion.button whileTap={tap} className="btn primary" onClick={save} disabled={saving}>
-                  {saving && <Spinner size={13} />}
-                  {current ? t("common.save") : t("common.create")}
-                </motion.button>
+                <div className="pf-actions-test">
+                  <motion.button whileTap={tap} className="pf-btn secondary" onClick={testForm} disabled={formTest === "running"} title={t("prov.testHint")}>
+                    {formTest === "running" ? <Spinner size={13} /> : null}
+                    {t("prov.testConnection")}
+                  </motion.button>
+                  <span title={t("prov.pingHint")}>
+                    <Checkbox checked={ping} onChange={setPing} label={t("prov.ping")} />
+                  </span>
+                </div>
+                <div className="pf-actions-commit">
+                  <button className="pf-btn quiet" disabled={!!current && !dirty} onClick={() => (current ? setForm(toForm(current)) : navigate("models"))}>
+                    {current ? t("prov.revert") : t("common.cancel")}
+                  </button>
+                  <motion.button whileTap={tap} className="pf-btn save" onClick={save} disabled={saving}>
+                    {saving && <Spinner size={13} />}
+                    {current ? t("common.save") : t("common.create")}
+                  </motion.button>
+                </div>
               </div>
             </div>
           </motion.div>
