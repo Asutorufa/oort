@@ -7,6 +7,7 @@ import { McpView } from "./views/McpView";
 import { PresetsView } from "./views/PresetsView";
 import { ProvidersView } from "./views/ProvidersView";
 import { SkillsView } from "./views/SkillsView";
+import { MemoriesView } from "./views/MemoriesView";
 
 /** Oort shell: one collapsible sidebar and the current view; the route lives in the URL hash. */
 export function App() {
@@ -19,6 +20,7 @@ export function App() {
         {view === "chat" && <ChatView selected={id} onListChanged={list.reload} />}
         {view === "mcp" && <McpView selected={id} />}
         {view === "skills" && <SkillsView selected={id} />}
+        {view === "memories" && <MemoriesView selected={id} />}
         {view === "models" && <ProvidersView selected={id} />}
         {view === "presets" && <PresetsView selected={id} />}
       </main>

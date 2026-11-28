@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { errorText, mcpServers, presets, providers, sessions, skills } from "../api";
 import { APPROVAL_POLICIES, type ApprovalPolicy, type Preset, type PresetInput } from "../api/types";
 import { Badge, Empty, ErrorBar, Modal } from "../components/common";
-import { Field, Toggle } from "../components/forms";
+import { Field, GroupToggles, Toggle } from "../components/forms";
 import { navigate } from "../hooks/useHashRoute";
 import { useResource } from "../hooks/useResource";
 
@@ -15,9 +15,11 @@ const blank: Form = {
   model: "",
   system_prompt: "You are a helpful assistant.",
   mcp_server_ids: [],
-  builtin_tools: true,
+  builtin_tools: false,
   approval_policy: "auto_readonly",
   skill_ids: [],
+  builtin_groups: ["core_ux", "memory", "utilities"],
+  workspace_root: null,
 };
 
 const toForm = (p: Preset): Form => ({
@@ -30,6 +32,8 @@ const toForm = (p: Preset): Form => ({
   builtin_tools: p.builtin_tools,
   approval_policy: p.approval_policy,
   skill_ids: p.skill_ids ?? [],
+  builtin_groups: p.builtin_groups ?? [],
+  workspace_root: p.workspace_root,
 });
 
 export function PresetsView({ selected }: { selected: string | null }) {
@@ -189,6 +193,14 @@ export function PresetsView({ selected }: { selected: string | null }) {
                 {serverList.data?.length === 0 && <span className="muted">none configured</span>}
               </div>
             </Field>
+            <Field label="組み込みツール" hint="会話の開始時に固定されます。Local Workspace はフォルダの指定が必要です">
+              <GroupToggles
+                value={form.builtin_groups}
+                onChange={(v) => set("builtin_groups", v)}
+                workspaceRoot={form.workspace_root ?? ""}
+                onWorkspaceRoot={(v) => set("workspace_root", v)}
+              />
+            </Field>
             <Field label="Skills" hint="名前と説明だけが会話の最初に固定され、本文は必要なときに読み込まれます">
               <div className="checks">
                 {(skillList.data ?? []).map((k) => (
@@ -216,7 +228,7 @@ export function PresetsView({ selected }: { selected: string | null }) {
                   ))}
                 </select>
               </Field>
-              <Field label="Built-in tools">
+              <Field label="旧ツール（互換用）" hint="組み込みツールを 1 つでも選ぶと使われません">
                 <Toggle checked={form.builtin_tools} onChange={(v) => set("builtin_tools", v)} label="get_time, list_dir, read_file, write_note" />
               </Field>
             </div>

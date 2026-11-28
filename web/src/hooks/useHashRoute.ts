@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
-export type View = "chat" | "mcp" | "skills" | "models" | "presets";
-export const VIEWS: View[] = ["chat", "mcp", "skills", "models", "presets"];
+export type View = "chat" | "mcp" | "skills" | "memories" | "models" | "presets";
+export const VIEWS: View[] = ["chat", "mcp", "skills", "memories", "models", "presets"];
 
 export interface Route {
   view: View;

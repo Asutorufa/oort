@@ -1,8 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { errorText, sessions } from "../api";
-import type { AgentEvent, Envelope, LiveTurnWire, SessionDetail, ToolCall } from "../api/types";
+import type { AgentEvent, Envelope, LiveTurnWire, PlanStep, SessionDetail, ToolCall } from "../api/types";
 
 /** Uncommitted output of the turn in progress (deltas are never part of the snapshot). */
+/** Live progress of one subagent (keyed by the parent's tool call id). */
+export interface SubagentLive {
+  subSessionId: string;
+  profile: string;
+  turns: number;
+  /** Tool the child is running right now. */
+  currentTool: string | null;
+  toolsRun: number;
+  startedAt: number;
+  lastAt: number;
+  done: boolean;
+}
+
 export interface Live {
   turn: number | null;
   text: string;
@@ -34,6 +47,10 @@ function describe(ev: AgentEvent): string {
   switch (ev.event) {
     case "turn_started":
       return `turn ${ev.turn} started`;
+    case "subagent":
+      return `subagent ${ev.profile}: ${describe(ev.inner)}`;
+    case "plan_updated":
+      return `plan: ${ev.steps.filter((s) => s.status === "done").length}/${ev.steps.length} done`;
     case "tool_started":
       return `tool ${ev.call.name} started`;
     case "tool_finished":
@@ -77,6 +94,8 @@ export function useSessionStream(id: string | null, onDeleted?: () => void) {
   const [conn, setConn] = useState<ConnState>("connecting");
   const [error, setError] = useState<string | null>(null);
   const [toolTimes, setToolTimes] = useState<ToolTimes>({});
+  const [subagents, setSubagents] = useState<Record<string, SubagentLive>>({});
+  const [plan, setPlan] = useState<PlanStep[] | null>(null);
   const timer = useRef<number | undefined>(undefined);
   const onDeletedRef = useRef(onDeleted);
   onDeletedRef.current = onDeleted;
@@ -100,6 +119,8 @@ export function useSessionStream(id: string | null, onDeleted?: () => void) {
   useEffect(() => {
     setDetail(null);
     setLive(EMPTY_LIVE);
+    setSubagents({});
+    setPlan(null);
     setLog([]);
     setError(null);
     if (!id) return;
@@ -157,6 +178,35 @@ export function useSessionStream(id: string | null, onDeleted?: () => void) {
           return;
         case "usage":
           return;
+        case "plan_updated":
+          setPlan(ev.steps);
+          return;
+        case "subagent": {
+          const inner = ev.inner;
+          setSubagents((all) => {
+            const now = Date.now();
+            const cur: SubagentLive = all[ev.tool_call_id] ?? {
+              subSessionId: ev.sub_session_id,
+              profile: ev.profile,
+              turns: 0,
+              currentTool: null,
+              toolsRun: 0,
+              startedAt: now,
+              lastAt: now,
+              done: false,
+            };
+            const next = { ...cur, lastAt: now };
+            if (inner.event === "turn_started") next.turns = inner.turn;
+            if (inner.event === "tool_started") next.currentTool = inner.call.name;
+            if (inner.event === "tool_finished") {
+              next.currentTool = null;
+              next.toolsRun += 1;
+            }
+            if (inner.event === "completed" || inner.event === "halted") next.done = true;
+            return { ...all, [ev.tool_call_id]: next };
+          });
+          return;
+        }
         default:
           scheduleRefresh();
       }
@@ -192,7 +242,8 @@ export function useSessionStream(id: string | null, onDeleted?: () => void) {
             return;
           case "agent":
             apply(env.event);
-            if (env.event.event !== "text_delta" && env.event.event !== "thinking_delta") {
+            const inner = env.event.event === "subagent" ? env.event.inner : env.event;
+            if (inner.event !== "text_delta" && inner.event !== "thinking_delta") {
               push(env.seq, describe(env.event));
             }
             return;
@@ -230,5 +281,5 @@ export function useSessionStream(id: string | null, onDeleted?: () => void) {
     };
   }, [id, refresh, scheduleRefresh]);
 
-  return { detail, live, log, conn, error, refresh, toolTimes };
+  return { detail, live, log, conn, error, refresh, toolTimes, subagents, plan };
 }

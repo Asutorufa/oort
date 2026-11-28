@@ -74,11 +74,20 @@ export interface SessionMeta {
   provider: string;
   model: string;
   approval_policy: ApprovalPolicy;
+  lineage: Lineage;
   status: SessionStatus;
   turn: number;
   message_count: number;
   created_at: number;
   updated_at: number;
+}
+
+export interface Lineage {
+  parent_session_id: string | null;
+  parent_tool_call_id: string | null;
+  depth: number;
+  workspace_root: string | null;
+  builtin_groups: string[];
 }
 
 export interface SessionSummary extends SessionMeta {
@@ -140,8 +149,9 @@ export interface SessionDetail extends SessionMeta {
   phase: Phase;
   system_prompt: string;
   tools: ToolDefinition[];
-  pending_approvals: { call: ToolCall; reason: string }[];
+  pending_approvals: PendingApproval[];
   pending_steers: number;
+  loaded_skills: string[];
   raw: RawMessage[];
   checkpoints: Checkpoint[];
   active_view: { from_seq: number; messages: Message[] };
@@ -175,6 +185,8 @@ export type AgentEvent =
   | { event: "compacted"; up_to_index: number; epoch: number }
   | { event: "usage"; usage: Usage }
   | { event: "llm_call"; stats: LlmCallStats }
+  | { event: "subagent"; tool_call_id: string; sub_session_id: string; profile: string; inner: AgentEvent }
+  | { event: "plan_updated"; steps: PlanStep[] }
   | { event: "phase_changed"; phase: string }
   | { event: "completed" }
   | { event: "halted"; reason: string };
@@ -217,14 +229,38 @@ export interface CreateSessionRequest {
   message?: string;
   skill_ids?: string[];
   widgets?: boolean;
+  builtin_groups?: string[];
+  workspace_root?: string;
+}
+
+export interface InvokedSkill {
+  name: string;
+  arguments?: string;
 }
 
 export type InputRequest =
-  | { type: "steer"; text: string }
-  | { type: "interrupt"; text: string }
+  | { type: "steer"; text: string; invoked_skills?: InvokedSkill[] }
+  | { type: "interrupt"; text: string; invoked_skills?: InvokedSkill[] }
   | { type: "approval"; call_id: string; decision: "approve" }
   | { type: "approval"; call_id: string; decision: "deny"; reason: string }
+  | { type: "approval"; call_id: string; decision: "answer"; content: string }
   | { type: "compact" };
+
+/** Preview attached to a pending call (what the approval card shows). */
+export type ApprovalPreview =
+  | { kind: "diff"; path: string; created: boolean; diff: string }
+  | { kind: "command"; command: string; cwd: string | null; timeout_secs: number }
+  | { kind: "skill"; update: boolean; name: string; description: string; body: string; tags: string[]; argument_hint: string | null; execution_mode: string }
+  | { kind: "mcp_server"; name: string; transport: string; url: string | null; command: string | null; args: string[]; env: Record<string, string>; headers: Record<string, string> }
+  | { kind: "error"; error: string; path?: string };
+
+export interface PendingApproval {
+  call: ToolCall;
+  reason: string;
+  /** `approval` (approve / deny) or `input` (answer). */
+  kind: "approval" | "input";
+  preview?: ApprovalPreview;
+}
 
 // ----- providers -----------------------------------------------------------------------------
 
@@ -361,6 +397,8 @@ export interface Preset {
   builtin_tools: boolean;
   approval_policy: ApprovalPolicy;
   skill_ids: string[];
+  builtin_groups: string[];
+  workspace_root: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -379,6 +417,10 @@ export interface Skill {
   source: { kind: "file"; path: string } | { kind: "db" };
   updated_at: number;
   editable: boolean;
+  user_invocable: boolean;
+  argument_hint: string | null;
+  execution_mode: "inline" | "subagent";
+  subagent_profile: string | null;
 }
 
 export interface SkillInput {
@@ -387,6 +429,10 @@ export interface SkillInput {
   body?: string;
   allowed_tools?: string[];
   tags?: string[];
+  user_invocable?: boolean;
+  argument_hint?: string;
+  execution_mode?: "inline" | "subagent";
+  subagent_profile?: string;
 }
 
 export interface SkillsReload {
@@ -405,3 +451,47 @@ export interface WidgetSpec {
   title?: string;
   data: Record<string, unknown>;
 }
+
+// ----- plan, commands, memories ------------------------------------------------------------
+
+export type PlanStatus = "pending" | "in_progress" | "done" | "skipped";
+
+export interface PlanStep {
+  id: string;
+  title: string;
+  status: PlanStatus;
+}
+
+export interface CommandInfo {
+  name: string;
+  kind: "command" | "skill";
+  description: string;
+  argument_hint: string | null;
+  subagent: boolean;
+  needs_session: boolean;
+}
+
+export interface CommandResult {
+  message: string;
+  effect: { navigate_session?: string; download?: string };
+}
+
+export interface Memory {
+  id: string;
+  title: string;
+  content: string;
+  tags: string[];
+  scope: string;
+  created_at: number;
+  updated_at: number;
+  score?: number;
+}
+
+export const BUILTIN_GROUPS: { id: string; label: string; hint: string }[] = [
+  { id: "self_config", label: "Self-Config", hint: "Skill の保存・MCP サーバーの登録（常に確認）" },
+  { id: "core_ux", label: "Core UX", hint: "計画の表示・あなたへの質問・カード" },
+  { id: "memory", label: "Memory", hint: "会話をまたいで覚える・思い出す" },
+  { id: "utilities", label: "Utilities", hint: "現在時刻・Web ページの取得" },
+  { id: "subagent", label: "Subagent", hint: "調査を読み取り専用のサブエージェントに任せる" },
+  { id: "workspace", label: "Local Workspace", hint: "指定フォルダのファイル読み書き・コマンド実行" },
+];

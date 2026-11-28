@@ -10,6 +10,7 @@ import { Modal } from "../components/common";
 const NAV: { view: View; label: string; icon: ReactNode }[] = [
   { view: "mcp", label: "ツール & MCP", icon: <ToolIcon size={15} /> },
   { view: "skills", label: "Skills", icon: "✦" },
+  { view: "memories", label: "メモリ", icon: "❍" },
   { view: "models", label: "モデル設定", icon: "◎" },
   { view: "presets", label: "Presets", icon: "❖" },
 ];
