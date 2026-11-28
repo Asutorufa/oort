@@ -32,8 +32,12 @@ interface RenderedSvg {
 }
 
 function normalizeMermaidSvg(raw: string): RenderedSvg {
-  const doc = new DOMParser().parseFromString(raw, "image/svg+xml");
-  const svg = doc.querySelector("svg");
+  // Use the HTML5 parser (<template>) rather than strict `image/svg+xml` DOMParser,
+  // because Mermaid's <foreignObject> labels contain HTML5 tags like `<br>` that
+  // would cause strict XML parsing to truncate the rest of the diagram.
+  const tpl = document.createElement("template");
+  tpl.innerHTML = raw.trim();
+  const svg = tpl.content.querySelector("svg");
   if (!svg) return { html: raw, width: 600, height: 400 };
 
   let width = 0;
@@ -65,7 +69,7 @@ function normalizeMermaidSvg(raw: string): RenderedSvg {
   svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
 
   return {
-    html: new XMLSerializer().serializeToString(svg),
+    html: svg.outerHTML,
     width: Math.ceil(width),
     height: Math.ceil(height),
   };
