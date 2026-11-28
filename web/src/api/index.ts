@@ -1,5 +1,6 @@
 import { request } from "./client";
 import type {
+  ReasoningEffort,
   CreateSessionRequest,
   InputRequest,
   McpServer,
@@ -29,7 +30,7 @@ export const sessions = {
   list: () => request<SessionSummary[]>("GET", "/sessions"),
   get: (id: string) => request<SessionDetail>("GET", `/sessions/${id}`),
   create: (req: CreateSessionRequest) => request<SessionDetail>("POST", "/sessions", req),
-  patch: (id: string, req: { title?: string; approval_policy?: ApprovalPolicy }) =>
+  patch: (id: string, req: { title?: string; approval_policy?: ApprovalPolicy; reasoning_effort?: ReasoningEffort; model?: string }) =>
     request<SessionDetail>("PATCH", `/sessions/${id}`, req),
   remove: (id: string) => request<void>("DELETE", `/sessions/${id}`),
   exportUrl: (id: string) => `/api/sessions/${id}/export`,
@@ -61,6 +62,9 @@ export const providers = {
   /** Tests the saved provider with optional unsaved overrides, or an unsaved form (`id` null). */
   test: (id: string | null, input: ProviderInput = {}) =>
     request<ProviderTest>("POST", id ? `/providers/${id}/test` : "/providers/test", input),
+  /** Model ids the provider offers (`id` null: an unsaved form). */
+  models: (id: string | null, input?: ProviderInput) =>
+    request<{ models: string[] }>("POST", id ? `/providers/${id}/models` : "/providers/models", input ?? {}),
 };
 
 export const mcpServers = {

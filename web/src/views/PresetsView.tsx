@@ -1,10 +1,13 @@
 import { useEffect, useState } from "react";
 import { errorText, mcpServers, presets, providers, sessions, skills } from "../api";
-import { APPROVAL_POLICIES, type ApprovalPolicy, type Preset, type PresetInput } from "../api/types";
+import { APPROVAL_POLICIES, REASONING_LEVELS, type ApprovalPolicy, type Preset, type PresetInput, type ReasoningEffort } from "../api/types";
+import { KindIcon } from "../brand/Icons";
+import { Checkbox, SegmentedControl, Select, Switch } from "../components/ui";
 import { Badge, Empty, ErrorBar, Modal } from "../components/common";
-import { Field, GroupToggles, Toggle } from "../components/forms";
+import { Field, GroupToggles } from "../components/forms";
 import { navigate } from "../hooks/useHashRoute";
 import { useResource } from "../hooks/useResource";
+import { useT } from "../i18n";
 
 type Form = Required<PresetInput>;
 
@@ -20,6 +23,7 @@ const blank: Form = {
   skill_ids: [],
   builtin_groups: ["core_ux", "memory", "utilities"],
   workspace_root: null,
+  reasoning_effort: "default",
 };
 
 const toForm = (p: Preset): Form => ({
@@ -34,9 +38,11 @@ const toForm = (p: Preset): Form => ({
   skill_ids: p.skill_ids ?? [],
   builtin_groups: p.builtin_groups ?? [],
   workspace_root: p.workspace_root,
+  reasoning_effort: p.reasoning_effort ?? "default",
 });
 
 export function PresetsView({ selected }: { selected: string | null }) {
+  const t = useT();
   const list = useResource(presets.list);
   const providerList = useResource(providers.list);
   const serverList = useResource(mcpServers.list);
@@ -97,9 +103,9 @@ export function PresetsView({ selected }: { selected: string | null }) {
     <div className="master-detail">
       <aside className="pane left">
         <div className="pane-head">
-          <h3>Presets</h3>
+          <h3>{t("presets.title")}</h3>
           <button className="primary small" onClick={() => navigate("presets", "new")}>
-            + Add
+            ＋ {t("common.add")}
           </button>
         </div>
         <ErrorBar error={list.error} />
@@ -112,24 +118,24 @@ export function PresetsView({ selected }: { selected: string | null }) {
                 <button
                   className="small primary"
                   disabled={starting === p.id}
-                  title="Start a new session with this preset"
+                  title={t("presets.startHint")}
                   onClick={(e) => {
                     e.stopPropagation();
                     start(p);
                   }}
                 >
-                  {starting === p.id ? "…" : "▶ Start"}
+                  {starting === p.id ? "…" : t("presets.start")}
                 </button>
               </div>
               <div className="muted ellipsis">{p.description || p.system_prompt}</div>
               <div className="row muted">
                 <span>{providerName(p.provider_id)}</span>
-                <span className="mono">/ {p.model || "default"}</span>
+                <span className="mono">/ {p.model || t("presets.defaultModel")}</span>
                 {p.mcp_server_ids.length > 0 && <span>· {p.mcp_server_ids.map(serverName).join(", ")}</span>}
               </div>
             </li>
           ))}
-          {list.data?.length === 0 && <li className="muted">none yet</li>}
+          {list.data?.length === 0 && <li className="muted">{t("presets.noneYet")}</li>}
         </ul>
       </aside>
 
@@ -138,7 +144,7 @@ export function PresetsView({ selected }: { selected: string | null }) {
         {current || isNew ? (
           <div className="form">
             <div className="row">
-              <h2>{current ? current.name : "New preset"}</h2>
+              <h2>{current ? current.name : t("presets.new")}</h2>
               <span className="spacer" />
               {current && (
                 <button className="primary" disabled={starting === current.id} onClick={() => start(current)}>
@@ -147,37 +153,39 @@ export function PresetsView({ selected }: { selected: string | null }) {
               )}
             </div>
             <div className="grid2">
-              <Field label="Name">
+              <Field label={t("presets.name")}>
                 <input value={form.name} onChange={(e) => set("name", e.target.value)} />
               </Field>
-              <Field label="Description">
+              <Field label={t("presets.description")}>
                 <input value={form.description} onChange={(e) => set("description", e.target.value)} />
               </Field>
             </div>
             <div className="grid2">
-              <Field label="Provider">
-                <select value={form.provider_id} onChange={(e) => set("provider_id", e.target.value)}>
-                  <option value="" disabled>
-                    select a provider
-                  </option>
-                  {(providerList.data ?? []).map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name} ({p.kind}){p.is_enabled ? "" : " — disabled"}
-                    </option>
-                  ))}
-                </select>
+              <Field label={t("presets.provider")}>
+                <Select
+                  ariaLabel={t("presets.provider")}
+                  placeholder={t("presets.pickProvider")}
+                  value={form.provider_id || null}
+                  onChange={(v) => set("provider_id", v)}
+                  options={(providerList.data ?? []).map((p) => ({
+                    value: p.id,
+                    label: p.name,
+                    description: `${p.default_model || t("presets.noDefaultModel")}${p.is_enabled ? "" : ` · ${t("common.disabled")}`}`,
+                    icon: <KindIcon kind={p.kind} size={15} />,
+                  }))}
+                />
               </Field>
-              <Field label="Model" hint="empty: the provider's default model">
-                <input value={form.model} placeholder={provider?.default_model || "model id"} onChange={(e) => set("model", e.target.value)} />
+              <Field label={t("presets.model")} hint={t("presets.modelHint")}>
+                <input value={form.model} placeholder={provider?.default_model || t("presets.modelName")} onChange={(e) => set("model", e.target.value)} />
               </Field>
             </div>
-            <Field label="System prompt">
+            <Field label={t("presets.systemPrompt")}>
               <textarea rows={6} value={form.system_prompt} onChange={(e) => set("system_prompt", e.target.value)} />
             </Field>
-            <Field label="MCP servers">
+            <Field label={t("presets.mcp")}>
               <div className="checks">
                 {(serverList.data ?? []).map((s) => (
-                  <Toggle
+                  <Checkbox
                     key={s.id}
                     checked={form.mcp_server_ids.includes(s.id)}
                     onChange={(on) =>
@@ -185,15 +193,15 @@ export function PresetsView({ selected }: { selected: string | null }) {
                     }
                     label={
                       <>
-                        <span className="mono">{s.name}</span> {!s.is_enabled && <Badge>disabled</Badge>}
+                        <span className="mono">{s.name}</span> {!s.is_enabled && <Badge>{t("common.disabled")}</Badge>}
                       </>
                     }
                   />
                 ))}
-                {serverList.data?.length === 0 && <span className="muted">none configured</span>}
+                {serverList.data?.length === 0 && <span className="muted">{t("presets.noMcp")}</span>}
               </div>
             </Field>
-            <Field label="組み込みツール" hint="会話の開始時に固定されます。Local Workspace はフォルダの指定が必要です">
+            <Field label={t("presets.groups")} hint={t("presets.groupsHint")}>
               <GroupToggles
                 value={form.builtin_groups}
                 onChange={(v) => set("builtin_groups", v)}
@@ -201,10 +209,10 @@ export function PresetsView({ selected }: { selected: string | null }) {
                 onWorkspaceRoot={(v) => set("workspace_root", v)}
               />
             </Field>
-            <Field label="Skills" hint="名前と説明だけが会話の最初に固定され、本文は必要なときに読み込まれます">
+            <Field label={t("presets.skills")} hint={t("presets.skillsHint")}>
               <div className="checks">
                 {(skillList.data ?? []).map((k) => (
-                  <Toggle
+                  <Checkbox
                     key={k.id}
                     checked={form.skill_ids.includes(k.id)}
                     onChange={(on) => set("skill_ids", on ? [...form.skill_ids, k.id] : form.skill_ids.filter((x) => x !== k.id))}
@@ -215,49 +223,63 @@ export function PresetsView({ selected }: { selected: string | null }) {
                     }
                   />
                 ))}
-                {skillList.data?.length === 0 && <span className="muted">Skill がありません</span>}
+                {skillList.data?.length === 0 && <span className="muted">{t("skills.none")}</span>}
               </div>
             </Field>
             <div className="grid2">
-              <Field label="Approval policy">
-                <select value={form.approval_policy} onChange={(e) => set("approval_policy", e.target.value as ApprovalPolicy)}>
-                  {APPROVAL_POLICIES.map((p) => (
-                    <option key={p.value} value={p.value}>
-                      {p.label} — {p.hint}
-                    </option>
-                  ))}
-                </select>
+              <Field label={t("policy.label")}>
+                <Select<ApprovalPolicy>
+                  ariaLabel={t("policy.label")}
+                  value={form.approval_policy}
+                  onChange={(v) => set("approval_policy", v)}
+                  options={APPROVAL_POLICIES.map((p) => ({ value: p.value, label: t(p.label), description: t(p.hint) }))}
+                />
               </Field>
-              <Field label="旧ツール（互換用）" hint="組み込みツールを 1 つでも選ぶと使われません">
-                <Toggle checked={form.builtin_tools} onChange={(v) => set("builtin_tools", v)} label="get_time, list_dir, read_file, write_note" />
+              <Field label={t("reasoning.label")} hint={t(REASONING_LEVELS.find((l) => l.value === form.reasoning_effort)?.description ?? "reasoning.default.desc")}>
+                <SegmentedControl<ReasoningEffort>
+                  full
+                  size="sm"
+                  ariaLabel={t("reasoning.label")}
+                  value={form.reasoning_effort}
+                  onChange={(v) => set("reasoning_effort", v)}
+                  options={REASONING_LEVELS.map((l) => ({ value: l.value, label: t(l.label), title: t(l.description) }))}
+                />
               </Field>
             </div>
+            <Switch
+              checked={form.builtin_tools}
+              onChange={(v) => set("builtin_tools", v)}
+              label={t("presets.legacy")}
+              description={t("presets.legacyHint")}
+            />
             <div className="row actions">
               <button className="primary" onClick={save}>
-                {current ? "Save" : "Create"}
+                {current ? t("common.save") : t("common.create")}
               </button>
               <span className="spacer" />
               {current && (
                 <button className="danger-outline" onClick={() => setConfirm(true)}>
-                  Delete
+                  {t("common.delete")}
                 </button>
               )}
             </div>
           </div>
         ) : (
-          <Empty>Presets combine a provider, model, system prompt, MCP servers and an approval policy. Select one or add one.</Empty>
+          <Empty>{t("presets.intro")}</Empty>
         )}
       </main>
       {confirm && current && (
-        <Modal title="Delete preset?" onClose={() => setConfirm(false)}>
+        <Modal title={t("presets.deleteTitle")} onClose={() => setConfirm(false)}>
           <p>
-            <b>{current.name}</b> will be deleted. Sessions started from it are not affected.
+            {t("presets.deleteBody", { name: current.name })}
           </p>
           <div className="row">
             <span className="spacer" />
-            <button onClick={() => setConfirm(false)}>Cancel</button>
-            <button className="danger" onClick={remove}>
-              Delete
+            <button className="btn" onClick={() => setConfirm(false)}>
+              {t("common.keep")}
+            </button>
+            <button className="btn danger" onClick={remove}>
+              {t("common.deleteConfirm")}
             </button>
           </div>
         </Modal>

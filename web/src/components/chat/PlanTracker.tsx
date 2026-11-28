@@ -1,6 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import type { PlanStep, RawMessage } from "../../api/types";
 import { CheckIcon, ChevronDown } from "../../brand/Icons";
+import { Popover } from "../ui";
+import { useT } from "../../i18n";
 
 /** The latest `update_plan` steps in the history (the plan survives reloads this way). */
 export function lastPlan(raw: RawMessage[]): PlanStep[] | null {
@@ -28,56 +30,51 @@ function StepIcon({ status }: { status: PlanStep["status"] }) {
  */
 export function PlanPill({ steps }: { steps: PlanStep[] }) {
   const [open, setOpen] = useState(false);
-  const box = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const close = (e: MouseEvent) => !box.current?.contains(e.target as Node) && setOpen(false);
-    const esc = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
-    window.addEventListener("mousedown", close);
-    window.addEventListener("keydown", esc);
-    return () => {
-      window.removeEventListener("mousedown", close);
-      window.removeEventListener("keydown", esc);
-    };
-  }, [open]);
-
+  const t = useT();
+  const trigger = useRef<HTMLButtonElement>(null);
   const done = steps.filter((s) => s.status === "done" || s.status === "skipped").length;
   const current = steps.find((s) => s.status === "in_progress") ?? steps.find((s) => s.status === "pending");
   const finished = done === steps.length;
   return (
-    <div className="plan" ref={box}>
-      <button className={`plan-pill ${open ? "open" : ""}`} onClick={() => setOpen(!open)} aria-expanded={open} title="計画を表示">
+    <>
+      <button
+        ref={trigger}
+        className={`plan-pill ${open ? "open" : ""}`}
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        title={current ? `${t("plan.title")} · ${current.title}` : t("plan.show")}
+      >
         {finished ? <CheckIcon size={12} stroke={2.2} /> : <span className="plan-live" />}
-        <span className="plan-title">計画</span>
+        <span className="plan-title">{t("plan.title")}</span>
         <span className="plan-count">
           {done}/{steps.length}
         </span>
         {!finished && current && <span className="plan-current">· {current.title}</span>}
         <ChevronDown size={13} />
       </button>
-      {open && (
-        <div className="plan-pop" role="dialog" aria-label="計画">
-          <div className="plan-pop-head">
-            <span>計画</span>
-            <span className="plan-bar">
-              <span style={{ width: `${(done / Math.max(steps.length, 1)) * 100}%` }} />
-            </span>
-            <span className="plan-count">
-              {done}/{steps.length}
-            </span>
-          </div>
-          <ol className="plan-steps">
-            {steps.map((s) => (
-              <li key={s.id} className={s.status}>
-                <span className="plan-icon">
-                  <StepIcon status={s.status} />
-                </span>
-                <span>{s.title}</span>
-              </li>
-            ))}
-          </ol>
+      {/* Rendered in a portal: never clipped by the header, kept 16px inside the viewport. */}
+      <Popover anchor={trigger} open={open} onClose={() => setOpen(false)} placement="bottom" align="end" className="plan-pop" role="dialog">
+        <div className="plan-pop-head">
+          <span>{t("plan.title")}</span>
+          <span className="plan-bar">
+            <span style={{ width: `${(done / Math.max(steps.length, 1)) * 100}%` }} />
+          </span>
+          <span className="plan-count">
+            {done}/{steps.length}
+          </span>
         </div>
-      )}
-    </div>
+        <ol className="plan-steps">
+          {steps.map((s) => (
+            <li key={s.id} className={s.status}>
+              <span className="plan-icon">
+                <StepIcon status={s.status} />
+              </span>
+              <span className="plan-step-title">{s.title}</span>
+            </li>
+          ))}
+        </ol>
+      </Popover>
+    </>
   );
 }

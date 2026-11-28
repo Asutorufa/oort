@@ -4,8 +4,11 @@ import type { Skill, SkillInput, SkillsReload } from "../api/types";
 import { Markdown } from "../components/chat/LazyMarkdown";
 import { Badge, Empty, ErrorBar, Modal } from "../components/common";
 import { Field, Toggle } from "../components/forms";
+import { SegmentedControl } from "../components/ui";
 import { navigate } from "../hooks/useHashRoute";
 import { useResource } from "../hooks/useResource";
+import { useT } from "../i18n";
+import { ToolIcon } from "../brand/Icons";
 
 interface Form {
   name: string;
@@ -22,7 +25,7 @@ interface Form {
 const blank: Form = {
   name: "",
   description: "",
-  body: "## 手順\n\n1. ",
+  body: "",
   allowed_tools: "",
   tags: "",
   user_invocable: true,
@@ -53,6 +56,7 @@ export function SkillsView({ selected }: { selected: string | null }) {
   const all = useResource(skills.list);
   const [query, setQuery] = useState("");
   const [form, setForm] = useState<Form>(blank);
+  const t = useT();
   const [tab, setTab] = useState<"preview" | "edit">("preview");
   const [error, setError] = useState<string | null>(null);
   const [reload, setReload] = useState<SkillsReload | null>(null);
@@ -62,7 +66,7 @@ export function SkillsView({ selected }: { selected: string | null }) {
   const isNew = selected === "new";
 
   useEffect(() => {
-    setForm(current ? toForm(current) : (copyFrom ?? blank));
+    setForm(current ? toForm(current) : (copyFrom ?? { ...blank, body: t("skills.bodyTemplate").replace(/\\n/g, "\n") }));
     setCopyFrom(null);
     setTab(isNew ? "edit" : "preview");
     setError(null);
@@ -113,19 +117,19 @@ export function SkillsView({ selected }: { selected: string | null }) {
     <div className="master-detail">
       <aside className="pane left">
         <div className="pane-head">
-          <h3>Skills</h3>
+          <h3>{t("skills.title")}</h3>
           <span className="spacer" />
-          <button className="btn small ghost" onClick={rescan} title="SKILL.md ディレクトリを再スキャン">
-            ↻ 再読み込み
+          <button className="btn small ghost" onClick={rescan} title={t("skills.rescanHint")}>
+            ↻ {t("skills.reload")}
           </button>
           <button className="btn primary small" onClick={() => navigate("skills", "new")}>
-            ＋ 作成
+            ＋ {t("skills.create")}
           </button>
         </div>
-        <input className="filter" placeholder="検索…" value={query} onChange={(e) => setQuery(e.target.value)} />
+        <input className="filter" placeholder={t("skills.search")} value={query} onChange={(e) => setQuery(e.target.value)} />
         {reload && (
           <div className="reload-note">
-            {reload.file_skills} 件の SKILL.md を読み込みました
+            {t("skills.loaded", { count: reload.file_skills })}
             {reload.warnings.map((w) => (
               <div key={w} className="warn-text">
                 {w}
@@ -141,12 +145,12 @@ export function SkillsView({ selected }: { selected: string | null }) {
                 <b className="mono">/{k.name}</b>
                 <span className="spacer" />
                 {k.execution_mode === "subagent" && <Badge tone="info">Subagent</Badge>}
-                <Badge tone={k.source.kind === "file" ? "muted" : "info"}>{k.source.kind === "file" ? "SKILL.md" : "アプリ"}</Badge>
+                <Badge tone={k.source.kind === "file" ? "muted" : "info"}>{k.source.kind === "file" ? "SKILL.md" : t("skills.app")}</Badge>
               </div>
               <div className="muted ellipsis">{k.description}</div>
             </li>
           ))}
-          {shown.length === 0 && <li className="muted">Skill がありません</li>}
+          {shown.length === 0 && <li className="muted">{t("skills.none")}</li>}
         </ul>
       </aside>
 
@@ -155,24 +159,28 @@ export function SkillsView({ selected }: { selected: string | null }) {
         {current || isNew ? (
           <div className="form wide">
             <div className="row">
-              <h2>{isNew ? "Skill を作成" : `/${current?.name}`}</h2>
+              <h2>{isNew ? t("skills.newTitle") : `/${current?.name}`}</h2>
               <span className="spacer" />
-              <span className="seg">
-                <button className={tab === "preview" ? "on" : ""} onClick={() => setTab("preview")}>
-                  プレビュー
-                </button>
-                <button className={tab === "edit" ? "on" : ""} onClick={() => setTab("edit")}>
-                  {editable ? "編集" : "内容"}
-                </button>
-              </span>
+              <SegmentedControl
+                size="sm"
+                ariaLabel={t("skills.view")}
+                value={tab}
+                onChange={(v) => setTab(v)}
+                options={[
+                  { value: "preview", label: t("skills.preview") },
+                  { value: "edit", label: editable ? t("skills.edit") : t("skills.source") },
+                ]}
+              />
             </div>
             {current?.source.kind === "file" && (
               <div className="note">
-                ファイル由来の Skill です（<code>{current.source.path}</code>）。編集するにはファイルを書き換えるか、
+                {t("skills.fileNoteBefore")}
+                <code>{current.source.path}</code>
+                {t("skills.fileNoteMid")}{" "}
                 <button className="text-btn" onClick={copyToDb}>
-                  アプリにコピーして編集
+                  {t("skills.copyToApp")}
                 </button>
-                してください。
+                {t("skills.fileNoteAfter")}
               </div>
             )}
             {tab === "preview" ? (
@@ -180,54 +188,56 @@ export function SkillsView({ selected }: { selected: string | null }) {
                 <p className="lead">{form.description}</p>
                 {(form.tags || form.allowed_tools) && (
                   <div className="row">
-                    {list(form.tags).map((t) => (
-                      <span key={t} className="chip">
-                        #{t}
+                    {list(form.tags).map((x) => (
+                      <span key={x} className="chip">
+                        #{x}
                       </span>
                     ))}
-                    {list(form.allowed_tools).map((t) => (
-                      <span key={t} className="chip mono">
-                        ⚙ {t}
+                    {list(form.allowed_tools).map((x) => (
+                      <span key={x} className="chip mono">
+                        <ToolIcon size={11} /> {x}
                       </span>
                     ))}
                   </div>
                 )}
-                <Markdown text={form.body || "_（本文なし）_"} />
+                <Markdown text={form.body || t("skills.noBody")} />
               </div>
             ) : (
               <>
                 <div className="grid2">
-                  <Field label="名前" hint="小文字・数字・- のみ。/名前 で呼び出せます">
+                  <Field label={t("skills.name")} hint={t("skills.nameHint")}>
                     <input className="mono" value={form.name} disabled={!editable} onChange={(e) => set("name", e.target.value)} />
                   </Field>
-                  <Field label="タグ" hint="カンマ区切り">
+                  <Field label={t("skills.tags")} hint={t("skills.tagsHint")}>
                     <input value={form.tags} disabled={!editable} onChange={(e) => set("tags", e.target.value)} />
                   </Field>
                 </div>
-                <Field label="説明" hint="会話の最初に固定されるのはこの説明だけです。いつ使うべきかを短く書いてください">
+                <Field label={t("skills.description")} hint={t("skills.descriptionHint")}>
                   <input value={form.description} disabled={!editable} onChange={(e) => set("description", e.target.value)} />
                 </Field>
                 <div className="grid2">
-                  <Field label="呼び出し" hint="/名前 でユーザーが明示的に呼び出せるか">
-                    <Toggle checked={form.user_invocable} onChange={(v) => editable && set("user_invocable", v)} label="/ コマンドとして表示する" />
+                  <Field label={t("skills.invocation")} hint={t("skills.invocationHint")}>
+                    <Toggle checked={form.user_invocable} onChange={(v) => editable && set("user_invocable", v)} label={t("skills.showAsCommand")} />
                   </Field>
-                  <Field label="引数のヒント" hint="例: <domain>（本文の $ARGUMENTS に入ります）">
+                  <Field label={t("skills.argHint")} hint={t("skills.argHintHint")}>
                     <input className="mono" value={form.argument_hint} disabled={!editable} placeholder="<target>" onChange={(e) => set("argument_hint", e.target.value)} />
                   </Field>
                 </div>
                 <div className="grid2">
-                  <Field label="実行方法" hint="Subagent は隔離された環境で実行し、要約だけを会話に返します">
-                    <span className="seg">
-                      <button className={form.execution_mode === "inline" ? "on" : ""} disabled={!editable} onClick={() => set("execution_mode", "inline")}>
-                        会話に読み込む
-                      </button>
-                      <button className={form.execution_mode === "subagent" ? "on" : ""} disabled={!editable} onClick={() => set("execution_mode", "subagent")}>
-                        Subagent に任せる
-                      </button>
-                    </span>
+                  <Field label={t("skills.execMode")} hint={t("skills.execModeHint")}>
+                    <SegmentedControl
+                      ariaLabel={t("skills.execMode")}
+                      disabled={!editable}
+                      value={form.execution_mode}
+                      onChange={(v) => set("execution_mode", v)}
+                      options={[
+                        { value: "inline", label: t("skills.inline"), title: t("skills.inlineHint") },
+                        { value: "subagent", label: t("skills.subagent"), title: t("skills.subagentHint") },
+                      ]}
+                    />
                   </Field>
                   {form.execution_mode === "subagent" && (
-                    <Field label="Subagent プロファイル" hint="preset:名前 で Preset のモデルとプロンプトも使えます">
+                    <Field label={t("skills.profile")} hint={t("skills.profileHint")}>
                       <input
                         className="mono"
                         list="subagent-profiles"
@@ -237,28 +247,28 @@ export function SkillsView({ selected }: { selected: string | null }) {
                         onChange={(e) => set("subagent_profile", e.target.value)}
                       />
                       <datalist id="subagent-profiles">
-                        <option value="explorer">探索</option>
-                        <option value="researcher">リサーチ</option>
-                        <option value="reviewer">レビュー</option>
+                        <option value="explorer">{t("subagent.explorer")}</option>
+                        <option value="researcher">{t("subagent.researcher")}</option>
+                        <option value="reviewer">{t("subagent.reviewer")}</option>
                       </datalist>
                     </Field>
                   )}
                 </div>
-                <Field label="想定するツール（任意）" hint="カンマ区切り。本文の冒頭に案内として表示されます">
+                <Field label={t("skills.tools")} hint={t("skills.toolsHint")}>
                   <input className="mono" value={form.allowed_tools} disabled={!editable} onChange={(e) => set("allowed_tools", e.target.value)} />
                 </Field>
-                <Field label="本文（Markdown）">
+                <Field label={t("skills.body")}>
                   <textarea className="mono" rows={16} value={form.body} disabled={!editable} onChange={(e) => set("body", e.target.value)} />
                 </Field>
                 {editable && (
                   <div className="row actions">
                     <button className="btn primary" onClick={save}>
-                      {isNew ? "作成" : "保存"}
+                      {isNew ? t("common.create") : t("skills.save")}
                     </button>
                     <span className="spacer" />
                     {current && (
                       <button className="btn danger-outline" onClick={() => setConfirm(true)}>
-                        削除
+                        {t("common.delete")}
                       </button>
                     )}
                   </div>
@@ -268,23 +278,23 @@ export function SkillsView({ selected }: { selected: string | null }) {
           </div>
         ) : (
           <Empty>
-            Skill は再利用できる手順書です。会話では名前と説明だけが共有され、必要なときに本文が読み込まれます（
-            <code>~/.oort/skills/&lt;name&gt;/SKILL.md</code> も自動で読み込みます）。
+            {t("skills.intro")}
+            <code>~/.oort/skills/&lt;name&gt;/SKILL.md</code> {t("skills.introAfter")}
           </Empty>
         )}
       </main>
       {confirm && current && (
-        <Modal title="Skill を削除しますか？" onClose={() => setConfirm(false)}>
+        <Modal title={t("skills.deleteTitle")} onClose={() => setConfirm(false)}>
           <p>
-            <b>/{current.name}</b> を削除します。既存の会話の一覧には名前が残りますが、読み込もうとするとエラーになります。
+            {t("skills.deleteBody", { name: current.name })}
           </p>
           <div className="row">
             <span className="spacer" />
             <button className="btn" onClick={() => setConfirm(false)}>
-              やめる
+              {t("common.keep")}
             </button>
             <button className="btn danger" onClick={remove}>
-              削除する
+              {t("common.deleteConfirm")}
             </button>
           </div>
         </Modal>

@@ -5,11 +5,15 @@ import { OortMark } from "../../brand/OortMark";
 import type { Live, SubagentLive, ToolTimes } from "../../hooks/useSessionStream";
 import { asWidget, parseResponse, responsesById, type WidgetActions } from "../../widgets/protocol";
 import { Widget } from "../../widgets/WidgetRegistry";
-import { fmtMs, JsonView } from "../common";
+import { JsonView } from "../common";
 import { Markdown } from "./LazyMarkdown";
 import { RowCard, SubagentCard } from "./SubagentCard";
 import { LoopErrorCard } from "./LoopErrorCard";
+import { Collapse } from "../ui";
+import { AnimatePresence, motion } from "motion/react";
+import { enter } from "../../lib/motion";
 import { ApprovalCard, AskUserCard, McpConfiguredCard } from "./ToolCards";
+import { useI18n, useT } from "../../i18n";
 
 const RENDER_WIDGET = "render_widget";
 
@@ -52,10 +56,11 @@ function parseUserText(text: string) {
 }
 
 function SkillReport({ skill, error, body }: { skill: string; error: boolean; body: string }) {
+  const t = useT();
   return (
-    <RowCard state={error ? "error" : "done"} title={`/${skill}`} subject="スキルをサブエージェントで実行しました" meta={error ? "エラー" : undefined}>
+    <RowCard state={error ? "error" : "done"} title={`/${skill}`} subject={t("thread.skillReport")} meta={error ? t("common.error") : undefined}>
       <div className="rowcard-section">
-        <div className="rowcard-label">{error ? "エラー" : "結果"}</div>
+        <div className="rowcard-label">{error ? t("common.error") : t("thread.result")}</div>
         <Markdown text={body} />
       </div>
     </RowCard>
@@ -76,12 +81,17 @@ function Turn({ mark = true, live, children }: { mark?: boolean; live?: boolean;
 }
 
 function UserBubble({ msg, widgetTitles }: { msg: RawMessage; widgetTitles: Map<string, string> }) {
+  const t = useT();
   const text = textOf(msg);
   const resp = parseResponse(text);
   if (resp) {
     const what = widgetTitles.get(resp.id);
     const label =
-      resp.type === "interactive_form" ? "フォームに回答しました" : resp.type === "data_table" ? `「${(resp.payload as { action?: string })?.action ?? "操作"}」を選択しました` : "カードに応答しました";
+      resp.type === "interactive_form"
+        ? t("thread.formAnswered")
+        : resp.type === "data_table"
+          ? t("thread.tableChose", { action: (resp.payload as { action?: string })?.action ?? t("thread.tableAction") })
+          : t("thread.cardResponded");
     return (
       <div className="row-user">
         <div className="bubble user response" title={text}>
@@ -122,20 +132,21 @@ function UserBubble({ msg, widgetTitles }: { msg: RawMessage; widgetTitles: Map<
 // ----- activity row --------------------------------------------------------------------------
 
 function ToolLine({ call, result, running, ms }: { call: ToolCall; result?: ToolResult; running: boolean; ms?: number }) {
+  const { t, fmt } = useI18n();
   const state = result ? (result.is_error ? "error" : "ok") : running ? "running" : "pending";
   return (
     <details className={`tool-line ${state}`}>
       <summary>
         <span className={`state-dot ${state}`} />
         <span className="tool-name">{call.name.replace("__", " · ")}</span>
-        <span className="muted">{ms != null ? fmtMs(ms) : state === "running" ? "実行中…" : state === "pending" ? "待機中" : ""}</span>
+        <span className="muted">{ms != null ? fmt.ms(ms) : state === "running" ? t("thread.toolRunning") : state === "pending" ? t("thread.toolPending") : ""}</span>
       </summary>
       <div className="tool-detail">
-        <div className="label">入力</div>
+        <div className="label">{t("thread.input")}</div>
         <JsonView value={call.arguments} />
         {result && (
           <>
-            <div className="label">{result.is_error ? "エラー" : "結果"}</div>
+            <div className="label">{result.is_error ? t("common.error") : t("thread.result")}</div>
             <pre className={result.is_error ? "error-text" : ""}>{result.content}</pre>
           </>
         )}
@@ -160,10 +171,16 @@ function ActivityRow({
   latencyMs: number;
 }) {
   const [open, setOpen] = useState(false);
+  const { t, fmt } = useI18n();
   if (thinking.length === 0 && calls.length === 0) return null;
   const toolMs = calls.reduce((s, c) => s + (toolTimes[c.id]?.ms ?? 0), 0);
   const total = latencyMs + toolMs;
-  const parts = [thinking.length > 0 ? "思考して" : "", calls.length > 0 ? `${calls.length} 件のツールを実行` : "思考しました"].join("");
+  const parts =
+    calls.length === 0
+      ? t("thread.thought")
+      : thinking.length > 0
+        ? t("thread.thoughtAndTools", { count: calls.length })
+        : t("thread.tools", { count: calls.length });
   const failed = calls.filter((c) => results.get(c.id)?.is_error).length;
   const active = calls.some((c) => running.has(c.id));
   return (
@@ -171,25 +188,25 @@ function ActivityRow({
       <button className="activity-row" onClick={() => setOpen(!open)}>
         {active && <span className="pulse" />}
         <span>{parts}</span>
-        {total > 0 && <span className="muted">({fmtMs(total)})</span>}
-        {failed > 0 && <span className="pill danger">{failed} 件エラー</span>}
+        {total > 0 && <span className="muted">({fmt.ms(total)})</span>}
+        {failed > 0 && <span className="pill danger">{t("thread.errors", { count: failed })}</span>}
         <span className="chev">
           <ChevronDown size={13} />
         </span>
       </button>
-      {open && (
+      <Collapse open={open}>
         <div className="activity-body">
-          {thinking.map((t, i) => (
+          {thinking.map((th, i) => (
             <div key={i} className="thought">
-              <div className="label">思考</div>
-              <pre>{t || "（非公開）"}</pre>
+              <div className="label">{t("thread.thinkingLabel")}</div>
+              <pre>{th || t("thread.thinkingHidden")}</pre>
             </div>
           ))}
           {calls.map((c) => (
             <ToolLine key={c.id} call={c} result={results.get(c.id)} running={running.has(c.id)} ms={toolTimes[c.id]?.ms} />
           ))}
         </div>
-      )}
+      </Collapse>
     </div>
   );
 }
@@ -214,6 +231,7 @@ interface ThreadProps {
 const CARD_TOOLS = new Set([RENDER_WIDGET, "spawn_subagent", "ask_user", "update_plan", "configure_mcp_server"]);
 
 export function Thread({ detail, live, toolTimes, actions, subagents, children, onTrace, onAnswer, onStartWithMcp, onRetry, onCancelAutoRetry }: ThreadProps) {
+  const t = useT();
   const box = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const groups = useMemo(() => groupMessages(detail.raw), [detail.raw]);
@@ -321,27 +339,33 @@ export function Thread({ detail, live, toolTimes, actions, subagents, children, 
   const tail = (
     <>
       {otherApprovals.map((pa) => (
-        <ApprovalCard key={pa.call.id} pending={pa} onApprove={() => actions.approve(pa.call.id)} onDeny={(reason) => actions.deny(pa.call.id, reason)} />
+        <motion.div key={pa.call.id} variants={enter} initial="hidden" animate="shown">
+          <ApprovalCard pending={pa} onApprove={() => actions.approve(pa.call.id)} onDeny={(reason) => actions.deny(pa.call.id, reason)} />
+        </motion.div>
       ))}
       {skillRuns.map(([id, s]) => (
         <SubagentCard
           key={id}
-          task={children.find((c) => c.id === s.subSessionId)?.title ?? "スキルを実行中"}
+          task={children.find((c) => c.id === s.subSessionId)?.title ?? t("subagent.skillRunning")}
           profile={s.profile}
           live={s}
           subSessionId={s.subSessionId}
           onTrace={onTrace}
         />
       ))}
-      {failure && !showLive && <LoopErrorCard error={failure} onRetry={onRetry} onCancelAuto={onCancelAutoRetry} />}
+      {failure && !showLive && (
+        <motion.div variants={enter} initial="hidden" animate="shown">
+          <LoopErrorCard error={failure} onRetry={onRetry} onCancelAuto={onCancelAutoRetry} />
+        </motion.div>
+      )}
       {showLive && (
         <>
-          {live.thinking && !live.text && <div className="activity-row ghost">思考中…</div>}
+          {live.thinking && !live.text && <div className="activity-row ghost">{t("thread.thinkingLive")}</div>}
           {live.text ? (
             <Markdown text={live.text} />
           ) : (
             !live.thinking && (
-              <div className="typing" aria-label="応答を待っています">
+              <div className="typing" aria-label={t("thread.waiting")}>
                 <span />
                 <span />
                 <span />
@@ -363,11 +387,12 @@ export function Thread({ detail, live, toolTimes, actions, subagents, children, 
       }}
     >
       <div className="thread-inner">
+        <AnimatePresence initial={false}>
         {groups.map((g, i) => {
           const isLast = i === groups.length - 1;
           return (
-            <div key={i} className="group">
-              {g.kind === "user" && cutAt.has(g.msg.seq) && <div className="epoch">ここまでの会話は要約されています</div>}
+            <motion.div key={i} className="group" variants={enter} initial="hidden" animate="shown">
+              {g.kind === "user" && cutAt.has(g.msg.seq) && <div className="epoch">{t("thread.compacted")}</div>}
               {g.kind === "user" ? (
                 <UserBubble msg={g.msg} widgetTitles={widgetTitles} />
               ) : (
@@ -376,9 +401,10 @@ export function Thread({ detail, live, toolTimes, actions, subagents, children, 
                   {isLast && tail}
                 </Turn>
               )}
-            </div>
+            </motion.div>
           );
         })}
+        </AnimatePresence>
         {!tailInLast && hasTail && <Turn live={showLive}>{tail}</Turn>}
       </div>
     </div>

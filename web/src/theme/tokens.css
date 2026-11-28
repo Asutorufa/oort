@@ -11,7 +11,7 @@
   --bg-canvas: #FFFFFF;
   --bg-sidebar: #F7F7F8;
   --bg-surface: #FAFAFB;          /* inline cards, tool frames */
-  --bg-elevated: #FFFFFF;         /* floating input, popovers, menus, modals */
+  --bg-elevated: #FFFFFF;         /* floating input, popovers, menus, modals: always 100% opaque */
   --bg-user-bubble: #F2F2F4;
   --bg-code: #F4F4F6;
   --bg-hover: rgba(0, 0, 0, 0.04);
@@ -33,7 +33,10 @@
   --chart-2: #A1A1AA;
   --grid: #EFEFF1;
   --shadow-float: 0 1px 2px rgba(0, 0, 0, 0.04), 0 6px 24px rgba(0, 0, 0, 0.06);
-  --shadow-pop: 0 2px 6px rgba(0, 0, 0, 0.05), 0 12px 32px rgba(0, 0, 0, 0.08);
+  --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04);
+  /* Rows inside floating panels: solid colors (floating panels are never translucent). */
+  --bg-menu-hover: #F2F2F4;
+  --bg-menu-active: #EBEBEE;
   --overlay: rgba(0, 0, 0, 0.28);
   color-scheme: light;
 }
@@ -43,7 +46,7 @@
   --bg-canvas: #141416;
   --bg-sidebar: #101012;
   --bg-surface: #1A1A1D;
-  --bg-elevated: #1E1E22;
+  --bg-elevated: #1E1E24;
   --bg-user-bubble: #232327;
   --bg-code: #1C1C21;
   --bg-hover: rgba(255, 255, 255, 0.05);
@@ -65,7 +68,9 @@
   --chart-2: #71717A;
   --grid: #26262A;
   --shadow-float: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 28px rgba(0, 0, 0, 0.35);
-  --shadow-pop: 0 2px 6px rgba(0, 0, 0, 0.3), 0 14px 36px rgba(0, 0, 0, 0.45);
+  --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.55), 0 1px 2px rgba(0, 0, 0, 0.3);
+  --bg-menu-hover: #2A2A32;
+  --bg-menu-active: #31313A;
   --overlay: rgba(0, 0, 0, 0.5);
   color-scheme: dark;
 }

@@ -8,6 +8,7 @@ import { ErrorBar } from "../common";
 import { GroupToggles } from "../forms";
 import { Composer } from "./Composer";
 import { ModelPicker } from "./ModelPicker";
+import { useT } from "../../i18n";
 
 /** The new-chat screen: pick a preset (or a model, skills and tools) and just start typing. */
 export function Welcome({ onCreated }: { onCreated: (id: string) => void }) {
@@ -16,6 +17,7 @@ export function Welcome({ onCreated }: { onCreated: (id: string) => void }) {
   const serverList = useResource(mcpServers.list);
   const skillList = useResource(skills.list);
   const [presetId, setPresetId] = useState<string | null>(null);
+  const t = useT();
   const [providerId, setProviderId] = useState<string>("");
   const [model, setModel] = useState("");
   const [skillIds, setSkillIds] = useState<string[]>([]);
@@ -60,7 +62,7 @@ export function Welcome({ onCreated }: { onCreated: (id: string) => void }) {
     <div className="welcome">
       <div className="welcome-inner">
         <OortMark size={36} />
-        <h1>何をお手伝いしましょう？</h1>
+        <h1>{t("welcome.title")}</h1>
         {(presetList.data ?? []).length > 0 && (
           <div className="preset-row">
             {(presetList.data ?? []).map((p) => (
@@ -90,7 +92,7 @@ export function Welcome({ onCreated }: { onCreated: (id: string) => void }) {
         )}
         <ErrorBar error={error} onDismiss={() => setError(null)} />
       </div>
-      <Composer busy={false} commands={[]} onSend={(text) => start(text)} autoFocus placeholder="メッセージを入力して新しいチャットを始める" />
+      <Composer busy={false} commands={[]} onSend={(text) => start(text)} autoFocus placeholder={t("composer.placeholderNew")} />
     </div>
   );
 }

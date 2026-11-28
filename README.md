@@ -114,6 +114,14 @@ Sessions (and presets) choose builtin tool groups at creation; their tools are f
 
 ### Subagents
 
+### Thinking level and provider defaults
+
+Providers carry generation defaults: `defaults: {reasoning_effort, temperature, max_output_tokens, context_window, timeout_secs}`. `reasoning_effort` is provider-neutral (`default`, `off`, `low`, `medium`, `high`) and is resolved session → preset → provider. Each adapter maps it to its own parameter: OpenAI `reasoning_effort` (sampling parameters are dropped with it), Anthropic `thinking` with a 4k / 10k / 24k token budget (temperature and top_k dropped, `max_tokens` kept above the budget), Gemini `thinkingBudget` on 2.x models and `thinkingLevel` on later ones (Pro models cannot turn thinking off). It is a request parameter outside the cached prefix, so a chat can change it mid-conversation. `context_window` sets the compaction threshold of new sessions; `timeout_secs` is a per-read timeout.
+
+### Web UI languages
+
+The web UI is available in English, Japanese and Korean (`web/src/i18n`). The first visit follows the browser language; the choice is stored in `localStorage` (`oort.locale`) and sets `<html lang>`. The dictionaries are type-checked against each other, so a missing or extra key fails `tsc`. The UI language never changes prompts or history.
+
 ### Loop errors and automatic retry
 
 When the loop stops with an error (an HTTP 429 quota error, a 5xx, a dropped connection, …) the session detail carries `last_error` (`message`, `at`, `retry_at`, `attempt`, `max_attempts`) and the session list marks it `failed`. The web UI shows the error in the conversation with a plain explanation, the provider's suggested wait and a retry button. A failed session is not resumed by reconnecting; it waits for `POST /api/sessions/:id/retry` or new input.
@@ -131,6 +139,7 @@ Each provider has an `auto_retry` setting (`{ "enabled": false, "max_attempts": 
 | Endpoint | Purpose |
 |---|---|
 | `GET / POST /api/providers`, `GET / PUT / DELETE /api/providers/:id` | Provider CRUD (`kind`: `openai` = Responses API, `openai_compatible` = Chat Completions with `base_url`, `anthropic`, `gemini`, `mock`) |
+| `POST /api/providers/:id/models`, `POST /api/providers/models` | Model ids the provider offers (body may carry unsaved changes) → `{models}`; 502 with the reason when listing fails |
 | `POST /api/providers/:id/test`, `POST /api/providers/test` | Connectivity test (`list_models`; `{"ping": true}` adds a 1-token chat). Body may carry unsaved changes. → `{ok, latency_ms, model_checked, model_found, models, error}` |
 | `GET / POST /api/mcp-servers`, `GET / PUT / DELETE /api/mcp-servers/:id` | MCP server CRUD (`streamable_http` with `url`/`headers`/`auth`, or `stdio` with `command`/`args`/`env`) |
 | `POST /api/mcp-servers/:id/test`, `POST /api/mcp-servers/test` | Fresh connection: `initialize` + `tools/list` → `{ok, latency_ms, server_info, tools: [{name, description, read_only, input_schema}], error}` |
@@ -146,7 +155,7 @@ Each provider has an `auto_retry` setting (`{ "enabled": false, "max_attempts": 
 | `POST /api/sessions` | Create from `preset_id` and/or `provider_id`, `model`, `mcp_server_ids`, `skill_ids`, `builtin_groups`, `workspace_root`, `widgets`, `builtin_tools`, `system_prompt`, `approval_policy` (`auto_all` / `auto_readonly` / `always_ask`), `max_context_tokens`, `max_tokens`, `title`, `message` |
 | `GET /api/sessions` | List sessions |
 | `GET /api/sessions/:id` | Snapshot: raw history, active view, checkpoints, pending approvals, usage with per-call `ttft_ms`, `latency_ms` and a request summary (sizes and prefix hashes) |
-| `PATCH /api/sessions/:id` | `{title?, approval_policy?}` (applies to a running loop immediately) |
+| `PATCH /api/sessions/:id` | `{title?, approval_policy?, reasoning_effort?, model?}` (applies to a running loop immediately; the thinking level and model change the next request only, never the history; `model` switches within the session's provider) |
 | `DELETE /api/sessions/:id` | Stop the loop and delete the session with its history |
 | `GET /api/sessions/:id/export` | Debug JSON: metadata, settings, frozen prompt and tools, raw history, compactions, LLM call metrics (no secrets) |
 | `GET /api/sessions/:id/events` | SSE: `hello` (status + in-progress turn), then `agent` / `widget` / `loop_exited` / `session_updated` / `deleted` / `lagged`. Ids are `{boot}:{seq}`; reconnecting with `Last-Event-ID` replays missed events (`hello.resumed`), otherwise the client refetches the snapshot |

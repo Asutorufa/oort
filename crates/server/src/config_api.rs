@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use oort_agent::secret::{self, SecretSource};
 use oort_agent::{
     ApprovalPolicyKind, AutoRetry, McpAuth, McpServerRecord, McpTransportKind, PresetRecord,
-    ProviderKind, ProviderRecord,
+    ProviderDefaults, ProviderKind, ProviderRecord, ReasoningEffort,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -45,6 +45,7 @@ pub struct ProviderView {
     pub extra_headers: BTreeMap<String, String>,
     pub is_enabled: bool,
     pub auto_retry: AutoRetry,
+    pub defaults: ProviderDefaults,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -62,6 +63,7 @@ impl From<&ProviderRecord> for ProviderView {
             extra_headers: secret::mask_map(&p.extra_headers),
             is_enabled: p.is_enabled,
             auto_retry: p.auto_retry,
+            defaults: p.defaults,
             created_at: p.created_at,
             updated_at: p.updated_at,
         }
@@ -79,6 +81,8 @@ pub struct ProviderInput {
     pub extra_headers: Option<BTreeMap<String, String>>,
     pub is_enabled: Option<bool>,
     pub auto_retry: Option<AutoRetry>,
+    /// Replaces all generation defaults when present.
+    pub defaults: Option<ProviderDefaults>,
     /// Test only: also send a 1-token chat request.
     #[serde(default)]
     pub ping: bool,
@@ -99,6 +103,7 @@ impl ProviderInput {
             extra_headers: secret::merge_map(&BTreeMap::new(), self.extra_headers.as_ref()),
             is_enabled: self.is_enabled.unwrap_or(true),
             auto_retry: self.auto_retry.unwrap_or_default(),
+            defaults: self.defaults.unwrap_or_default(),
             created_at: now,
             updated_at: now,
         };
@@ -132,6 +137,7 @@ impl ProviderInput {
             extra_headers: secret::merge_map(&cur.extra_headers, self.extra_headers.as_ref()),
             is_enabled: self.is_enabled.unwrap_or(cur.is_enabled),
             auto_retry: self.auto_retry.unwrap_or(cur.auto_retry),
+            defaults: self.defaults.unwrap_or(cur.defaults),
             created_at: cur.created_at,
             updated_at: now_ms().max(cur.updated_at + 1),
         };
@@ -141,6 +147,23 @@ impl ProviderInput {
 }
 
 fn validate_provider(p: &ProviderRecord) -> Result<(), ApiError> {
+    let d = &p.defaults;
+    if d.temperature.is_some_and(|t| !(0.0..=2.0).contains(&t)) {
+        return Err(ApiError::BadRequest(
+            "`defaults.temperature` must be between 0 and 2".into(),
+        ));
+    }
+    if d.max_output_tokens == Some(0) || d.context_window.is_some_and(|c| c < 1024) {
+        return Err(ApiError::BadRequest(
+            "`defaults.max_output_tokens` must be positive and `defaults.context_window` at least 1024"
+                .into(),
+        ));
+    }
+    if !(5..=1800).contains(&d.timeout_secs) {
+        return Err(ApiError::BadRequest(
+            "`defaults.timeout_secs` must be between 5 and 1800".into(),
+        ));
+    }
     if !(1..=10).contains(&p.auto_retry.max_attempts) {
         return Err(ApiError::BadRequest(
             "`auto_retry.max_attempts` must be between 1 and 10".into(),
@@ -436,6 +459,7 @@ pub struct PresetInput {
     pub builtin_groups: Option<Vec<String>>,
     /// Empty string clears it.
     pub workspace_root: Option<String>,
+    pub reasoning_effort: Option<ReasoningEffort>,
 }
 
 impl PresetInput {
@@ -454,6 +478,7 @@ impl PresetInput {
             skill_ids: vec![],
             builtin_groups: vec![],
             workspace_root: None,
+            reasoning_effort: ReasoningEffort::Default,
             created_at: now,
             updated_at: now,
         };
@@ -470,6 +495,7 @@ impl PresetInput {
             crate::registry::parse_groups(g)?;
         }
         Ok(PresetRecord {
+            reasoning_effort: self.reasoning_effort.unwrap_or(cur.reasoning_effort),
             builtin_groups: self
                 .builtin_groups
                 .clone()
