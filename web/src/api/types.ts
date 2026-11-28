@@ -93,6 +93,8 @@ export interface SessionSettings {
   max_tokens?: number | null;
   builtin_tools: boolean;
   mcp_servers: { id: string; prefix: string }[];
+  widgets?: boolean;
+  skills?: { id: string; name: string }[];
 }
 
 export interface RawMessage {
@@ -197,6 +199,7 @@ export type Envelope =
     }
   | { kind: "agent"; seq: number; event: AgentEvent }
   | { kind: "loop_exited"; seq: number; error: string | null }
+  | { kind: "widget"; seq: number; call_id: string; widget: WidgetSpec }
   | { kind: "session_updated"; seq: number; title: string; approval_policy: ApprovalPolicy }
   | { kind: "deleted"; seq: number }
   | { kind: "lagged"; skipped: number };
@@ -212,6 +215,8 @@ export interface CreateSessionRequest {
   max_context_tokens?: number;
   title?: string;
   message?: string;
+  skill_ids?: string[];
+  widgets?: boolean;
 }
 
 export type InputRequest =
@@ -292,6 +297,17 @@ export interface McpServer {
   is_enabled: boolean;
   created_at: number;
   updated_at: number;
+  oauth?: OAuthStatus;
+}
+
+export interface OAuthStatus {
+  status: "connected" | "auth_required";
+  issuer: string;
+  scopes: string;
+  expires_at: number | null;
+  client_source: "dcr" | "manual";
+  client_id: string;
+  has_refresh_token: boolean;
 }
 
 export interface McpServerInput {
@@ -302,7 +318,7 @@ export interface McpServerInput {
   args?: string[];
   env?: Record<string, string>;
   headers?: Record<string, string>;
-  auth?: { type: "none" } | { type: "bearer"; token?: string };
+  auth?: { type: "none" } | { type: "bearer"; token?: string } | { type: "oauth"; client_id?: string; client_secret?: string; scopes?: string };
   is_enabled?: boolean;
 }
 
@@ -344,8 +360,48 @@ export interface Preset {
   mcp_server_ids: string[];
   builtin_tools: boolean;
   approval_policy: ApprovalPolicy;
+  skill_ids: string[];
   created_at: number;
   updated_at: number;
 }
 
 export type PresetInput = Partial<Omit<Preset, "id" | "created_at" | "updated_at">>;
+
+// ----- skills --------------------------------------------------------------------------------
+
+export interface Skill {
+  id: string;
+  name: string;
+  description: string;
+  body: string;
+  allowed_tools: string[];
+  tags: string[];
+  source: { kind: "file"; path: string } | { kind: "db" };
+  updated_at: number;
+  editable: boolean;
+}
+
+export interface SkillInput {
+  name?: string;
+  description?: string;
+  body?: string;
+  allowed_tools?: string[];
+  tags?: string[];
+}
+
+export interface SkillsReload {
+  file_skills: number;
+  warnings: string[];
+  dirs: string[];
+}
+
+// ----- widgets -------------------------------------------------------------------------------
+
+export type WidgetType = "metrics_chart" | "data_table" | "interactive_form" | "approval_diff" | "action_chips";
+
+/** Arguments of a `render_widget` call. */
+export interface WidgetSpec {
+  widget_type: WidgetType | string;
+  title?: string;
+  data: Record<string, unknown>;
+}
