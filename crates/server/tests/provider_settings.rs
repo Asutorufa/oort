@@ -208,3 +208,56 @@ async fn model_lists_come_from_the_provider_or_explain_why_not() {
     assert_eq!(r.status(), 400);
     s.stop().await;
 }
+
+#[tokio::test]
+async fn the_model_can_be_switched_mid_chat_without_touching_history() {
+    let s = server("prov-model-switch").await;
+    let pid = mock_id(&s).await;
+    let id = s
+        .create(json!({ "provider_id": pid, "model": "mock" }))
+        .await;
+    assert_eq!(params(&s, &id).await["model"], "mock");
+    let history = s.get(&format!("/sessions/{id}")).await["raw"].clone();
+
+    s.ok(
+        "PATCH",
+        &format!("/sessions/{id}"),
+        Some(json!({ "model": "  mock-large  " })),
+    )
+    .await;
+    let d = s.get(&format!("/sessions/{id}")).await;
+    assert_eq!(d["model"], "mock-large");
+    assert_eq!(d["settings"]["model"], "mock-large");
+    assert_eq!(params(&s, &id).await["model"], "mock-large");
+    let raw = s.get(&format!("/sessions/{id}")).await["raw"].clone();
+    assert_eq!(
+        raw.as_array().unwrap()[..history.as_array().unwrap().len()],
+        history.as_array().unwrap()[..]
+    );
+
+    // The list shows it, and it survives a restart of the loop (stored, not only live).
+    let list = s.get("/sessions").await;
+    assert_eq!(
+        list.as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["id"] == id.as_str())
+            .unwrap()["model"],
+        "mock-large"
+    );
+    s.ok("POST", &format!("/sessions/{id}/cancel"), None).await;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert_eq!(params(&s, &id).await["model"], "mock-large");
+
+    for bad in [json!(""), json!("   "), json!("a\nb")] {
+        let r = s
+            .send(
+                "PATCH",
+                &format!("/sessions/{id}"),
+                Some(json!({ "model": bad })),
+            )
+            .await;
+        assert_eq!(r.status(), 400, "{bad}");
+    }
+    s.stop().await;
+}

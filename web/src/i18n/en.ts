@@ -564,6 +564,10 @@ export const en = {
   "prov.empty": "Pick a provider, or add one. Write env:NAME as the API key to read it from the server’s environment.",
   "prov.deleteTitle": "Delete this provider?",
   "prov.deleteBody": "{{name}} will be deleted. Chats made with it stay readable but can’t continue.",
+  "composer.modelSwitch": "Model (switches from the next response)",
+  "composer.modelCurrent": "Current",
+  "composer.modelSwitched": "Switched to {{model}} from the next response",
+  "composer.modelListFailed": "Couldn’t load the model list",
   // @end
 } as const satisfies Record<string, Message>;
 

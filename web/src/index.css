@@ -813,3 +813,8 @@ input[type="range"].unset::-webkit-slider-thumb { opacity: .5; }
 .sidebar.collapsed .lang-btn { margin-left: 0; width: 32px; height: 32px; padding: 0; justify-content: center; }
 .sidebar.collapsed .lang-btn .select-value, .sidebar.collapsed .lang-btn .select-chev { display: none; }
 .sidebar.collapsed .mode-btn { width: 32px; height: 32px; padding: 0; justify-content: center; }
+
+/* composer model picker */
+.dock-model-pick .select-value { max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
+.dock-model-pick .mono, .model-menu .mono { font-size: 12px; }
+.model-menu { max-width: min(360px, calc(100vw - 32px)); }

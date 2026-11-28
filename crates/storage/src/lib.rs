@@ -320,6 +320,17 @@ impl SessionStore for SqliteSessionStore {
         found(done.rows_affected(), id)
     }
 
+    async fn set_model(&self, id: &str, model: &str) -> Result<(), StoreError> {
+        let done = sqlx::query("UPDATE sessions SET model = ?, updated_at = ? WHERE id = ?")
+            .bind(model)
+            .bind(now_ms())
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(classify)?;
+        found(done.rows_affected(), id)
+    }
+
     async fn set_reasoning_effort(
         &self,
         id: &str,

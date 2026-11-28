@@ -2,7 +2,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useMemo, useState } from "react";
 import { spring } from "../lib/motion";
 import { useT, type Key, type T } from "../i18n";
-import { commands as commandsApi, errorText, sessions } from "../api";
+import { commands as commandsApi, errorText, providers as providersApi, sessions } from "../api";
 import { useToast } from "../components/common/Toast";
 import type { ApprovalPolicy, InputRequest, ReasoningEffort, TurnUsage } from "../api/types";
 import { Composer } from "../components/chat/Composer";
@@ -35,6 +35,18 @@ const commandMessage = (t: T, m: string) => {
 const commandError = (t: T, m: string) =>
   /^\/approval takes/.test(m) ? t("cmd.approvalArgs") : /needs an open conversation/.test(m) ? t("cmd.needsChat") : m;
 
+const modelCache = new Map<string, Promise<string[]>>();
+/** The provider's model ids; failures are not cached so a later visit can retry. */
+function modelList(providerId: string): Promise<string[]> {
+  let p = modelCache.get(providerId);
+  if (!p) {
+    p = providersApi.models(providerId).then((r) => r.models);
+    p.catch(() => modelCache.delete(providerId));
+    modelCache.set(providerId, p);
+  }
+  return p;
+}
+
 const STATUS: Record<string, Key | null> = { running: "status.running", needs_approval: "status.needsApproval", halted: "status.halted", idle: null };
 
 export function ChatView({ selected, onListChanged }: { selected: string | null; onListChanged: () => void }) {
@@ -58,6 +70,7 @@ function Session({ id, onListChanged }: { id: string; onListChanged: () => void 
   });
   const commandList = useResource(commandsApi.list);
   const childList = useResource(() => sessions.children(id));
+  const [models, setModels] = useState<string[] | "failed">([]);
   const toast = useToast();
   const t = useT();
   const [trace, setTrace] = useState<string | null>(null);
@@ -75,6 +88,18 @@ function Session({ id, onListChanged }: { id: string; onListChanged: () => void 
     const t = window.setTimeout(refresh, Math.max(0, retryAt - Date.now()) + 800);
     return () => window.clearTimeout(t);
   }, [retryAt, refresh]);
+  // Models of this chat's provider, for switching (cached per provider for the page's life).
+  const providerId = detail?.settings.provider_id ?? null;
+  useEffect(() => {
+    if (!providerId) return;
+    let live = true;
+    modelList(providerId)
+      .then((m) => live && setModels(m))
+      .catch(() => live && setModels("failed"));
+    return () => {
+      live = false;
+    };
+  }, [providerId]);
   const [inspector, setInspector] = useState(false);
   const [inspect, setInspect] = useState<TurnUsage | null>(null);
   const [title, setTitle] = useState<string | null>(null);
@@ -98,13 +123,16 @@ function Session({ id, onListChanged }: { id: string; onListChanged: () => void 
     }),
     [id], // eslint-disable-line react-hooks/exhaustive-deps
   );
-  const patch = async (req: { title?: string; approval_policy?: ApprovalPolicy; reasoning_effort?: ReasoningEffort }) => {
+  /** Returns whether the change was saved (errors are shown in the bar). */
+  const patch = async (req: { title?: string; approval_policy?: ApprovalPolicy; reasoning_effort?: ReasoningEffort; model?: string }) => {
     try {
       await sessions.patch(id, req);
       refresh();
       onListChanged();
+      return true;
     } catch (e) {
       setError(errorText(e));
+      return false;
     }
   };
 
@@ -223,6 +251,11 @@ function Session({ id, onListChanged }: { id: string; onListChanged: () => void 
           effectiveReasoning={detail.effective_reasoning_effort}
           onReasoning={(r) => patch({ reasoning_effort: r })}
           model={detail.model}
+          models={models === "failed" ? [] : models}
+          modelsFailed={models === "failed"}
+          onModel={async (m) => {
+            if (await patch({ model: m })) toast(t("composer.modelSwitched", { model: m }));
+          }}
           onSend={(text, skills) => send({ type: "steer", text, invoked_skills: skills })}
           onInterrupt={(text, skills) => send({ type: "interrupt", text, invoked_skills: skills })}
           onCommand={runCommand}

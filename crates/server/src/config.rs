@@ -4,8 +4,8 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use oort_agent::{
-    CompactionPolicy, DefaultContextManager, LiveThinking, ProviderDefaults, RequestParams,
-    UsageAccounting,
+    CompactionPolicy, DefaultContextManager, LiveModel, LiveThinking, ProviderDefaults,
+    RequestParams, UsageAccounting,
 };
 use oort_llm::PromptCacheConfig;
 use serde::{Deserialize, Serialize};
@@ -138,6 +138,7 @@ impl SessionConfig {
         session_id: &str,
         defaults: &ProviderDefaults,
         thinking: LiveThinking,
+        model: Option<LiveModel>,
     ) -> DefaultContextManager {
         DefaultContextManager::new(RequestParams {
             model: Some(self.model.clone()),
@@ -149,6 +150,7 @@ impl SessionConfig {
             temperature: defaults.temperature,
             prompt_cache: Some(PromptCacheConfig::enabled().with_key(session_id)),
             live_thinking: Some(thinking),
+            live_model: model,
             ..Default::default()
         })
         .with_compaction(self.policy())

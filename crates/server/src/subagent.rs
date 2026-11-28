@@ -384,7 +384,9 @@ pub async fn run_subagent(
     let defaults = registry.provider_defaults(&cfg).await;
     let thinking = Arc::new(std::sync::RwLock::new(defaults.reasoning_effort.thinking()));
     let agent = Agent::builder(model, tools)
-        .context_manager(Arc::new(cfg.context_manager(&sub_id, &defaults, thinking)))
+        .context_manager(Arc::new(
+            cfg.context_manager(&sub_id, &defaults, thinking, None),
+        ))
         .hook(Arc::new(TracingHook))
         .hook(Arc::new(SubagentGuard { can_spawn }))
         .hook(Arc::new(TurnBudget {

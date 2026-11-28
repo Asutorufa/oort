@@ -206,6 +206,7 @@ fn plan(req: &ChatRequest) -> Plan {
                 "thinking": req.thinking,
                 "temperature": req.temperature,
                 "max_tokens": req.max_tokens,
+                "model": req.model,
             })
             .to_string(),
             calls: vec![],

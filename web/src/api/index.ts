@@ -30,7 +30,7 @@ export const sessions = {
   list: () => request<SessionSummary[]>("GET", "/sessions"),
   get: (id: string) => request<SessionDetail>("GET", `/sessions/${id}`),
   create: (req: CreateSessionRequest) => request<SessionDetail>("POST", "/sessions", req),
-  patch: (id: string, req: { title?: string; approval_policy?: ApprovalPolicy; reasoning_effort?: ReasoningEffort }) =>
+  patch: (id: string, req: { title?: string; approval_policy?: ApprovalPolicy; reasoning_effort?: ReasoningEffort; model?: string }) =>
     request<SessionDetail>("PATCH", `/sessions/${id}`, req),
   remove: (id: string) => request<void>("DELETE", `/sessions/${id}`),
   exportUrl: (id: string) => `/api/sessions/${id}/export`,

@@ -44,6 +44,7 @@ struct ActiveSession {
     approval: Arc<ApprovalHandle>,
     /// Read by the context manager on every request.
     thinking: oort_agent::LiveThinking,
+    model: oort_agent::LiveModel,
     /// Cancelled when the loop task has fully exited.
     finished: CancellationToken,
     generation: u64,
@@ -301,7 +302,7 @@ impl SessionManager {
     pub async fn detail(&self, id: &str) -> Result<SessionDetail, ApiError> {
         let stored = self.store.load_state(id).await?;
         let calls = self.store.list_llm_calls(id).await?;
-        let cfg = settings(&stored.meta.config)?;
+        let cfg = session_settings(&stored.meta)?;
         let active = self.active.lock().await.contains_key(id);
         let root = stored.meta.lineage.workspace_root.clone();
         let effective = stored.meta.reasoning_effort.or(self
@@ -387,9 +388,25 @@ impl SessionManager {
                 a.approval.set(policy);
             }
         }
+        if let Some(model) = &req.model {
+            let model = model.trim();
+            if model.is_empty() || model.len() > 200 || model.chars().any(char::is_control) {
+                return Err(ApiError::BadRequest("`model` must be a model id".into()));
+            }
+            let meta = self.store.load_state(id).await?.meta;
+            if meta.lineage.parent_session_id.is_some() {
+                return Err(ApiError::Conflict(
+                    "subagent sessions keep their model".into(),
+                ));
+            }
+            self.store.set_model(id, model).await?;
+            if let Some(a) = self.active.lock().await.get(id) {
+                *a.model.write().unwrap_or_else(|e| e.into_inner()) = model.to_string();
+            }
+        }
         if let Some(effort) = req.reasoning_effort {
             self.store.set_reasoning_effort(id, effort).await?;
-            let cfg = settings(&self.store.load_state(id).await?.meta.config)?;
+            let cfg = session_settings(&self.store.load_state(id).await?.meta)?;
             let fallback = self.registry.provider_defaults(&cfg).await.reasoning_effort;
             if let Some(a) = self.active.lock().await.get(id) {
                 *a.thinking.write().unwrap_or_else(|e| e.into_inner()) =
@@ -402,6 +419,7 @@ impl SessionManager {
             title: meta.title,
             approval_policy: meta.approval_policy,
             reasoning_effort: meta.reasoning_effort,
+            model: meta.model,
         });
         Ok(())
     }
@@ -433,7 +451,7 @@ impl SessionManager {
     pub async fn export(&self, id: &str) -> Result<SessionExport, ApiError> {
         let stored = self.store.load_state(id).await?;
         let calls = self.store.list_llm_calls(id).await?;
-        let cfg = settings(&stored.meta.config)?;
+        let cfg = session_settings(&stored.meta)?;
         let provider = match &cfg.provider_id {
             Some(pid) => {
                 self.registry
@@ -600,7 +618,7 @@ impl SessionManager {
         if stored.meta.status == SessionStatus::Halted {
             return Err(ApiError::Conflict("session is halted".into()));
         }
-        let cfg = settings(&stored.meta.config)?;
+        let cfg = session_settings(&stored.meta)?;
         let hub = self.hub(id).await;
         let cancel = CancellationToken::new();
         let approval = ApprovalHandle::new(stored.meta.approval_policy);
@@ -611,6 +629,7 @@ impl SessionManager {
             .reasoning_effort);
         let thinking: oort_agent::LiveThinking =
             Arc::new(std::sync::RwLock::new(effort.thinking()));
+        let live_model: oort_agent::LiveModel = Arc::new(std::sync::RwLock::new(cfg.model.clone()));
         let (ev_tx, mut ev_rx) = mpsc::channel(1024);
         let agent = self
             .registry
@@ -624,6 +643,7 @@ impl SessionManager {
                 ev_tx,
                 cancel.clone(),
                 Arc::clone(&thinking),
+                Some(Arc::clone(&live_model)),
             )
             .await?;
         let (in_tx, in_rx) = mpsc::channel(64);
@@ -731,6 +751,7 @@ impl SessionManager {
                 cancel,
                 approval,
                 thinking,
+                model: live_model,
                 finished,
                 generation,
             },
@@ -875,7 +896,7 @@ impl SessionManager {
         user_text: String,
     ) -> Result<(), ApiError> {
         let stored = self.store.load_state(id).await?;
-        let cfg = settings(&stored.meta.config)?;
+        let cfg = session_settings(&stored.meta)?;
         let hub = self.hub(id).await;
         let cancel = CancellationToken::new();
         self.skill_runs
@@ -983,6 +1004,16 @@ fn canonical_workspace(root: &str) -> Result<String, ApiError> {
         )));
     }
     Ok(p.to_string_lossy().to_string())
+}
+
+/// The session's configuration with its current model (`sessions.model` can change; the
+/// stored config keeps the model the session was created with).
+fn session_settings(meta: &oort_agent::SessionMeta) -> Result<SessionConfig, ApiError> {
+    let mut cfg = settings(&meta.config)?;
+    if !meta.model.trim().is_empty() {
+        cfg.model = meta.model.clone();
+    }
+    Ok(cfg)
 }
 
 fn settings(raw: &serde_json::Value) -> Result<SessionConfig, ApiError> {

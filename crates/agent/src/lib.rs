@@ -44,7 +44,7 @@ pub use config_store::{
     OAuthTokenRecord, OAuthTokenStore, PresetRecord, ProviderDefaults, ProviderKind,
     ProviderRecord, ReasoningEffort, SkillExecutionMode, SkillInvocation, SkillRecord, SkillStore,
 };
-pub use context::{ContextManager, DefaultContextManager, LiveThinking, RequestParams};
+pub use context::{ContextManager, DefaultContextManager, LiveModel, LiveThinking, RequestParams};
 pub use engine::{Agent, AgentBuilder, INTERRUPTED_TOOL_RESULT, StepOutcome};
 pub use error::AgentError;
 pub use hook::{

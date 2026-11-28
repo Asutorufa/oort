@@ -536,6 +536,7 @@ impl Registry {
         events: mpsc::Sender<AgentEvent>,
         cancel: CancellationToken,
         thinking: oort_agent::LiveThinking,
+        model_id: Option<oort_agent::LiveModel>,
     ) -> Result<Agent, ApiError> {
         let model = self.session_model(cfg).await?;
         let defaults = self.provider_defaults(cfg).await;
@@ -575,7 +576,7 @@ impl Registry {
         }
         let mut b = Agent::builder(model.clone(), pinned)
             .context_manager(Arc::new(
-                cfg.context_manager(session_id, &defaults, thinking),
+                cfg.context_manager(session_id, &defaults, thinking, model_id),
             ))
             .hook(Arc::new(TracingHook))
             .hook(Arc::new(DynamicApproval(approval)))

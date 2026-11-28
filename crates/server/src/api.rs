@@ -70,6 +70,9 @@ pub struct PatchSessionRequest {
     /// Changes the thinking level from the next request on (history is untouched).
     #[serde(default)]
     pub reasoning_effort: Option<oort_agent::ReasoningEffort>,
+    /// Switches the model (same provider) from the next request on.
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -371,6 +374,7 @@ pub enum Envelope {
         title: String,
         approval_policy: ApprovalPolicyKind,
         reasoning_effort: oort_agent::ReasoningEffort,
+        model: String,
     },
     /// The session was deleted; the stream ends.
     Deleted {

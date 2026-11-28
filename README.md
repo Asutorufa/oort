@@ -155,7 +155,7 @@ Each provider has an `auto_retry` setting (`{ "enabled": false, "max_attempts": 
 | `POST /api/sessions` | Create from `preset_id` and/or `provider_id`, `model`, `mcp_server_ids`, `skill_ids`, `builtin_groups`, `workspace_root`, `widgets`, `builtin_tools`, `system_prompt`, `approval_policy` (`auto_all` / `auto_readonly` / `always_ask`), `max_context_tokens`, `max_tokens`, `title`, `message` |
 | `GET /api/sessions` | List sessions |
 | `GET /api/sessions/:id` | Snapshot: raw history, active view, checkpoints, pending approvals, usage with per-call `ttft_ms`, `latency_ms` and a request summary (sizes and prefix hashes) |
-| `PATCH /api/sessions/:id` | `{title?, approval_policy?, reasoning_effort?}` (applies to a running loop immediately; the thinking level changes the next request only, never the history) |
+| `PATCH /api/sessions/:id` | `{title?, approval_policy?, reasoning_effort?, model?}` (applies to a running loop immediately; the thinking level and model change the next request only, never the history; `model` switches within the session's provider) |
 | `DELETE /api/sessions/:id` | Stop the loop and delete the session with its history |
 | `GET /api/sessions/:id/export` | Debug JSON: metadata, settings, frozen prompt and tools, raw history, compactions, LLM call metrics (no secrets) |
 | `GET /api/sessions/:id/events` | SSE: `hello` (status + in-progress turn), then `agent` / `widget` / `loop_exited` / `session_updated` / `deleted` / `lagged`. Ids are `{boot}:{seq}`; reconnecting with `Last-Event-ID` replays missed events (`hello.resumed`), otherwise the client refetches the snapshot |

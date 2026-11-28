@@ -562,5 +562,9 @@ export const ja: Dict = {
   "prov.empty": "プロバイダを選ぶか、追加してください。API キーは env:NAME と書くとサーバーの環境変数から読み込みます。",
   "prov.deleteTitle": "プロバイダを削除しますか？",
   "prov.deleteBody": "{{name}} を削除します。このプロバイダで作った会話は読めますが、続きは実行できなくなります。",
+  "composer.modelSwitch": "モデル（次の応答から切り替わります）",
+  "composer.modelCurrent": "使用中",
+  "composer.modelSwitched": "次の応答から {{model}} を使います",
+  "composer.modelListFailed": "モデル一覧を取得できませんでした",
   // @end
 };

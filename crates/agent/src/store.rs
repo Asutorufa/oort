@@ -320,6 +320,9 @@ pub trait SessionStore: Send + Sync {
         policy: ApprovalPolicyKind,
     ) -> Result<(), StoreError>;
 
+    /// The model id of later requests (`sessions.model`); the stored config keeps the original.
+    async fn set_model(&self, id: &str, model: &str) -> Result<(), StoreError>;
+
     /// Request parameters outside the cached prefix (history, system, tools stay byte-identical),
     /// so the thinking level may change between turns.
     async fn set_reasoning_effort(

@@ -37,6 +37,9 @@ export function Composer({
   effectiveReasoning,
   onReasoning,
   model,
+  models,
+  onModel,
+  modelsFailed,
   onSend,
   onInterrupt,
   onCommand,
@@ -54,6 +57,10 @@ export function Composer({
   effectiveReasoning?: ReasoningEffort;
   onReasoning?: (r: ReasoningEffort) => void;
   model?: string;
+  /** Models the user can switch to (same provider); without it the model is shown read-only. */
+  models?: string[];
+  onModel?: (m: string) => void;
+  modelsFailed?: boolean;
   onSend: (text: string, skills: InvokedSkill[]) => Promise<void>;
   onInterrupt?: (text: string, skills: InvokedSkill[]) => Promise<void>;
   onCommand?: (name: string, args: string) => Promise<void>;
@@ -244,11 +251,31 @@ export function Composer({
               options={APPROVAL_POLICIES.map((p) => ({ value: p.value, label: t(p.label), description: t(p.hint) }))}
             />
           )}
-          {model && (
-            <span className="dock-model" title={t("composer.model")}>
-              <CubeIcon size={13} />
-              <span className="mono">{model}</span>
-            </span>
+          {model && onModel ? (
+            <Select<string>
+              variant="pill"
+              placement="top"
+              className="dock-model-pick"
+              menuClassName="model-menu"
+              ariaLabel={t("composer.model")}
+              title={t("composer.modelSwitch")}
+              icon={<CubeIcon size={13} />}
+              value={model}
+              onChange={(m) => m !== model && onModel(m)}
+              renderValue={() => <span className="mono">{model}</span>}
+              options={[...new Set([model, ...(models ?? [])])].map((m) => ({
+                value: m,
+                label: <span className="mono">{m}</span>,
+                description: m === model ? (modelsFailed ? `${t("composer.modelCurrent")} · ${t("composer.modelListFailed")}` : t("composer.modelCurrent")) : undefined,
+              }))}
+            />
+          ) : (
+            model && (
+              <span className="dock-model" title={t("composer.model")}>
+                <CubeIcon size={13} />
+                <span className="mono">{model}</span>
+              </span>
+            )
           )}
           <span className="spacer" />
           <AnimatePresence mode="popLayout" initial={false}>

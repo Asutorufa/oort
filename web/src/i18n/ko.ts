@@ -562,5 +562,9 @@ export const ko: Dict = {
   "prov.empty": "제공자를 선택하거나 추가하세요. API 키에 env:NAME을 쓰면 서버 환경 변수에서 읽습니다.",
   "prov.deleteTitle": "이 제공자를 삭제할까요?",
   "prov.deleteBody": "{{name}}이(가) 삭제됩니다. 이 제공자로 만든 채팅은 읽을 수 있지만 이어서 실행할 수 없습니다.",
+  "composer.modelSwitch": "모델 (다음 응답부터 바뀝니다)",
+  "composer.modelCurrent": "사용 중",
+  "composer.modelSwitched": "다음 응답부터 {{model}}을(를) 사용합니다",
+  "composer.modelListFailed": "모델 목록을 불러오지 못했습니다",
   // @end
 };
