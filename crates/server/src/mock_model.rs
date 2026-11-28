@@ -2,7 +2,8 @@
 //! interrupt it), calls tools when their names or keywords appear in the message, and reports
 //! simulated prefix-cache usage (the previous request's size counts as cached).
 //!
-//! Keywords: `time`, `list`, `read <path>`, `note <text>`, any exact tool name, `think`, `slow`.
+//! Keywords: `time`, `list`, `read <path>`, `note <text>`, any exact tool name, `think`, `slow`,
+//! `widget:<type>` (sample widget), `skill:<name>` (load_skill).
 
 use std::time::Duration;
 
@@ -37,6 +38,98 @@ fn estimate_tokens(v: &impl serde::Serialize) -> u64 {
     (serde_json::to_string(v).map(|s| s.len()).unwrap_or(0) as u64).div_ceil(4)
 }
 
+/// A valid example of each widget (unknown kinds are passed through to test validation).
+fn sample_widget(kind: &str) -> Value {
+    let data = match kind {
+        "metrics_chart" => json!({
+            "kpis": [{"label": "Requests", "value": "1.2k", "delta": "+8%"}, {"label": "Errors", "value": 3}],
+            "series": [{"name": "rps", "points": [{"x": "10:00", "y": 3}, {"x": "10:05", "y": 7}, {"x": "10:10", "y": 5}]}],
+            "kind": "area"
+        }),
+        "data_table" => json!({
+            "columns": [{"key": "node", "label": "Node"}, {"key": "latency", "label": "Latency (ms)"}],
+            "rows": [{"node": "tokyo-1", "latency": 21}, {"node": "osaka-2", "latency": 35}],
+            "row_actions": [{"id": "switch", "label": "Switch to this node"}]
+        }),
+        "interactive_form" => json!({
+            "fields": [
+                {"name": "city", "label": "City", "kind": "text", "required": true},
+                {"name": "days", "label": "Days", "kind": "number", "default": 2},
+                {"name": "plan", "label": "Plan", "kind": "select", "options": ["basic", "pro"]},
+                {"name": "notify", "label": "Notify me", "kind": "checkbox"}
+            ],
+            "submit_label": "Plan the trip"
+        }),
+        "approval_diff" => json!({
+            "summary": "Rename `foo` to `bar` in src/lib.rs",
+            "diff": "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,3 @@\n-fn foo() {}\n+fn bar() {}\n fn main() {}\n",
+            "files": ["src/lib.rs"]
+        }),
+        "action_chips" => json!({
+            "chips": [{"label": "Summarize", "prompt": "Summarize the conversation"}, {"label": "Compact", "command": "compact"}]
+        }),
+        _ => json!({}),
+    };
+    json!({ "widget_type": kind, "title": format!("Sample {kind}"), "data": data })
+}
+
+/// A natural reply to a batch of tool results (`msgs` = the assistant message that made the
+/// calls, then its tool messages). Widget results are internal notes for the model, so they
+/// are acknowledged rather than read out.
+fn summarize_results(msgs: &[Message]) -> String {
+    let widget_kind = |id: &str| -> Option<String> {
+        msgs.iter().flat_map(|m| &m.content).find_map(|p| match p {
+            ContentPart::ToolCall(c) if c.id == id && c.name == "render_widget" => c
+                .arguments
+                .get("widget_type")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            _ => None,
+        })
+    };
+    let mut lines: Vec<String> = Vec::new();
+    let mut waiting = false;
+    let mut shown = 0;
+    for p in msgs.iter().flat_map(|m| &m.content) {
+        let ContentPart::ToolResult(r) = p else {
+            continue;
+        };
+        let name = r.name.as_deref().unwrap_or("tool");
+        let snippet: String = r.content.chars().take(240).collect();
+        match widget_kind(&r.tool_call_id).as_deref() {
+            Some("approval_diff") if r.is_error => {
+                lines.push("承知しました。この変更は行いません。".into())
+            }
+            Some("approval_diff") => {
+                lines.push("承認ありがとうございます。変更を反映しました。".into())
+            }
+            Some(_) if r.is_error => {
+                lines.push(format!("カードを表示できませんでした（{snippet}）。"))
+            }
+            Some(kind) => {
+                shown += 1;
+                waiting |= matches!(kind, "interactive_form" | "data_table" | "action_chips");
+            }
+            None if r.is_error => lines.push(format!("⚠️ `{name}` は失敗しました: {snippet}")),
+            None => lines.push(format!(
+                "**{name}** の結果:\n\n```\n{}\n```",
+                snippet.trim_end()
+            )),
+        }
+    }
+    if shown > 0 {
+        lines.insert(
+            0,
+            if waiting {
+                "上のカードから選んでください。回答をもとに続けます。".into()
+            } else {
+                "結果をカードにまとめました。".into()
+            },
+        );
+    }
+    lines.join("\n\n")
+}
+
 fn plan(req: &ChatRequest) -> Plan {
     let last = req.messages.last();
     if last.is_some_and(|m| m.role == Role::Tool) {
@@ -46,19 +139,7 @@ fn plan(req: &ChatRequest) -> Plan {
             .iter()
             .rposition(|m| m.role != Role::Tool)
             .map_or(0, |i| i + 1);
-        let mut text = String::from("Tool results:\n");
-        for msg in &req.messages[start..] {
-            for p in &msg.content {
-                if let ContentPart::ToolResult(r) = p {
-                    let snippet: String = r.content.chars().take(200).collect();
-                    let flag = if r.is_error { " (error)" } else { "" };
-                    text.push_str(&format!(
-                        "- {}{flag}: {snippet}\n",
-                        r.name.as_deref().unwrap_or("?")
-                    ));
-                }
-            }
-        }
+        let text = summarize_results(&req.messages[start.saturating_sub(1)..]);
         return Plan {
             thinking: None,
             text,
@@ -87,8 +168,22 @@ fn plan(req: &ChatRequest) -> Plan {
     if let Some(i) = lower.find("note ").filter(|_| has_tool("write_note")) {
         calls.push(("write_note".into(), json!({ "text": said[i + 5..].trim() })));
     }
+    // `widget:<type>` renders a sample widget; `skill:<name>` loads a skill.
+    for w in &words {
+        if let Some(kind) = w.strip_prefix("widget:")
+            && has_tool("render_widget")
+        {
+            calls.push(("render_widget".into(), sample_widget(kind)));
+        }
+        if let Some(name) = w.strip_prefix("skill:")
+            && has_tool("load_skill")
+        {
+            calls.push(("load_skill".into(), json!({ "name": name })));
+        }
+    }
     for t in &req.tools {
-        if said.contains(&t.name) && !calls.iter().any(|(n, _)| n == &t.name) {
+        let session_tool = t.name == "render_widget" || t.name == "load_skill";
+        if !session_tool && said.contains(&t.name) && !calls.iter().any(|(n, _)| n == &t.name) {
             calls.push((t.name.clone(), json!({ "text": said })));
         }
     }
@@ -100,7 +195,13 @@ fn plan(req: &ChatRequest) -> Plan {
         }
         t
     } else {
-        format!("Calling {} tool(s).", calls.len())
+        // Widgets speak for themselves; other tools get a short lead-in.
+        let tools = calls.iter().filter(|(n, _)| n != "render_widget").count();
+        if tools == 0 {
+            String::new()
+        } else {
+            "確認します。".to_string()
+        }
     };
     Plan {
         thinking: lower

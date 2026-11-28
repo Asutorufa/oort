@@ -530,6 +530,7 @@ async fn config_crud_and_reference_checks() {
         mcp_server_ids: vec!["m1".into()],
         builtin_tools: false,
         approval_policy: ApprovalPolicyKind::AlwaysAsk,
+        skill_ids: vec!["file:review".into()],
         created_at: 1,
         updated_at: 1,
     };
@@ -565,6 +566,95 @@ async fn config_crud_and_reference_checks() {
     ));
     assert!(matches!(
         s.update_preset(&preset).await,
+        Err(StoreError::NotFound(_))
+    ));
+}
+
+#[tokio::test]
+async fn oauth_tokens_upsert_keep_long_scopes_and_cascade() {
+    let s = SqliteSessionStore::in_memory().await.unwrap();
+    let server = McpServerRecord {
+        id: "m1".into(),
+        name: "remote".into(),
+        transport: McpTransportKind::StreamableHttp,
+        url: Some("http://x/mcp".into()),
+        command: None,
+        args: vec![],
+        env: Default::default(),
+        headers: Default::default(),
+        auth: McpAuth::OAuth {
+            config: Default::default(),
+        },
+        is_enabled: true,
+        created_at: 1,
+        updated_at: 1,
+    };
+    s.create_mcp_server(&server).await.unwrap();
+    assert!(s.get_oauth_token("m1").await.unwrap().is_none());
+
+    let long_scope = (0..700)
+        .map(|i| format!("scope:{i}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(long_scope.len() > 4096);
+    let mut t = OAuthTokenRecord {
+        server_id: "m1".into(),
+        issuer: "http://as".into(),
+        resource: "http://x/mcp".into(),
+        token_endpoint: "http://as/token".into(),
+        registration_endpoint: Some("http://as/register".into()),
+        client_id: "c1".into(),
+        client_secret: None,
+        client_source: OAuthClientSource::Dcr,
+        access_token: Some("at".into()),
+        refresh_token: Some("rt".into()),
+        expires_at: Some(123),
+        scopes: long_scope.clone(),
+        status: OAuthStatus::Connected,
+        updated_at: 1,
+    };
+    s.put_oauth_token(&t).await.unwrap();
+    assert_eq!(s.get_oauth_token("m1").await.unwrap().unwrap(), t);
+    t.access_token = Some("at2".into());
+    t.status = OAuthStatus::AuthRequired;
+    s.put_oauth_token(&t).await.unwrap();
+    let got = s.get_oauth_token("m1").await.unwrap().unwrap();
+    assert_eq!(got, t);
+    assert_eq!(got.scopes, long_scope, "never truncated");
+    // Refreshing tokens never touches the server record (it versions pooled connections).
+    assert_eq!(s.get_mcp_server("m1").await.unwrap().updated_at, 1);
+
+    s.delete_mcp_server("m1").await.unwrap();
+    assert!(s.get_oauth_token("m1").await.unwrap().is_none(), "cascades");
+}
+
+#[tokio::test]
+async fn skills_crud() {
+    let s = SqliteSessionStore::in_memory().await.unwrap();
+    let mut k = SkillRecord {
+        id: "k1".into(),
+        name: "code-review".into(),
+        description: "Review a diff".into(),
+        body: "# Steps\n1. read".into(),
+        allowed_tools: vec!["read_file".into()],
+        tags: vec!["dev".into()],
+        created_at: 1,
+        updated_at: 1,
+    };
+    s.create_skill(&k).await.unwrap();
+    let mut dup = k.clone();
+    dup.id = "k2".into();
+    assert!(matches!(
+        s.create_skill(&dup).await,
+        Err(StoreError::Conflict(_))
+    ));
+    k.body = "changed".into();
+    s.update_skill(&k).await.unwrap();
+    assert_eq!(s.get_skill("k1").await.unwrap(), k);
+    assert_eq!(s.list_skills().await.unwrap().len(), 1);
+    s.delete_skill("k1").await.unwrap();
+    assert!(matches!(
+        s.get_skill("k1").await,
         Err(StoreError::NotFound(_))
     ));
 }

@@ -9,9 +9,11 @@ pub mod config_api;
 pub mod hub;
 pub mod manager;
 pub mod mock_model;
+pub mod oauth;
 pub mod pool;
 pub mod registry;
 pub mod routes;
+pub mod session_tools;
 pub mod tools;
 
 pub use config::{ServerConfig, SessionConfig};

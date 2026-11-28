@@ -2,8 +2,9 @@
 
 use async_trait::async_trait;
 use oort_agent::{
-    ApprovalPolicyKind, ConfigStore, McpServerRecord, McpTransportKind, PresetRecord, ProviderKind,
-    ProviderRecord, StoreError,
+    ApprovalPolicyKind, ConfigStore, McpServerRecord, McpTransportKind, OAuthTokenRecord,
+    OAuthTokenStore, PresetRecord, ProviderKind, ProviderRecord, SkillRecord, SkillStore,
+    StoreError,
 };
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
@@ -53,6 +54,7 @@ fn preset_from_row(r: &SqliteRow) -> Result<PresetRecord, StoreError> {
         mcp_server_ids: from_json(r.get("mcp_server_ids_json"), "mcp_server_ids_json")?,
         builtin_tools: r.get("builtin_tools"),
         approval_policy: ApprovalPolicyKind::parse(r.get("approval_policy"))?,
+        skill_ids: from_json(r.get("skill_ids_json"), "skill_ids_json")?,
         created_at: r.get("created_at"),
         updated_at: r.get("updated_at"),
     })
@@ -264,8 +266,8 @@ impl ConfigStore for SqliteSessionStore {
     async fn create_preset(&self, p: &PresetRecord) -> Result<(), StoreError> {
         sqlx::query(
             "INSERT INTO presets (id, name, description, provider_id, model, system_prompt, \
-             mcp_server_ids_json, builtin_tools, approval_policy, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             mcp_server_ids_json, builtin_tools, approval_policy, skill_ids_json, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&p.id)
         .bind(&p.name)
@@ -276,6 +278,7 @@ impl ConfigStore for SqliteSessionStore {
         .bind(to_json(&p.mcp_server_ids))
         .bind(p.builtin_tools)
         .bind(p.approval_policy.as_str())
+        .bind(to_json(&p.skill_ids))
         .bind(p.created_at)
         .bind(p.updated_at)
         .execute(&self.pool)
@@ -288,7 +291,7 @@ impl ConfigStore for SqliteSessionStore {
         let done = sqlx::query(
             "UPDATE presets SET name = ?, description = ?, provider_id = ?, model = ?, \
              system_prompt = ?, mcp_server_ids_json = ?, builtin_tools = ?, approval_policy = ?, \
-             updated_at = ? WHERE id = ?",
+             skill_ids_json = ?, updated_at = ? WHERE id = ?",
         )
         .bind(&p.name)
         .bind(&p.description)
@@ -298,6 +301,7 @@ impl ConfigStore for SqliteSessionStore {
         .bind(to_json(&p.mcp_server_ids))
         .bind(p.builtin_tools)
         .bind(p.approval_policy.as_str())
+        .bind(to_json(&p.skill_ids))
         .bind(p.updated_at)
         .bind(&p.id)
         .execute(&self.pool)
@@ -308,5 +312,161 @@ impl ConfigStore for SqliteSessionStore {
 
     async fn delete_preset(&self, id: &str) -> Result<(), StoreError> {
         self.delete_row("presets", id).await
+    }
+}
+
+// ----- OAuth tokens --------------------------------------------------------------------------
+
+fn oauth_from_row(r: &SqliteRow) -> Result<OAuthTokenRecord, StoreError> {
+    let source: String = r.get("client_source");
+    let status: String = r.get("status");
+    Ok(OAuthTokenRecord {
+        server_id: r.get("server_id"),
+        issuer: r.get("issuer"),
+        resource: r.get("resource"),
+        token_endpoint: r.get("token_endpoint"),
+        registration_endpoint: r.get("registration_endpoint"),
+        client_id: r.get("client_id"),
+        client_secret: r.get("client_secret"),
+        client_source: from_json(format!("\"{source}\""), "client_source")?,
+        access_token: r.get("access_token"),
+        refresh_token: r.get("refresh_token"),
+        expires_at: r.get("expires_at"),
+        scopes: r.get("scopes"),
+        status: from_json(format!("\"{status}\""), "status")?,
+        updated_at: r.get("updated_at"),
+    })
+}
+
+fn enum_str<T: serde::Serialize>(v: &T) -> String {
+    to_json(v).trim_matches('"').to_string()
+}
+
+#[async_trait]
+impl OAuthTokenStore for SqliteSessionStore {
+    async fn get_oauth_token(
+        &self,
+        server_id: &str,
+    ) -> Result<Option<OAuthTokenRecord>, StoreError> {
+        sqlx::query("SELECT * FROM mcp_oauth_tokens WHERE server_id = ?")
+            .bind(server_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(backend)?
+            .as_ref()
+            .map(oauth_from_row)
+            .transpose()
+    }
+
+    async fn put_oauth_token(&self, t: &OAuthTokenRecord) -> Result<(), StoreError> {
+        sqlx::query(
+            "INSERT INTO mcp_oauth_tokens (server_id, issuer, resource, token_endpoint, \
+             registration_endpoint, client_id, client_secret, client_source, access_token, \
+             refresh_token, expires_at, scopes, status, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT (server_id) DO UPDATE SET issuer = excluded.issuer, \
+             resource = excluded.resource, token_endpoint = excluded.token_endpoint, \
+             registration_endpoint = excluded.registration_endpoint, client_id = excluded.client_id, \
+             client_secret = excluded.client_secret, client_source = excluded.client_source, \
+             access_token = excluded.access_token, refresh_token = excluded.refresh_token, \
+             expires_at = excluded.expires_at, scopes = excluded.scopes, status = excluded.status, \
+             updated_at = excluded.updated_at",
+        )
+        .bind(&t.server_id)
+        .bind(&t.issuer)
+        .bind(&t.resource)
+        .bind(&t.token_endpoint)
+        .bind(&t.registration_endpoint)
+        .bind(&t.client_id)
+        .bind(&t.client_secret)
+        .bind(enum_str(&t.client_source))
+        .bind(&t.access_token)
+        .bind(&t.refresh_token)
+        .bind(t.expires_at)
+        .bind(&t.scopes)
+        .bind(enum_str(&t.status))
+        .bind(t.updated_at)
+        .execute(&self.pool)
+        .await
+        .map_err(classify)?;
+        Ok(())
+    }
+
+    async fn delete_oauth_token(&self, server_id: &str) -> Result<(), StoreError> {
+        sqlx::query("DELETE FROM mcp_oauth_tokens WHERE server_id = ?")
+            .bind(server_id)
+            .execute(&self.pool)
+            .await
+            .map_err(classify)?;
+        Ok(())
+    }
+}
+
+// ----- skills --------------------------------------------------------------------------------
+
+fn skill_from_row(r: &SqliteRow) -> Result<SkillRecord, StoreError> {
+    Ok(SkillRecord {
+        id: r.get("id"),
+        name: r.get("name"),
+        description: r.get("description"),
+        body: r.get("body"),
+        allowed_tools: from_json(r.get("allowed_tools_json"), "allowed_tools_json")?,
+        tags: from_json(r.get("tags_json"), "tags_json")?,
+        created_at: r.get("created_at"),
+        updated_at: r.get("updated_at"),
+    })
+}
+
+#[async_trait]
+impl SkillStore for SqliteSessionStore {
+    async fn list_skills(&self) -> Result<Vec<SkillRecord>, StoreError> {
+        self.fetch_all("SELECT * FROM skills ORDER BY name", skill_from_row)
+            .await
+    }
+
+    async fn get_skill(&self, id: &str) -> Result<SkillRecord, StoreError> {
+        self.fetch_one("SELECT * FROM skills WHERE id = ?", id, skill_from_row)
+            .await
+    }
+
+    async fn create_skill(&self, k: &SkillRecord) -> Result<(), StoreError> {
+        sqlx::query(
+            "INSERT INTO skills (id, name, description, body, allowed_tools_json, tags_json, \
+             created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&k.id)
+        .bind(&k.name)
+        .bind(&k.description)
+        .bind(&k.body)
+        .bind(to_json(&k.allowed_tools))
+        .bind(to_json(&k.tags))
+        .bind(k.created_at)
+        .bind(k.updated_at)
+        .execute(&self.pool)
+        .await
+        .map_err(classify)?;
+        Ok(())
+    }
+
+    async fn update_skill(&self, k: &SkillRecord) -> Result<(), StoreError> {
+        let done = sqlx::query(
+            "UPDATE skills SET name = ?, description = ?, body = ?, allowed_tools_json = ?, \
+             tags_json = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(&k.name)
+        .bind(&k.description)
+        .bind(&k.body)
+        .bind(to_json(&k.allowed_tools))
+        .bind(to_json(&k.tags))
+        .bind(k.updated_at)
+        .bind(&k.id)
+        .execute(&self.pool)
+        .await
+        .map_err(classify)?;
+        found(done.rows_affected(), &k.id)
+    }
+
+    async fn delete_skill(&self, id: &str) -> Result<(), StoreError> {
+        self.delete_row("skills", id).await
     }
 }

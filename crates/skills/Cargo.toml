@@ -1,0 +1,18 @@
+[package]
+name = "oort-skills"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "SKILL.md skills for oort: file and database sources behind one registry"
+
+[dependencies]
+oort-agent = { path = "../agent" }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

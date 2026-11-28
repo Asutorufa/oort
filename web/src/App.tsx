@@ -1,38 +1,27 @@
-import { href, useHashRoute, type View } from "./hooks/useHashRoute";
+import { sessions } from "./api";
+import { useHashRoute } from "./hooks/useHashRoute";
+import { useResource } from "./hooks/useResource";
+import { Sidebar } from "./layout/Sidebar";
 import { ChatView } from "./views/ChatView";
 import { McpView } from "./views/McpView";
 import { PresetsView } from "./views/PresetsView";
 import { ProvidersView } from "./views/ProvidersView";
+import { SkillsView } from "./views/SkillsView";
 
-const NAV: { view: View; label: string; icon: string }[] = [
-  { view: "chat", label: "Chat", icon: "💬" },
-  { view: "providers", label: "Providers", icon: "🔌" },
-  { view: "mcp", label: "MCP", icon: "🧰" },
-  { view: "presets", label: "Presets", icon: "📋" },
-];
-
-/** Workbench shell: a navigation rail and one view; the route lives in the URL hash. */
+/** Oort shell: one collapsible sidebar and the current view; the route lives in the URL hash. */
 export function App() {
   const { view, id } = useHashRoute();
+  const list = useResource(sessions.list, 3000);
   return (
     <div className="app">
-      <nav className="rail">
-        <div className="logo" title="oort workbench">
-          oort
-        </div>
-        {NAV.map((n) => (
-          <a key={n.view} href={href(n.view)} className={view === n.view ? "active" : ""} title={n.label}>
-            <span className="icon">{n.icon}</span>
-            <span className="label">{n.label}</span>
-          </a>
-        ))}
-      </nav>
-      <div className="view">
-        {view === "chat" && <ChatView selected={id} />}
-        {view === "providers" && <ProvidersView selected={id} />}
+      <Sidebar view={view} selected={view === "chat" ? id : null} items={list.data ?? []} onChanged={list.reload} />
+      <main className="view">
+        {view === "chat" && <ChatView selected={id} onListChanged={list.reload} />}
         {view === "mcp" && <McpView selected={id} />}
+        {view === "skills" && <SkillsView selected={id} />}
+        {view === "models" && <ProvidersView selected={id} />}
         {view === "presets" && <PresetsView selected={id} />}
-      </div>
+      </main>
     </div>
   );
 }

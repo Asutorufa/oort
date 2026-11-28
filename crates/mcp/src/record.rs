@@ -10,7 +10,7 @@ use crate::client::{ClientOptions, McpClient, McpError};
 use crate::protocol::{InitializeResult, McpTool};
 use crate::transport::{
     HttpServerConfig, McpTransport, StaticToken, StdioServerConfig, StdioTransport,
-    StreamableHttpTransport,
+    StreamableHttpTransport, TokenProvider,
 };
 
 fn config_err(e: impl std::fmt::Display) -> McpError {
@@ -18,7 +18,11 @@ fn config_err(e: impl std::fmt::Display) -> McpError {
 }
 
 /// Builds the transport, resolving `env:` references in env values, headers and tokens.
-pub fn transport_for(rec: &McpServerRecord) -> Result<Arc<dyn McpTransport>, McpError> {
+/// `oauth` supplies tokens for servers whose auth is `oauth` (see [`crate::oauth`]).
+pub fn transport_for(
+    rec: &McpServerRecord,
+    oauth: Option<Arc<dyn TokenProvider>>,
+) -> Result<Arc<dyn McpTransport>, McpError> {
     Ok(match rec.transport {
         McpTransportKind::Stdio => {
             let command = rec
@@ -47,9 +51,9 @@ pub fn transport_for(rec: &McpServerRecord) -> Result<Arc<dyn McpTransport>, Mcp
                 McpAuth::Bearer { token } => {
                     Some(Arc::new(StaticToken(secret::resolve(token).map_err(config_err)?)) as _)
                 }
-                McpAuth::OAuth { .. } => {
-                    return Err(config_err("OAuth authentication is not implemented yet"));
-                }
+                McpAuth::OAuth { .. } => Some(oauth.ok_or_else(|| {
+                    config_err("this server uses OAuth but no token provider was given")
+                })?),
             };
             Arc::new(StreamableHttpTransport::new(HttpServerConfig {
                 url: url.to_string(),
@@ -64,8 +68,9 @@ pub fn transport_for(rec: &McpServerRecord) -> Result<Arc<dyn McpTransport>, Mcp
 pub async fn connect_record(
     rec: &McpServerRecord,
     options: ClientOptions,
+    oauth: Option<Arc<dyn TokenProvider>>,
 ) -> Result<McpClient, McpError> {
-    let transport = transport_for(rec)?;
+    let transport = transport_for(rec, oauth)?;
     McpClient::connect(&rec.name, transport, options).await
 }
 
@@ -78,9 +83,13 @@ pub struct Probe {
 }
 
 /// Connects, runs `initialize` + `tools/list` and disconnects.
-pub async fn probe(rec: &McpServerRecord, options: ClientOptions) -> Result<Probe, McpError> {
+pub async fn probe(
+    rec: &McpServerRecord,
+    options: ClientOptions,
+    oauth: Option<Arc<dyn TokenProvider>>,
+) -> Result<Probe, McpError> {
     let started = Instant::now();
-    let client = connect_record(rec, options).await?;
+    let client = connect_record(rec, options, oauth).await?;
     let tools = client.list_tools().await;
     let latency_ms = started.elapsed().as_millis() as u64;
     let server = client.server_info().clone();

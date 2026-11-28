@@ -15,16 +15,21 @@ path = "src/bin/oort-mcp-mock.rs"
 oort-agent = { path = "../agent" }
 oort-llm = { path = "../llm" }
 async-trait = { workspace = true }
+base64 = "0.22"
 bytes = { workspace = true }
 futures-util = { workspace = true }
-reqwest = { workspace = true }
+getrandom = "0.3"
+reqwest = { workspace = true, features = ["form"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = "0.10"
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["process", "io-util", "io-std", "sync", "time", "macros", "rt", "rt-multi-thread"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
+axum = { workspace = true }
 mockito = { workspace = true }
 oort-agent = { path = "../agent", features = ["testing"] }

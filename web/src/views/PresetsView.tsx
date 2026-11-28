@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { errorText, mcpServers, presets, providers, sessions } from "../api";
+import { errorText, mcpServers, presets, providers, sessions, skills } from "../api";
 import { APPROVAL_POLICIES, type ApprovalPolicy, type Preset, type PresetInput } from "../api/types";
 import { Badge, Empty, ErrorBar, Modal } from "../components/common";
 import { Field, Toggle } from "../components/forms";
@@ -17,6 +17,7 @@ const blank: Form = {
   mcp_server_ids: [],
   builtin_tools: true,
   approval_policy: "auto_readonly",
+  skill_ids: [],
 };
 
 const toForm = (p: Preset): Form => ({
@@ -28,12 +29,14 @@ const toForm = (p: Preset): Form => ({
   mcp_server_ids: p.mcp_server_ids,
   builtin_tools: p.builtin_tools,
   approval_policy: p.approval_policy,
+  skill_ids: p.skill_ids ?? [],
 });
 
 export function PresetsView({ selected }: { selected: string | null }) {
   const list = useResource(presets.list);
   const providerList = useResource(providers.list);
   const serverList = useResource(mcpServers.list);
+  const skillList = useResource(skills.list);
   const current = list.data?.find((p) => p.id === selected) ?? null;
   const isNew = selected === "new";
   const [form, setForm] = useState<Form>(blank);
@@ -184,6 +187,23 @@ export function PresetsView({ selected }: { selected: string | null }) {
                   />
                 ))}
                 {serverList.data?.length === 0 && <span className="muted">none configured</span>}
+              </div>
+            </Field>
+            <Field label="Skills" hint="名前と説明だけが会話の最初に固定され、本文は必要なときに読み込まれます">
+              <div className="checks">
+                {(skillList.data ?? []).map((k) => (
+                  <Toggle
+                    key={k.id}
+                    checked={form.skill_ids.includes(k.id)}
+                    onChange={(on) => set("skill_ids", on ? [...form.skill_ids, k.id] : form.skill_ids.filter((x) => x !== k.id))}
+                    label={
+                      <span title={k.description}>
+                        ✦ <span className="mono">{k.name}</span>
+                      </span>
+                    }
+                  />
+                ))}
+                {skillList.data?.length === 0 && <span className="muted">Skill がありません</span>}
               </div>
             </Field>
             <div className="grid2">

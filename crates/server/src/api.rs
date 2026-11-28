@@ -39,6 +39,12 @@ pub struct CreateSessionRequest {
     pub max_context_tokens: Option<u64>,
     #[serde(default)]
     pub max_tokens: Option<u32>,
+    /// Skill ids (DB ids or `file:<name>`) whose index is frozen into the session.
+    #[serde(default)]
+    pub skill_ids: Option<Vec<String>>,
+    /// Offer `render_widget` (default true).
+    #[serde(default)]
+    pub widgets: Option<bool>,
     /// Optional first user message (starts the first turn immediately).
     #[serde(default)]
     pub message: Option<String>,
@@ -290,6 +296,12 @@ pub enum Envelope {
         seq: u64,
         error: Option<String>,
     },
+    /// A `render_widget` call was committed (`widget` is its arguments; also in the history).
+    Widget {
+        seq: u64,
+        call_id: String,
+        widget: serde_json::Value,
+    },
     /// Title or approval policy changed.
     SessionUpdated {
         seq: u64,
@@ -312,6 +324,7 @@ impl Envelope {
             Self::Hello { seq, .. }
             | Self::Agent { seq, .. }
             | Self::LoopExited { seq, .. }
+            | Self::Widget { seq, .. }
             | Self::SessionUpdated { seq, .. }
             | Self::Deleted { seq } => Some(*seq),
             Self::Lagged { .. } => None,

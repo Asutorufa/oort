@@ -31,6 +31,12 @@ pub struct DynamicApproval(pub Arc<ApprovalHandle>);
 #[async_trait]
 impl LoopHook for DynamicApproval {
     async fn before_tool(&self, _s: &AgentState, call: &ToolCall, read_only: bool) -> ToolDecision {
+        // An approval card exists to be decided by a human, whatever the policy.
+        if crate::session_tools::is_approval_widget(&call.name, &call.arguments) {
+            return ToolDecision::NeedHumanApproval {
+                reason: "the proposed change needs your approval".into(),
+            };
+        }
         match self.0.get() {
             ApprovalPolicyKind::AutoAll => ToolDecision::Approve,
             ApprovalPolicyKind::AutoReadonly if read_only => ToolDecision::Approve,

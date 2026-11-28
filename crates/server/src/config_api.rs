@@ -163,6 +163,9 @@ pub enum AuthView {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct McpServerView {
+    /// OAuth connection state (set by the handlers for `oauth` servers).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oauth: Option<crate::oauth::OAuthView>,
     pub id: String,
     pub name: String,
     pub transport: McpTransportKind,
@@ -210,6 +213,7 @@ impl From<&McpServerRecord> for McpServerView {
                 },
             },
             is_enabled: m.is_enabled,
+            oauth: None,
             created_at: m.created_at,
             updated_at: m.updated_at,
         }
@@ -259,7 +263,24 @@ fn merge_auth(cur: &McpAuth, incoming: Option<AuthInput>) -> Result<McpAuth, Api
                     .ok_or_else(|| ApiError::BadRequest("bearer auth needs a token".into()))?,
             }
         }
-        Some(AuthInput::OAuth { config }) => McpAuth::OAuth { config },
+        Some(AuthInput::OAuth { config }) => {
+            // Sensitive settings (client_secret) arrive masked: keep the stored value.
+            let current = match cur {
+                McpAuth::OAuth { config } => config.clone(),
+                _ => BTreeMap::new(),
+            };
+            let config = config
+                .into_iter()
+                .filter_map(|(k, v)| match v {
+                    Value::String(s) if secret::is_sensitive_name(&k) => {
+                        let cur = current.get(&k).and_then(Value::as_str);
+                        secret::merge(cur, Some(&s)).map(|m| (k, Value::String(m)))
+                    }
+                    other => Some((k, other)),
+                })
+                .collect();
+            McpAuth::OAuth { config }
+        }
     })
 }
 
@@ -401,6 +422,7 @@ pub struct PresetInput {
     pub mcp_server_ids: Option<Vec<String>>,
     pub builtin_tools: Option<bool>,
     pub approval_policy: Option<ApprovalPolicyKind>,
+    pub skill_ids: Option<Vec<String>>,
 }
 
 impl PresetInput {
@@ -416,6 +438,7 @@ impl PresetInput {
             mcp_server_ids: vec![],
             builtin_tools: true,
             approval_policy: ApprovalPolicyKind::default(),
+            skill_ids: vec![],
             created_at: now,
             updated_at: now,
         };
@@ -451,6 +474,7 @@ impl PresetInput {
                 .unwrap_or_else(|| cur.mcp_server_ids.clone()),
             builtin_tools: self.builtin_tools.unwrap_or(cur.builtin_tools),
             approval_policy: self.approval_policy.unwrap_or(cur.approval_policy),
+            skill_ids: self.skill_ids.unwrap_or_else(|| cur.skill_ids.clone()),
             created_at: cur.created_at,
             updated_at: now_ms().max(cur.updated_at + 1),
         })
@@ -571,5 +595,95 @@ mod tests {
         ] {
             assert!(bad.create().is_err());
         }
+    }
+}
+
+// ----- skills --------------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillView {
+    #[serde(flatten)]
+    pub skill: oort_skills::Skill,
+    pub editable: bool,
+}
+
+impl From<oort_skills::Skill> for SkillView {
+    fn from(skill: oort_skills::Skill) -> Self {
+        Self {
+            editable: skill.is_editable(),
+            skill,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct SkillInput {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub body: Option<String>,
+    pub allowed_tools: Option<Vec<String>>,
+    pub tags: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillsReload {
+    pub file_skills: usize,
+    pub warnings: Vec<String>,
+    pub dirs: Vec<String>,
+}
+
+impl SkillInput {
+    pub fn create(self) -> Result<oort_agent::SkillRecord, ApiError> {
+        let now = now_ms();
+        let cur = oort_agent::SkillRecord {
+            id: new_id(),
+            name: String::new(),
+            description: String::new(),
+            body: String::new(),
+            allowed_tools: vec![],
+            tags: vec![],
+            created_at: now,
+            updated_at: now,
+        };
+        if self.name.is_none() || self.description.is_none() {
+            return Err(ApiError::BadRequest(
+                "`name` and `description` are required".into(),
+            ));
+        }
+        let mut rec = self.apply(&cur)?;
+        rec.updated_at = now;
+        Ok(rec)
+    }
+
+    pub fn apply(self, cur: &oort_agent::SkillRecord) -> Result<oort_agent::SkillRecord, ApiError> {
+        let rec = oort_agent::SkillRecord {
+            id: cur.id.clone(),
+            name: self
+                .name
+                .map(|n| n.trim().to_string())
+                .unwrap_or_else(|| cur.name.clone()),
+            description: self
+                .description
+                .map(|d| d.trim().to_string())
+                .unwrap_or_else(|| cur.description.clone()),
+            body: self.body.unwrap_or_else(|| cur.body.clone()),
+            allowed_tools: self
+                .allowed_tools
+                .unwrap_or_else(|| cur.allowed_tools.clone()),
+            tags: self.tags.unwrap_or_else(|| cur.tags.clone()),
+            created_at: cur.created_at,
+            updated_at: now_ms().max(cur.updated_at + 1),
+        };
+        if !oort_skills::valid_name(&rec.name) {
+            return Err(ApiError::BadRequest(
+                "`name` must be 1-64 characters of [a-z0-9-] (it is also the /command)".into(),
+            ));
+        }
+        if rec.description.is_empty() {
+            return Err(ApiError::BadRequest(
+                "`description` must not be empty".into(),
+            ));
+        }
+        Ok(rec)
     }
 }

@@ -8,8 +8,9 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use oort_agent::McpServerRecord;
-use oort_mcp::{ClientOptions, McpError, McpToolExecutor, connect_record};
+use oort_agent::{McpAuth, McpServerRecord, OAuthTokenStore};
+use oort_mcp::oauth::OAuthTokenProvider;
+use oort_mcp::{ClientOptions, McpError, McpToolExecutor, TokenProvider, connect_record};
 use tokio::sync::Mutex;
 
 struct Conn {
@@ -20,13 +21,26 @@ struct Conn {
 pub struct McpPool {
     options: ClientOptions,
     conns: Mutex<BTreeMap<String, Conn>>,
+    oauth: Option<Arc<dyn OAuthTokenStore>>,
 }
 
 impl McpPool {
-    pub fn new(options: ClientOptions) -> Self {
+    pub fn new(options: ClientOptions, oauth: Option<Arc<dyn OAuthTokenStore>>) -> Self {
         Self {
             options,
             conns: Mutex::default(),
+            oauth,
+        }
+    }
+
+    /// Token provider for servers whose auth is OAuth (tokens from the token store).
+    pub fn token_provider(&self, rec: &McpServerRecord) -> Option<Arc<dyn TokenProvider>> {
+        match (&rec.auth, &self.oauth) {
+            (McpAuth::OAuth { .. }, Some(store)) => Some(Arc::new(OAuthTokenProvider::new(
+                rec.id.clone(),
+                store.clone(),
+            ))),
+            _ => None,
         }
     }
 
@@ -42,7 +56,8 @@ impl McpPool {
         {
             return Ok(c.executor.clone());
         }
-        let client = Arc::new(connect_record(rec, self.options.clone()).await?);
+        let client =
+            Arc::new(connect_record(rec, self.options.clone(), self.token_provider(rec)).await?);
         let executor = Arc::new(McpToolExecutor::new(client).await?);
         conns.insert(
             rec.id.clone(),

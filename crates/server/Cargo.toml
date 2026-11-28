@@ -18,9 +18,11 @@ oort-agent = { path = "../agent" }
 oort-llm = { path = "../llm" }
 oort-mcp = { path = "../mcp" }
 oort-storage = { path = "../storage" }
+oort-skills = { path = "../skills" }
 async-trait = { workspace = true }
 axum = { workspace = true }
 futures-util = { workspace = true }
+reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -34,3 +36,4 @@ uuid = { workspace = true }
 [dev-dependencies]
 reqwest = { workspace = true }
 sqlx = { workspace = true }
+url = { workspace = true }

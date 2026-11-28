@@ -21,21 +21,38 @@ pub struct ServerConfig {
     pub workspace: PathBuf,
     /// `OORT_WEB_DIST`: serve the built frontend from this directory.
     pub web_dist: Option<PathBuf>,
+    /// `OORT_PUBLIC_URL` (default `http://{OORT_ADDR}`): base URL browsers use to reach the
+    /// server; the OAuth redirect URI is `{public_url}/api/mcp/oauth/callback`.
+    pub public_url: String,
+    /// `OORT_SKILLS_DIRS` (`:`-separated; default `~/.oort/skills` and `{workspace}/skills`).
+    pub skill_dirs: Vec<PathBuf>,
 }
 
 impl ServerConfig {
     pub fn from_env() -> Result<Self, String> {
         let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+        let addr: SocketAddr = var("OORT_ADDR")
+            .unwrap_or_else(|| "127.0.0.1:3000".into())
+            .parse()
+            .map_err(|e| format!("OORT_ADDR: {e}"))?;
+        let workspace: PathBuf = var("OORT_WORKSPACE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| ".".into());
+        let skill_dirs = match var("OORT_SKILLS_DIRS") {
+            Some(v) => std::env::split_paths(&v).collect(),
+            None => var("HOME")
+                .map(|h| PathBuf::from(h).join(".oort/skills"))
+                .into_iter()
+                .chain([workspace.join("skills")])
+                .collect(),
+        };
         Ok(Self {
-            addr: var("OORT_ADDR")
-                .unwrap_or_else(|| "127.0.0.1:3000".into())
-                .parse()
-                .map_err(|e| format!("OORT_ADDR: {e}"))?,
+            public_url: var("OORT_PUBLIC_URL").unwrap_or_else(|| format!("http://{addr}")),
+            skill_dirs,
+            addr,
             db_url: var("OORT_DB").unwrap_or_else(|| "sqlite://oort.db".into()),
             mcp_config: var("OORT_MCP_CONFIG").map(PathBuf::from),
-            workspace: var("OORT_WORKSPACE")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| ".".into()),
+            workspace,
             web_dist: var("OORT_WEB_DIST").map(PathBuf::from),
         })
     }
@@ -47,6 +64,13 @@ impl ServerConfig {
 pub struct McpBinding {
     pub id: String,
     pub prefix: String,
+}
+
+/// A skill attached to a session: its id and the name it was indexed under.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillBinding {
+    pub id: String,
+    pub name: String,
 }
 
 fn yes() -> bool {
@@ -72,6 +96,12 @@ pub struct SessionConfig {
     pub builtin_tools: bool,
     #[serde(default)]
     pub mcp_servers: Vec<McpBinding>,
+    /// `render_widget` is available (sessions created before widgets have none).
+    #[serde(default)]
+    pub widgets: bool,
+    /// Skills whose index is frozen into the system prompt (`load_skill` serves their bodies).
+    #[serde(default)]
+    pub skills: Vec<SkillBinding>,
     /// Legacy approval mode (`mutating` / `never`); superseded by `sessions.approval_policy`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval: Option<String>,

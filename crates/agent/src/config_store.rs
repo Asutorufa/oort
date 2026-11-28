@@ -158,6 +158,9 @@ pub struct PresetRecord {
     /// Include the server's built-in local tools.
     pub builtin_tools: bool,
     pub approval_policy: ApprovalPolicyKind,
+    /// Skills whose index is frozen into new sessions (DB ids or `file:<name>`).
+    #[serde(default)]
+    pub skill_ids: Vec<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -184,4 +187,83 @@ pub trait ConfigStore: Send + Sync {
     async fn create_preset(&self, rec: &PresetRecord) -> Result<(), StoreError>;
     async fn update_preset(&self, rec: &PresetRecord) -> Result<(), StoreError>;
     async fn delete_preset(&self, id: &str) -> Result<(), StoreError>;
+}
+
+// ----- MCP OAuth -----------------------------------------------------------------------------
+
+/// How the OAuth client was obtained.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OAuthClientSource {
+    /// Dynamic Client Registration (RFC 7591).
+    Dcr,
+    /// `client_id` / `client_secret` configured on the server record.
+    Manual,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OAuthStatus {
+    Connected,
+    /// Refresh failed or no token yet: the user must authorize again.
+    AuthRequired,
+}
+
+/// OAuth state of one MCP server. Kept apart from [`McpServerRecord`] so that token refreshes
+/// do not change the server record (whose `updated_at` versions pooled connections).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OAuthTokenRecord {
+    pub server_id: String,
+    pub issuer: String,
+    /// Canonical resource URI (RFC 8707) the tokens are bound to.
+    pub resource: String,
+    pub token_endpoint: String,
+    pub registration_endpoint: Option<String>,
+    pub client_id: String,
+    pub client_secret: Option<String>,
+    pub client_source: OAuthClientSource,
+    pub access_token: Option<String>,
+    pub refresh_token: Option<String>,
+    /// Unix milliseconds.
+    pub expires_at: Option<i64>,
+    /// Space-separated, stored in full (never truncated).
+    pub scopes: String,
+    pub status: OAuthStatus,
+    pub updated_at: i64,
+}
+
+#[async_trait]
+pub trait OAuthTokenStore: Send + Sync {
+    async fn get_oauth_token(
+        &self,
+        server_id: &str,
+    ) -> Result<Option<OAuthTokenRecord>, StoreError>;
+    async fn put_oauth_token(&self, rec: &OAuthTokenRecord) -> Result<(), StoreError>;
+    async fn delete_oauth_token(&self, server_id: &str) -> Result<(), StoreError>;
+}
+
+// ----- skills --------------------------------------------------------------------------------
+
+/// A skill stored in the database (file-based skills live in `SKILL.md` files).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillRecord {
+    pub id: String,
+    /// `[a-z0-9-]+`, unique; also the `/name` command.
+    pub name: String,
+    pub description: String,
+    /// Markdown instructions, loaded on demand.
+    pub body: String,
+    pub allowed_tools: Vec<String>,
+    pub tags: Vec<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[async_trait]
+pub trait SkillStore: Send + Sync {
+    async fn list_skills(&self) -> Result<Vec<SkillRecord>, StoreError>;
+    async fn get_skill(&self, id: &str) -> Result<SkillRecord, StoreError>;
+    async fn create_skill(&self, rec: &SkillRecord) -> Result<(), StoreError>;
+    async fn update_skill(&self, rec: &SkillRecord) -> Result<(), StoreError>;
+    async fn delete_skill(&self, id: &str) -> Result<(), StoreError>;
 }
