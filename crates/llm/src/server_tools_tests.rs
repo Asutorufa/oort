@@ -369,3 +369,54 @@ async fn gemini_stream_keeps_latest_thought_signature_and_sanitizes_concatenated
         "Q0NDQw=="
     );
 }
+
+#[tokio::test]
+async fn gemini_strict_per_part_server_tool_replay_preserves_each_signature() {
+    let mut server = Server::new_async().await;
+    let sse = concat!(
+        "data: {\"responseId\":\"g2\",\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"searching...\",\"thought\":true,\"thoughtSignature\":\"U0lHMTo=\"}]}}]}\n\n",
+        "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"toolCall\":{\"id\":\"st_1\",\"toolType\":\"GOOGLE_SEARCH_WEB\",\"args\":{\"queries\":[\"gold price\"]}},\"thoughtSignature\":\"U0lHMjo=\"}]}}]}\n\n",
+        "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"toolResponse\":{\"id\":\"st_1\",\"toolType\":\"GOOGLE_SEARCH_WEB\",\"response\":{\"results\":[{\"title\":\"Gold\"}]}}}]}}]}\n\n",
+        "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Gold is $3665.\",\"thoughtSignature\":\"U0lHMzo=\"}]},\"finishReason\":\"STOP\"}]}\n\n"
+    );
+    let m = server
+        .mock("POST", "/models/gemini-2.5-flash:streamGenerateContent")
+        .match_query(mockito::Matcher::UrlEncoded("alt".into(), "sse".into()))
+        .with_status(200)
+        .with_header("content-type", "text/event-stream")
+        .with_body(sse)
+        .create_async()
+        .await;
+
+    let client = GeminiClient::new("gk", "gemini-2.5-flash").with_base_url(server.url());
+    let stream = client
+        .chat_stream(ChatRequest::new(vec![Message::user("gold price?")]))
+        .await
+        .unwrap();
+    let resp = crate::client::collect_stream(stream).await.unwrap();
+    m.assert_async().await;
+
+    // Server tool call signature stayed on the server_tool_block, NOT overwriting thinking_signature.
+    assert_eq!(resp.thinking_signature.as_deref(), Some("U0lHMzo="));
+    assert_eq!(resp.server_tool_blocks.len(), 2);
+
+    // Replay into next Gemini turn: toolCall (with its own U0lHMjo= signature) and toolResponse
+    // must be replayed verbatim as Gemini parts.
+    let assistant_msg = resp.into_assistant_message();
+    let next_req = ChatRequest::new(vec![
+        Message::user("gold price?"),
+        assistant_msg,
+        Message::user("chart it"),
+    ]);
+    let (_, body) = client.build_request_json(&next_req).unwrap();
+    let model_parts = body["contents"][1]["parts"].as_array().unwrap();
+    assert!(model_parts.iter().any(|p| {
+        p.get("toolCall").is_some()
+            && p.get("thoughtSignature").and_then(serde_json::Value::as_str) == Some("U0lHMjo=")
+    }));
+    assert!(model_parts.iter().any(|p| p.get("toolResponse").is_some()));
+    assert!(model_parts.iter().any(|p| {
+        p.get("thought").and_then(serde_json::Value::as_bool) == Some(true)
+            && p.get("thoughtSignature").and_then(serde_json::Value::as_str) == Some("U0lHMzo=")
+    }));
+}

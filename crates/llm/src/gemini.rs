@@ -416,6 +416,10 @@ struct GeminiPart {
     executable_code: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     code_execution_result: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_call: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_response: Option<Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -712,6 +716,33 @@ fn sanitize_gemini_signature(sig: Option<&str>) -> Option<String> {
     Some(s.to_string())
 }
 
+fn is_gemini_replayable_part(v: &Value) -> bool {
+    v.as_object().is_some_and(|obj| {
+        obj.contains_key("toolCall")
+            || obj.contains_key("toolResponse")
+            || obj.contains_key("executableCode")
+            || obj.contains_key("codeExecutionResult")
+    })
+}
+
+fn summarize_gemini_tool_response(res: &Value) -> String {
+    if let Some(s) = res.get("response").and_then(Value::as_str) {
+        return s.chars().take(160).collect();
+    }
+    if let Some(obj) = res.get("response").and_then(Value::as_object) {
+        if let Some(arr) = obj.get("results").and_then(Value::as_array) {
+            return format!("{} results", arr.len());
+        }
+        if let Some(s) = obj.get("output").and_then(Value::as_str) {
+            return s.chars().take(160).collect();
+        }
+        if let Some(s) = obj.get("content").and_then(Value::as_str) {
+            return s.chars().take(160).collect();
+        }
+    }
+    "completed".to_string()
+}
+
 fn encode_gemini_message(
     msg: &Message,
     call_names: &BTreeMap<String, String>,
@@ -845,6 +876,25 @@ fn encode_gemini_message(
                     ..Default::default()
                 });
             }
+            ContentPart::ServerToolUse {
+                raw_provider_payload: Some(raw),
+                ..
+            }
+            | ContentPart::ServerToolResult {
+                raw_provider_payload: Some(raw),
+                ..
+            } => {
+                // Replay Gemini server-side parts (`toolCall`, `toolResponse`,
+                // `executableCode`, `codeExecutionResult`) verbatim with their original
+                // `thoughtSignature`; cross-provider payloads do not match and are skipped.
+                if is_gemini_replayable_part(raw)
+                    && let Ok(mut gp) = serde_json::from_value::<GeminiPart>(raw.clone())
+                {
+                    gp.thought_signature =
+                        sanitize_gemini_signature(gp.thought_signature.as_deref());
+                    parts.push(gp);
+                }
+            }
             ContentPart::ServerToolUse { .. } | ContentPart::ServerToolResult { .. } => {}
         }
     }
@@ -950,39 +1000,24 @@ fn parse_gemini_response(resp: GeminiGenerateContentResponse) -> Result<ChatResp
     let mut server_tool_blocks = Vec::new();
     let mut citations = Vec::new();
 
-    if let Some(gm) = &candidate.grounding_metadata {
-        if let Some(queries) = gm.get("webSearchQueries").and_then(Value::as_array)
-            && !queries.is_empty()
-        {
-            server_tool_blocks.push(ContentPart::ServerToolUse {
-                id: "google_search_0".to_string(),
-                name: "google_search".to_string(),
-                action: Some("search".to_string()),
-                input: json!({ "queries": queries }),
-                raw_provider_payload: Some(gm.clone()),
-            });
-        }
-        citations = parse_gemini_grounding_citations(gm);
-        if !citations.is_empty() {
-            server_tool_blocks.push(ContentPart::ServerToolResult {
-                tool_use_id: "google_search_0".to_string(),
-                name: "google_search".to_string(),
-                summary: format!("{} sources", citations.len()),
-                is_error: false,
-                raw_provider_payload: None,
-            });
-        }
-    }
-    if let Some(uc) = &candidate.url_context_metadata {
-        server_tool_blocks.extend(parse_gemini_url_context_blocks(uc));
-    }
-
+    let mut saw_server_tool_parts = false;
     if let Some(cand_content) = candidate.content {
         for (pidx, part) in cand_content.parts.into_iter().enumerate() {
-            // A signature on a function call belongs to that call; others to the thinking.
-            // Gemini signatures are whole values per part: never concatenate them.
+            let is_server_part = part.tool_call.is_some()
+                || part.tool_response.is_some()
+                || part.executable_code.is_some()
+                || part.code_execution_result.is_some();
+            let raw_part = if is_server_part {
+                serde_json::to_value(&part).ok()
+            } else {
+                None
+            };
+
+            // A signature on a function/server-tool call belongs to that part;
+            // others belong to the thinking/text turn. Never concatenate signatures.
             let sig = part.thought_signature.filter(|s| !s.is_empty());
             if part.function_call.is_none()
+                && !is_server_part
                 && let Some(sig) = &sig
             {
                 thinking_signature = Some(sig.clone());
@@ -996,16 +1031,60 @@ fn parse_gemini_response(resp: GeminiGenerateContentResponse) -> Result<ChatResp
                     content.push_str(&text);
                 }
             }
+            if let Some(tc) = part.tool_call {
+                saw_server_tool_parts = true;
+                let id = tc
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| format!("gemini_tool_{pidx}"));
+                let tool_type = tc
+                    .get("toolType")
+                    .and_then(Value::as_str)
+                    .unwrap_or("server_tool")
+                    .to_string();
+                let args = tc.get("args").cloned().unwrap_or_else(|| json!({}));
+                server_tool_blocks.push(ContentPart::ServerToolUse {
+                    id,
+                    name: tool_type.clone(),
+                    action: Some(tool_type),
+                    input: args,
+                    raw_provider_payload: raw_part.clone(),
+                });
+            }
+            if let Some(tr) = part.tool_response {
+                saw_server_tool_parts = true;
+                let id = tr
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| format!("gemini_tool_{}", pidx.saturating_sub(1)));
+                let tool_type = tr
+                    .get("toolType")
+                    .and_then(Value::as_str)
+                    .unwrap_or("server_tool")
+                    .to_string();
+                let summary = summarize_gemini_tool_response(&tr);
+                server_tool_blocks.push(ContentPart::ServerToolResult {
+                    tool_use_id: id,
+                    name: tool_type,
+                    summary,
+                    is_error: false,
+                    raw_provider_payload: raw_part.clone(),
+                });
+            }
             if let Some(code) = part.executable_code {
+                saw_server_tool_parts = true;
                 server_tool_blocks.push(ContentPart::ServerToolUse {
                     id: format!("code_exec_{pidx}"),
                     name: "code_execution".to_string(),
                     action: Some("execute".to_string()),
-                    input: code.clone(),
-                    raw_provider_payload: Some(code),
+                    input: code,
+                    raw_provider_payload: raw_part.clone(),
                 });
             }
             if let Some(res) = part.code_execution_result {
+                saw_server_tool_parts = true;
                 let outcome = res.get("outcome").and_then(Value::as_str).unwrap_or("OUTCOME_OK");
                 let summary = res
                     .get("output")
@@ -1019,7 +1098,7 @@ fn parse_gemini_response(resp: GeminiGenerateContentResponse) -> Result<ChatResp
                     name: "code_execution".to_string(),
                     summary,
                     is_error: outcome != "OUTCOME_OK",
-                    raw_provider_payload: Some(res),
+                    raw_provider_payload: raw_part,
                 });
             }
             if let Some(fc) = part.function_call {
@@ -1033,6 +1112,37 @@ fn parse_gemini_response(resp: GeminiGenerateContentResponse) -> Result<ChatResp
                 });
             }
         }
+    }
+
+    if let Some(gm) = &candidate.grounding_metadata {
+        citations = parse_gemini_grounding_citations(gm);
+        if !saw_server_tool_parts {
+            if let Some(queries) = gm.get("webSearchQueries").and_then(Value::as_array)
+                && !queries.is_empty()
+            {
+                server_tool_blocks.push(ContentPart::ServerToolUse {
+                    id: "google_search_0".to_string(),
+                    name: "google_search".to_string(),
+                    action: Some("search".to_string()),
+                    input: json!({ "queries": queries }),
+                    raw_provider_payload: Some(gm.clone()),
+                });
+            }
+            if !citations.is_empty() {
+                server_tool_blocks.push(ContentPart::ServerToolResult {
+                    tool_use_id: "google_search_0".to_string(),
+                    name: "google_search".to_string(),
+                    summary: format!("{} sources", citations.len()),
+                    is_error: false,
+                    raw_provider_payload: None,
+                });
+            }
+        }
+    }
+    if !saw_server_tool_parts
+        && let Some(uc) = &candidate.url_context_metadata
+    {
+        server_tool_blocks.extend(parse_gemini_url_context_blocks(uc));
     }
 
     let stop_reason = candidate
@@ -1059,6 +1169,7 @@ struct GeminiStreamState<S> {
     queue: VecDeque<Result<StreamEvent, Error>>,
     started: bool,
     next_tool_index: usize,
+    saw_server_tool_parts: bool,
     latest_thinking_signature: Option<String>,
     finish_reason: Option<String>,
     usage: Option<Usage>,
@@ -1076,6 +1187,7 @@ where
         queue: VecDeque::new(),
         started: false,
         next_tool_index: 0,
+        saw_server_tool_parts: false,
         latest_thinking_signature: None,
         finish_reason: None,
         usage: None,
@@ -1137,11 +1249,22 @@ where
                     if let Some(candidate) = chunk.candidates.into_iter().next() {
                         if let Some(cand_content) = candidate.content {
                             for part in cand_content.parts {
+                                let is_server_part = part.tool_call.is_some()
+                                    || part.tool_response.is_some()
+                                    || part.executable_code.is_some()
+                                    || part.code_execution_result.is_some();
+                                let raw_part = if is_server_part {
+                                    serde_json::to_value(&part).ok()
+                                } else {
+                                    None
+                                };
                                 // Gemini emits a complete base64 `thoughtSignature` per part (never
-                                // chunked deltas). Keep only the latest whole signature and emit it
-                                // once at stream end so `StreamCollector` never concatenates them.
+                                // chunked deltas). Signatures on server-tool parts stay on those
+                                // parts via `raw_provider_payload`; others update the turn's latest
+                                // thinking signature emitted once at stream end.
                                 let sig = part.thought_signature.filter(|s| !s.is_empty());
                                 if part.function_call.is_none()
+                                    && !is_server_part
                                     && let Some(sig) = &sig
                                 {
                                     st.latest_thinking_signature = Some(sig.clone());
@@ -1155,16 +1278,60 @@ where
                                         st.queue.push_back(Ok(StreamEvent::TextDelta(text)));
                                     }
                                 }
+                                if let Some(tc) = part.tool_call {
+                                    st.saw_server_tool_parts = true;
+                                    let id = tc
+                                        .get("id")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("gemini_tool")
+                                        .to_string();
+                                    let tool_type = tc
+                                        .get("toolType")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("server_tool")
+                                        .to_string();
+                                    let args = tc.get("args").cloned().unwrap_or_else(|| json!({}));
+                                    st.queue.push_back(Ok(StreamEvent::ServerToolUse {
+                                        id,
+                                        name: tool_type.clone(),
+                                        action: Some(tool_type),
+                                        input: args,
+                                        raw_provider_payload: raw_part.clone(),
+                                    }));
+                                }
+                                if let Some(tr) = part.tool_response {
+                                    st.saw_server_tool_parts = true;
+                                    let id = tr
+                                        .get("id")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("gemini_tool")
+                                        .to_string();
+                                    let tool_type = tr
+                                        .get("toolType")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("server_tool")
+                                        .to_string();
+                                    let summary = summarize_gemini_tool_response(&tr);
+                                    st.queue.push_back(Ok(StreamEvent::ServerToolResult {
+                                        tool_use_id: id,
+                                        name: tool_type,
+                                        summary,
+                                        is_error: false,
+                                        raw_provider_payload: raw_part.clone(),
+                                    }));
+                                }
                                 if let Some(code) = part.executable_code {
+                                    st.saw_server_tool_parts = true;
                                     st.queue.push_back(Ok(StreamEvent::ServerToolUse {
                                         id: "code_exec".to_string(),
                                         name: "code_execution".to_string(),
                                         action: Some("execute".to_string()),
-                                        input: code.clone(),
-                                        raw_provider_payload: Some(code),
+                                        input: code,
+                                        raw_provider_payload: raw_part.clone(),
                                     }));
                                 }
                                 if let Some(res) = part.code_execution_result {
+                                    st.saw_server_tool_parts = true;
                                     let outcome = res
                                         .get("outcome")
                                         .and_then(Value::as_str)
@@ -1181,7 +1348,7 @@ where
                                         name: "code_execution".to_string(),
                                         summary,
                                         is_error: outcome != "OUTCOME_OK",
-                                        raw_provider_payload: Some(res),
+                                        raw_provider_payload: raw_part,
                                     }));
                                 }
                                 if let Some(fc) = part.function_call {
@@ -1212,33 +1379,37 @@ where
                         }
 
                         if let Some(gm) = &candidate.grounding_metadata {
-                            if let Some(queries) =
-                                gm.get("webSearchQueries").and_then(Value::as_array)
-                                && !queries.is_empty()
-                            {
-                                st.queue.push_back(Ok(StreamEvent::ServerToolUse {
-                                    id: "google_search_0".to_string(),
-                                    name: "google_search".to_string(),
-                                    action: Some("search".to_string()),
-                                    input: json!({ "queries": queries }),
-                                    raw_provider_payload: Some(gm.clone()),
-                                }));
-                            }
                             let cites = parse_gemini_grounding_citations(gm);
-                            if !cites.is_empty() {
-                                st.queue.push_back(Ok(StreamEvent::ServerToolResult {
-                                    tool_use_id: "google_search_0".to_string(),
-                                    name: "google_search".to_string(),
-                                    summary: format!("{} sources", cites.len()),
-                                    is_error: false,
-                                    raw_provider_payload: None,
-                                }));
-                                for c in cites {
-                                    st.queue.push_back(Ok(StreamEvent::Citation(c)));
+                            if !st.saw_server_tool_parts {
+                                if let Some(queries) =
+                                    gm.get("webSearchQueries").and_then(Value::as_array)
+                                    && !queries.is_empty()
+                                {
+                                    st.queue.push_back(Ok(StreamEvent::ServerToolUse {
+                                        id: "google_search_0".to_string(),
+                                        name: "google_search".to_string(),
+                                        action: Some("search".to_string()),
+                                        input: json!({ "queries": queries }),
+                                        raw_provider_payload: Some(gm.clone()),
+                                    }));
+                                }
+                                if !cites.is_empty() {
+                                    st.queue.push_back(Ok(StreamEvent::ServerToolResult {
+                                        tool_use_id: "google_search_0".to_string(),
+                                        name: "google_search".to_string(),
+                                        summary: format!("{} sources", cites.len()),
+                                        is_error: false,
+                                        raw_provider_payload: None,
+                                    }));
                                 }
                             }
+                            for c in cites {
+                                st.queue.push_back(Ok(StreamEvent::Citation(c)));
+                            }
                         }
-                        if let Some(uc) = &candidate.url_context_metadata {
+                        if !st.saw_server_tool_parts
+                            && let Some(uc) = &candidate.url_context_metadata
+                        {
                             for block in parse_gemini_url_context_blocks(uc) {
                                 match block {
                                     ContentPart::ServerToolUse {
