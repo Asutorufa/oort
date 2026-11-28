@@ -17,11 +17,21 @@
  */
 function fixCjkEmphasis(t: string): string {
   if (!t.includes("*")) return t;
-  // Closing ** or *** after punctuation before non-space, non-punctuation
-  t = t.replace(/(\p{P})(\*{2,3})(?=[^\s\p{P}*])/gu, "$1$2\u200A");
-  // Opening ** or *** after non-space, non-punctuation before opening punctuation
-  t = t.replace(/([^\s\p{P}*])(\*{2,3})(?=\p{P})/gu, "$1\u200A$2");
-  return t;
+  return t.replace(
+    /(\*{2,3})((?:[^*\n]|\*(?!\*))+?)(\1)/gu,
+    (match, delim: string, inner: string, close: string, offset: number, all: string) => {
+      if (/^\s|\s$/.test(inner)) return match;
+      const before = offset > 0 ? all[offset - 1] : "";
+      const after = offset + match.length < all.length ? all[offset + match.length] : "";
+      const innerStartsPunct = /^\p{P}/u.test(inner);
+      const innerEndsPunct = /\p{P}$/u.test(inner);
+      const beforeWord = before !== "" && !/[\s\p{P}*]/u.test(before);
+      const afterWord = after !== "" && !/[\s\p{P}*]/u.test(after);
+      const pre = beforeWord && innerStartsPunct ? "\u200A" : "";
+      const post = innerEndsPunct && afterWord ? "\u200A" : "";
+      return `${pre}${delim}${inner}${close}${post}`;
+    },
+  );
 }
 
 function prepText(t: string): string {
