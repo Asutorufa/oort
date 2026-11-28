@@ -8,14 +8,16 @@ use std::time::{Duration, Instant};
 use oort_agent::secret::{self, SecretError};
 use oort_agent::{
     Agent, AgentEvent, AgentState, CompositeToolExecutor, ConfigStore, LlmCompactor,
-    McpServerRecord, ModelClient, Namespace, PersistenceHook, PinnedToolExecutor, ProviderKind,
-    ProviderRecord, RetryingModel, RuleBasedCompactor, SessionStore, ToolExecutor, TracingHook,
+    McpServerRecord, ModelClient, Namespace, OAuthTokenStore, PersistenceHook, PinnedToolExecutor,
+    ProviderKind, ProviderRecord, RetryingModel, RuleBasedCompactor, SessionStore, SkillStore,
+    ToolExecutor, TracingHook,
 };
 use oort_llm::{
     AnthropicClient, ChatRequest, GeminiClient, LlmClient, Message, OpenAIClient,
     OpenAIResponsesClient, Provider,
 };
 use oort_mcp::{ClientOptions, McpConfig, McpError, ServerEntry};
+use oort_skills::SkillRegistry;
 use serde::Serialize;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -24,7 +26,9 @@ use crate::api::ApiError;
 use crate::approval::{ApprovalHandle, DynamicApproval};
 use crate::config::{McpBinding, SessionConfig};
 use crate::mock_model::MockModel;
+use crate::oauth::OAuthFlows;
 use crate::pool::McpPool;
+use crate::session_tools;
 
 /// A provider client: a real HTTP client or the offline mock.
 enum Built {
@@ -51,8 +55,23 @@ pub struct ProviderTest {
 pub struct Registry {
     pub config: Arc<dyn ConfigStore>,
     pub pool: McpPool,
+    pub skills: Arc<SkillRegistry>,
+    pub oauth: OAuthFlows,
     builtin: Arc<dyn ToolExecutor>,
     mock_word_delay: Duration,
+}
+
+/// Everything the registry stores (one SQLite database in practice).
+pub trait Stores: ConfigStore + OAuthTokenStore + SkillStore + 'static {}
+impl<T: ConfigStore + OAuthTokenStore + SkillStore + 'static> Stores for T {}
+
+/// What a session's tools are made of (fixed at creation, in its config).
+pub struct ToolSelection<'a> {
+    pub builtin: bool,
+    pub widgets: bool,
+    /// Skill names (for `load_skill`).
+    pub skills: Vec<String>,
+    pub mcp: &'a [McpBinding],
 }
 
 fn secret_err(e: SecretError) -> ApiError {
@@ -67,13 +86,30 @@ fn mcp_err(name: &str, e: McpError) -> ApiError {
 }
 
 impl Registry {
-    pub fn new(config: Arc<dyn ConfigStore>, builtin: Arc<dyn ToolExecutor>) -> Self {
+    /// No skill directories and `http://127.0.0.1:3000` as public URL until configured.
+    pub fn new<S: Stores>(store: Arc<S>, builtin: Arc<dyn ToolExecutor>) -> Self {
+        let tokens: Arc<dyn OAuthTokenStore> = store.clone();
         Self {
-            config,
-            pool: McpPool::new(ClientOptions::default()),
+            config: store.clone(),
+            pool: McpPool::new(ClientOptions::default(), Some(tokens.clone())),
+            skills: Arc::new(SkillRegistry::new(vec![], store)),
+            oauth: OAuthFlows::new(tokens, "http://127.0.0.1:3000"),
             builtin,
             mock_word_delay: Duration::from_millis(30),
         }
+    }
+
+    /// Directories scanned for `<skill>/SKILL.md`.
+    pub fn with_skill_dirs(mut self, dirs: Vec<std::path::PathBuf>) -> Self {
+        let store = self.skills.store().clone();
+        self.skills = Arc::new(SkillRegistry::new(dirs, store));
+        self
+    }
+
+    /// Base URL browsers use to reach this server (OAuth redirect URI).
+    pub fn with_public_url(mut self, url: &str) -> Self {
+        self.oauth = OAuthFlows::new(self.oauth.store().clone(), url);
+        self
     }
 
     pub fn with_mock_word_delay(mut self, d: Duration) -> Self {
@@ -276,15 +312,24 @@ impl Registry {
     /// server; otherwise (resume) such servers are skipped and their tools answer with errors.
     pub async fn live_executor(
         &self,
-        builtin: bool,
-        bindings: &[McpBinding],
+        sel: &ToolSelection<'_>,
         strict: bool,
     ) -> Result<Arc<dyn ToolExecutor>, ApiError> {
         let mut b = CompositeToolExecutor::builder();
-        if builtin {
+        if sel.builtin {
             b = b.add(Namespace::None, self.builtin.clone());
         }
-        for binding in bindings {
+        if sel.widgets || !sel.skills.is_empty() {
+            b = b.add(
+                Namespace::None,
+                Arc::new(session_tools::executor(
+                    sel.widgets,
+                    sel.skills.clone(),
+                    self.skills.clone(),
+                )),
+            );
+        }
+        for binding in sel.mcp {
             let rec = match self.config.get_mcp_server(&binding.id).await {
                 Ok(rec) if rec.is_enabled || !strict => rec,
                 Ok(rec) => {
@@ -350,7 +395,15 @@ impl Registry {
             cfg.mcp_servers.clone()
         };
         let live = self
-            .live_executor(cfg.builtin_tools, &bindings, false)
+            .live_executor(
+                &ToolSelection {
+                    builtin: cfg.builtin_tools,
+                    widgets: cfg.widgets,
+                    skills: cfg.skills.iter().map(|s| s.name.clone()).collect(),
+                    mcp: &bindings,
+                },
+                false,
+            )
             .await?;
         let pinned = Arc::new(PinnedToolExecutor::new(
             state.tool_snapshot().unwrap_or_default(),

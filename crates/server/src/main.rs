@@ -16,7 +16,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = ServerConfig::from_env()?;
     let store = Arc::new(SqliteSessionStore::connect(&cfg.db_url).await?);
     let builtin = Arc::new(oort_server::tools::builtin_executor(&cfg.workspace));
-    let registry = Arc::new(Registry::new(store.clone(), builtin));
+    let registry = Arc::new(
+        Registry::new(store.clone(), builtin)
+            .with_skill_dirs(cfg.skill_dirs.clone())
+            .with_public_url(&cfg.public_url),
+    );
+    tracing::info!(dirs = ?cfg.skill_dirs, redirect_uri = %registry.oauth.redirect_uri(), "skills and OAuth configured");
     if let Some(path) = &cfg.mcp_config {
         let raw = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let imported = registry

@@ -1269,6 +1269,7 @@ dependencies = [
  "oort-agent",
  "oort-llm",
  "oort-mcp",
+ "oort-skills",
  "oort-storage",
  "reqwest",
  "serde",
@@ -1280,6 +1281,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
 ]
 

@@ -16,9 +16,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use oort_agent::{
-    AgentState, FrozenToolset, Inbox, LoopInput, NewSession, SessionStatus, SessionStore,
+    AgentEvent, AgentState, FrozenToolset, Inbox, LoopInput, NewSession, SessionStatus,
+    SessionStore,
 };
-use oort_llm::Message;
+use oort_llm::{ContentPart, Message};
 use tokio::sync::{Mutex, broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 
@@ -27,9 +28,10 @@ use crate::api::{
     ProviderSummary, RawMessage, SessionDetail, SessionExport, SessionSummary,
 };
 use crate::approval::ApprovalHandle;
-use crate::config::SessionConfig;
+use crate::config::{SessionConfig, SkillBinding};
 use crate::hub::Hub;
-use crate::registry::Registry;
+use crate::registry::{Registry, ToolSelection};
+use crate::session_tools::RENDER_WIDGET;
 
 /// Handles to a running loop.
 struct ActiveSession {
@@ -133,11 +135,37 @@ impl SessionManager {
             .unwrap_or_default();
 
         // Fail fast on unusable keys and unreachable servers, before anything is stored.
+        let widgets = req.widgets.unwrap_or(true);
+        let skill_ids = req
+            .skill_ids
+            .clone()
+            .or_else(|| preset.as_ref().map(|p| p.skill_ids.clone()))
+            .unwrap_or_default();
+        let skills = self
+            .registry
+            .skills
+            .resolve(&skill_ids)
+            .await
+            .map_err(|e| match e {
+                oort_agent::StoreError::NotFound(id) => {
+                    ApiError::BadRequest(format!("unknown skill {id}"))
+                }
+                other => other.into(),
+            })?;
+
         Registry::check_provider(&provider, &model)?;
         let bindings = self.registry.bind_servers(&server_ids).await?;
         let live = self
             .registry
-            .live_executor(builtin, &bindings, true)
+            .live_executor(
+                &ToolSelection {
+                    builtin,
+                    widgets,
+                    skills: skills.iter().map(|s| s.name.clone()).collect(),
+                    mcp: &bindings,
+                },
+                true,
+            )
             .await?;
         // The only time a catalog is frozen: sorted now, never derived again.
         let frozen = FrozenToolset::freeze(live.as_ref())
@@ -152,6 +180,26 @@ impl SessionManager {
             builtin_tools: builtin,
             mcp_servers: bindings,
             approval: None,
+            widgets,
+            skills: skills
+                .iter()
+                .map(|s| SkillBinding {
+                    id: s.id.clone(),
+                    name: s.name.clone(),
+                })
+                .collect(),
+        };
+        // Progressive disclosure: only the sorted name/description index is frozen into the
+        // prefix; bodies come later through `load_skill` or `/name`.
+        let system_prompt = if skills.is_empty() {
+            system_prompt
+        } else {
+            let index = oort_skills::index_text(&skills);
+            if system_prompt.trim().is_empty() {
+                index
+            } else {
+                format!("{system_prompt}\n\n{index}")
+            }
         };
         let initial: Vec<Message> = req
             .message
@@ -209,8 +257,14 @@ impl SessionManager {
 
     pub async fn input(&self, id: &str, input: InputRequest) -> Result<(), ApiError> {
         let input = match input {
-            InputRequest::Steer { text } => LoopInput::Steer(Message::user(text)),
-            InputRequest::Interrupt { text } => LoopInput::Interrupt(Message::user(text)),
+            InputRequest::Steer { text } => match self.expand_command(&text).await? {
+                Expanded::Compact => LoopInput::Compact,
+                Expanded::Text(t) => LoopInput::Steer(Message::user(t)),
+            },
+            InputRequest::Interrupt { text } => match self.expand_command(&text).await? {
+                Expanded::Compact => LoopInput::Compact,
+                Expanded::Text(t) => LoopInput::Interrupt(Message::user(t)),
+            },
             InputRequest::Approval { call_id, decision } => {
                 LoopInput::Approval { call_id, decision }
             }
@@ -420,7 +474,29 @@ impl SessionManager {
         let fwd_hub = Arc::clone(&hub);
         let forwarder = tokio::spawn(async move {
             while let Some(event) = ev_rx.recv().await {
+                // Widgets are announced as soon as the assistant message declaring them is
+                // committed (the history keeps them; this is a convenience for live clients).
+                let widgets: Vec<(String, serde_json::Value)> = match &event {
+                    AgentEvent::AssistantMessage { message } => message
+                        .content
+                        .iter()
+                        .filter_map(|p| match p {
+                            ContentPart::ToolCall(c) if c.name == RENDER_WIDGET => {
+                                Some((c.id.clone(), c.arguments.clone()))
+                            }
+                            _ => None,
+                        })
+                        .collect(),
+                    _ => vec![],
+                };
                 fwd_hub.publish(|seq| Envelope::Agent { seq, event });
+                for (call_id, widget) in widgets {
+                    fwd_hub.publish(|seq| Envelope::Widget {
+                        seq,
+                        call_id,
+                        widget,
+                    });
+                }
             }
         });
 
@@ -461,6 +537,45 @@ impl SessionManager {
             },
         );
         Ok(in_tx)
+    }
+}
+
+/// Result of interpreting a leading `/command` in user input.
+enum Expanded {
+    Compact,
+    Text(String),
+}
+
+impl SessionManager {
+    /// `/compact` → compaction; `/<skill> rest` → the skill's body followed by `rest`, appended at
+    /// the tail like any user message (the frozen prefix is untouched). Other text is unchanged.
+    async fn expand_command(&self, text: &str) -> Result<Expanded, ApiError> {
+        let trimmed = text.trim_start();
+        let Some(cmd) = trimmed.strip_prefix('/') else {
+            return Ok(Expanded::Text(text.to_string()));
+        };
+        let (name, rest) = cmd
+            .split_once(char::is_whitespace)
+            .map(|(n, r)| (n, r.trim()))
+            .unwrap_or((cmd, ""));
+        if name == "compact" {
+            return Ok(Expanded::Compact);
+        }
+        if !oort_skills::valid_name(name) {
+            return Ok(Expanded::Text(text.to_string()));
+        }
+        let skill = self
+            .registry
+            .skills
+            .by_name(name)
+            .await?
+            .ok_or_else(|| ApiError::BadRequest(format!("unknown command or skill /{name}")))?;
+        let ask = if rest.is_empty() {
+            "Follow this skill.".to_string()
+        } else {
+            rest.to_string()
+        };
+        Ok(Expanded::Text(format!("{}\n\n{ask}", skill.render_body())))
     }
 }
 

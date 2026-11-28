@@ -2,7 +2,8 @@
 //! interrupt it), calls tools when their names or keywords appear in the message, and reports
 //! simulated prefix-cache usage (the previous request's size counts as cached).
 //!
-//! Keywords: `time`, `list`, `read <path>`, `note <text>`, any exact tool name, `think`, `slow`.
+//! Keywords: `time`, `list`, `read <path>`, `note <text>`, any exact tool name, `think`, `slow`,
+//! `widget:<type>` (sample widget), `skill:<name>` (load_skill).
 
 use std::time::Duration;
 
@@ -35,6 +36,41 @@ struct Plan {
 
 fn estimate_tokens(v: &impl serde::Serialize) -> u64 {
     (serde_json::to_string(v).map(|s| s.len()).unwrap_or(0) as u64).div_ceil(4)
+}
+
+/// A valid example of each widget (unknown kinds are passed through to test validation).
+fn sample_widget(kind: &str) -> Value {
+    let data = match kind {
+        "metrics_chart" => json!({
+            "kpis": [{"label": "Requests", "value": "1.2k", "delta": "+8%"}, {"label": "Errors", "value": 3}],
+            "series": [{"name": "rps", "points": [{"x": "10:00", "y": 3}, {"x": "10:05", "y": 7}, {"x": "10:10", "y": 5}]}],
+            "kind": "area"
+        }),
+        "data_table" => json!({
+            "columns": [{"key": "node", "label": "Node"}, {"key": "latency", "label": "Latency (ms)"}],
+            "rows": [{"node": "tokyo-1", "latency": 21}, {"node": "osaka-2", "latency": 35}],
+            "row_actions": [{"id": "switch", "label": "Switch to this node"}]
+        }),
+        "interactive_form" => json!({
+            "fields": [
+                {"name": "city", "label": "City", "kind": "text", "required": true},
+                {"name": "days", "label": "Days", "kind": "number", "default": 2},
+                {"name": "plan", "label": "Plan", "kind": "select", "options": ["basic", "pro"]},
+                {"name": "notify", "label": "Notify me", "kind": "checkbox"}
+            ],
+            "submit_label": "Plan the trip"
+        }),
+        "approval_diff" => json!({
+            "summary": "Rename `foo` to `bar` in src/lib.rs",
+            "diff": "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,3 @@\n-fn foo() {}\n+fn bar() {}\n fn main() {}\n",
+            "files": ["src/lib.rs"]
+        }),
+        "action_chips" => json!({
+            "chips": [{"label": "Summarize", "prompt": "Summarize the conversation"}, {"label": "Compact", "command": "compact"}]
+        }),
+        _ => json!({}),
+    };
+    json!({ "widget_type": kind, "title": format!("Sample {kind}"), "data": data })
 }
 
 fn plan(req: &ChatRequest) -> Plan {
@@ -87,8 +123,22 @@ fn plan(req: &ChatRequest) -> Plan {
     if let Some(i) = lower.find("note ").filter(|_| has_tool("write_note")) {
         calls.push(("write_note".into(), json!({ "text": said[i + 5..].trim() })));
     }
+    // `widget:<type>` renders a sample widget; `skill:<name>` loads a skill.
+    for w in &words {
+        if let Some(kind) = w.strip_prefix("widget:")
+            && has_tool("render_widget")
+        {
+            calls.push(("render_widget".into(), sample_widget(kind)));
+        }
+        if let Some(name) = w.strip_prefix("skill:")
+            && has_tool("load_skill")
+        {
+            calls.push(("load_skill".into(), json!({ "name": name })));
+        }
+    }
     for t in &req.tools {
-        if said.contains(&t.name) && !calls.iter().any(|(n, _)| n == &t.name) {
+        let session_tool = t.name == "render_widget" || t.name == "load_skill";
+        if !session_tool && said.contains(&t.name) && !calls.iter().any(|(n, _)| n == &t.name) {
             calls.push((t.name.clone(), json!({ "text": said })));
         }
     }

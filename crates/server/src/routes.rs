@@ -12,7 +12,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::{get, post};
 use futures_util::{Stream, StreamExt};
-use oort_agent::{McpServerRecord, PresetRecord, ProviderRecord};
+use oort_agent::{McpAuth, McpServerRecord, PresetRecord, ProviderRecord};
 use oort_mcp::{CallToolResult, McpError};
 use serde::de::DeserializeOwned;
 use tokio::sync::broadcast::error::RecvError;
@@ -26,9 +26,11 @@ use crate::api::{
 };
 use crate::config_api::{
     McpServerInput, McpServerView, McpTestResponse, PresetInput, ProviderInput, ProviderView,
-    ServerInfoView, ToolCallRequest, ToolCallResponse, ToolInfo,
+    ServerInfoView, SkillInput, SkillView, SkillsReload, ToolCallRequest, ToolCallResponse,
+    ToolInfo,
 };
 use crate::manager::SessionManager;
+use crate::oauth::{OAuthStart, OAuthView, callback_page};
 use crate::registry::ProviderTest;
 
 type AppState = Arc<SessionManager>;
@@ -66,6 +68,16 @@ pub fn router(manager: Arc<SessionManager>, web_dist: Option<&FsPath>) -> Router
         .route(
             "/presets/{id}",
             get(get_preset).put(update_preset).delete(delete_preset),
+        )
+        .route("/mcp-servers/{id}/oauth", get(oauth_status))
+        .route("/mcp-servers/{id}/oauth/start", post(oauth_start))
+        .route("/mcp-servers/{id}/oauth/disconnect", post(oauth_disconnect))
+        .route("/mcp/oauth/callback", get(oauth_callback))
+        .route("/skills", get(list_skills).post(create_skill))
+        .route("/skills/reload", post(reload_skills))
+        .route(
+            "/skills/{id}",
+            get(get_skill).put(update_skill).delete(delete_skill),
         );
     let mut app = Router::new()
         .nest("/api", api)
@@ -258,15 +270,26 @@ async fn test_new_provider(
 
 // ----- MCP servers ---------------------------------------------------------------------------
 
+/// The view plus the OAuth connection state of `oauth` servers.
+async fn mcp_view(m: &SessionManager, rec: &McpServerRecord) -> Result<McpServerView, ApiError> {
+    let mut view = McpServerView::from(rec);
+    if matches!(rec.auth, McpAuth::OAuth { .. }) {
+        view.oauth = m.registry().oauth.status(&rec.id).await?;
+    }
+    Ok(view)
+}
+
 async fn list_mcp(State(m): State<AppState>) -> ApiResult<Vec<McpServerView>> {
-    let list = m.registry().config.list_mcp_servers().await?;
-    Ok(Json(list.iter().map(McpServerView::from).collect()))
+    let mut out = Vec::new();
+    for rec in m.registry().config.list_mcp_servers().await? {
+        out.push(mcp_view(&m, &rec).await?);
+    }
+    Ok(Json(out))
 }
 
 async fn get_mcp(State(m): State<AppState>, Path(id): Path<String>) -> ApiResult<McpServerView> {
-    Ok(Json(
-        (&m.registry().config.get_mcp_server(&id).await?).into(),
-    ))
+    let rec = m.registry().config.get_mcp_server(&id).await?;
+    Ok(Json(mcp_view(&m, &rec).await?))
 }
 
 async fn create_mcp(
@@ -305,7 +328,8 @@ async fn probe(m: &SessionManager, rec: &McpServerRecord) -> McpTestResponse {
     let started = Instant::now();
     let mut opts = m.registry().pool.options().clone();
     opts.request_timeout = Duration::from_secs(15);
-    match oort_mcp::probe(rec, opts).await {
+    let tokens = m.registry().pool.token_provider(rec);
+    match oort_mcp::probe(rec, opts, tokens).await {
         Ok(p) => McpTestResponse {
             ok: true,
             latency_ms: p.latency_ms,
@@ -421,6 +445,11 @@ async fn call_mcp_tool(
 
 async fn check_preset_refs(m: &SessionManager, p: &PresetRecord) -> Result<(), ApiError> {
     let cfg = &m.registry().config;
+    m.registry()
+        .skills
+        .resolve(&p.skill_ids)
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("skills: {e}")))?;
     cfg.get_provider(&p.provider_id)
         .await
         .map_err(|_| ApiError::BadRequest(format!("unknown provider {}", p.provider_id)))?;
@@ -468,4 +497,135 @@ async fn delete_preset(
 ) -> Result<StatusCode, ApiError> {
     m.registry().config.delete_preset(&id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ----- MCP OAuth -----------------------------------------------------------------------------
+
+async fn oauth_status(
+    State(m): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Option<OAuthView>> {
+    m.registry().config.get_mcp_server(&id).await?;
+    Ok(Json(m.registry().oauth.status(&id).await?))
+}
+
+/// Discovery + client registration + PKCE; the UI opens `authorization_url` in a popup.
+async fn oauth_start(State(m): State<AppState>, Path(id): Path<String>) -> ApiResult<OAuthStart> {
+    let rec = m.registry().config.get_mcp_server(&id).await?;
+    Ok(Json(m.registry().oauth.start(&rec).await?))
+}
+
+#[derive(serde::Deserialize)]
+struct CallbackQuery {
+    code: Option<String>,
+    state: Option<String>,
+    error: Option<String>,
+    error_description: Option<String>,
+}
+
+/// Redirect target of the authorization server. Always answers with a small HTML page that
+/// reports the outcome to the opener window.
+async fn oauth_callback(
+    State(m): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<CallbackQuery>,
+) -> axum::response::Html<String> {
+    let flows = &m.registry().oauth;
+    let server = match &q.state {
+        Some(s) => flows.pending_server(s).await,
+        None => None,
+    };
+    if let Some(err) = q.error {
+        let msg = q
+            .error_description
+            .map(|d| format!("{err}: {d}"))
+            .unwrap_or(err);
+        return axum::response::Html(callback_page(server.as_deref(), Some(&msg)));
+    }
+    let (Some(code), Some(state)) = (q.code, q.state) else {
+        return axum::response::Html(callback_page(None, Some("missing code or state")));
+    };
+    match flows.callback(&code, &state).await {
+        Ok(server_id) => {
+            // New connections pick up the token; existing ones refresh through the provider.
+            m.registry().pool.evict(&server_id).await;
+            axum::response::Html(callback_page(Some(&server_id), None))
+        }
+        Err(e) => axum::response::Html(callback_page(server.as_deref(), Some(&e.to_string()))),
+    }
+}
+
+async fn oauth_disconnect(
+    State(m): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    m.registry().config.get_mcp_server(&id).await?;
+    m.registry().oauth.disconnect(&id).await?;
+    m.registry().pool.evict(&id).await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ----- skills --------------------------------------------------------------------------------
+
+async fn list_skills(State(m): State<AppState>) -> ApiResult<Vec<SkillView>> {
+    let list = m.registry().skills.list().await?;
+    Ok(Json(list.into_iter().map(SkillView::from).collect()))
+}
+
+async fn get_skill(State(m): State<AppState>, Path(id): Path<String>) -> ApiResult<SkillView> {
+    Ok(Json(m.registry().skills.get(&id).await?.into()))
+}
+
+fn file_skill_readonly(id: &str) -> Result<(), ApiError> {
+    if id.starts_with(oort_skills::FILE_PREFIX) {
+        return Err(ApiError::Conflict(
+            "file skills are read-only here: edit the SKILL.md file, or copy it into a new skill"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+async fn create_skill(
+    State(m): State<AppState>,
+    Json(input): Json<SkillInput>,
+) -> ApiResult<SkillView> {
+    let rec = input.create()?;
+    m.registry().skills.store().create_skill(&rec).await?;
+    Ok(Json(oort_skills::Skill::from(rec).into()))
+}
+
+async fn update_skill(
+    State(m): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<SkillInput>,
+) -> ApiResult<SkillView> {
+    file_skill_readonly(&id)?;
+    let store = m.registry().skills.store();
+    let rec = input.apply(&store.get_skill(&id).await?)?;
+    store.update_skill(&rec).await?;
+    Ok(Json(oort_skills::Skill::from(rec).into()))
+}
+
+/// Sessions keep their frozen index; `load_skill` then reports that the skill is gone.
+async fn delete_skill(
+    State(m): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    file_skill_readonly(&id)?;
+    m.registry().skills.store().delete_skill(&id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn reload_skills(State(m): State<AppState>) -> ApiResult<SkillsReload> {
+    let skills = &m.registry().skills;
+    let (file_skills, warnings) = skills.reload().await;
+    Ok(Json(SkillsReload {
+        file_skills,
+        warnings,
+        dirs: skills
+            .dirs()
+            .iter()
+            .map(|d| d.display().to_string())
+            .collect(),
+    }))
 }

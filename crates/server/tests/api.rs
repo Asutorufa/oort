@@ -87,7 +87,7 @@ impl Server {
 
     async fn create(&self, message: &str) -> String {
         self.create_with(json!({
-            "provider_id": "mock", "system_prompt": "You are a test agent.", "message": message
+            "provider_id": "mock", "system_prompt": "You are a test agent.", "message": message, "widgets": false
         }))
         .await
     }
@@ -904,7 +904,7 @@ async fn frozen_tools_are_unaffected_by_mcp_changes() {
 
     let id = s
         .create_with(json!({
-            "provider_id": "mock", "mcp_server_ids": [mid], "builtin_tools": false,
+            "provider_id": "mock", "mcp_server_ids": [mid], "builtin_tools": false, "widgets": false,
             // A vanished tool is scheduled as non-read-only (it would need approval otherwise).
             "approval_policy": "auto_all",
         }))
@@ -976,7 +976,7 @@ async fn frozen_tools_are_unaffected_by_mcp_changes() {
     // New sessions see the new catalog under the new name.
     let id2 = s
         .create_with(
-            json!({ "provider_id": "mock", "mcp_server_ids": [mid], "builtin_tools": false }),
+            json!({ "provider_id": "mock", "mcp_server_ids": [mid], "builtin_tools": false, "widgets": false }),
         )
         .await;
     assert_eq!(
@@ -1025,7 +1025,7 @@ async fn presets_crud_and_start_session() {
             Some(json!({
                 "name": "Echo agent", "description": "d", "provider_id": "mock",
                 "system_prompt": "be terse", "mcp_server_ids": [mid],
-                "builtin_tools": false, "approval_policy": "always_ask"
+                "builtin_tools": false, "widgets": false, "approval_policy": "always_ask"
             })),
         )
         .await;
@@ -1058,7 +1058,7 @@ async fn presets_crud_and_start_session() {
 
     // One click: a session from the preset (model falls back to the provider default).
     let id = s
-        .create_with(json!({ "preset_id": pid, "message": "call remote__echo" }))
+        .create_with(json!({ "widgets": false, "preset_id": pid, "message": "call remote__echo" }))
         .await;
     let d = s.wait_for(&id, |d| status(d) == "needs_approval").await;
     assert_eq!(d["title"], "Echo agent");
@@ -1069,7 +1069,7 @@ async fn presets_crud_and_start_session() {
 
     // Explicit fields override the preset.
     let id2 = s
-        .create_with(json!({ "preset_id": pid, "builtin_tools": true, "approval_policy": "auto_all", "title": "t2" }))
+        .create_with(json!({ "widgets": false, "preset_id": pid, "builtin_tools": true, "approval_policy": "auto_all", "title": "t2" }))
         .await;
     let d = s.get(&format!("/sessions/{id2}")).await;
     assert_eq!(tool_names(&d).len(), 5);
