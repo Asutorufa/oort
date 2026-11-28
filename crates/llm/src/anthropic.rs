@@ -678,6 +678,7 @@ fn encode_anthropic_message(msg: &Message, vendor: Vendor) -> (&'static str, Vec
                         }
                     }));
                 }
+                ImageSource::Attachment { .. } => {}
                 ImageSource::Url { url } => {
                     blocks.push(json!({
                         "type": "image",

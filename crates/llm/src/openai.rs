@@ -842,10 +842,11 @@ fn encode_openai_message(msg: &Message, include_reasoning: bool, out: &mut Vec<O
                                 ImageSource::Base64 { media_type, data } => {
                                     format!("data:{media_type};base64,{data}")
                                 }
+                                ImageSource::Attachment { .. } => continue,
                             };
                             parts.push(json!({
                                 "type": "image_url",
-                                "image_url": { "url": url }
+                                "image_url": { "url": url, "detail": "auto" }
                             }));
                         }
                         ContentPart::Document { source, filename } => {

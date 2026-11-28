@@ -9,6 +9,7 @@ import { JsonView } from "../common";
 import { Markdown } from "./LazyMarkdown";
 import { RowCard, SubagentCard } from "./SubagentCard";
 import { LoopErrorCard } from "./LoopErrorCard";
+import { imagesOf, MessageImages } from "./MessageImages";
 import { AnimatePresence, motion } from "motion/react";
 import { enter } from "../../lib/motion";
 import { ApprovalCard, AskUserCard, McpConfiguredCard } from "./ToolCards";
@@ -120,6 +121,7 @@ function UserBubble({ msg, widgetTitles }: { msg: RawMessage; widgetTitles: Map<
     );
   }
   const { skills, reports, rest } = parseUserText(text);
+  const images = imagesOf(msg.content);
   return (
     <>
       {reports.map((r, i) => (
@@ -127,20 +129,23 @@ function UserBubble({ msg, widgetTitles }: { msg: RawMessage; widgetTitles: Map<
           <SkillReport {...r} />
         </Turn>
       ))}
-      {(rest || skills.length > 0) && (
+      {(rest || skills.length > 0 || images.length > 0) && (
         <div className="row-user">
-          <div className="bubble user">
-            {skills.length > 0 && (
-              <div className="skill-chips">
-                {skills.map((k, i) => (
-                  <span key={i} className="skill-chip">
-                    /{k}
-                  </span>
-                ))}
-              </div>
-            )}
-            {rest && <div className="plain">{rest}</div>}
-          </div>
+          {images.length > 0 && <MessageImages images={images} />}
+          {(rest || skills.length > 0) && (
+            <div className="bubble user">
+              {skills.length > 0 && (
+                <div className="skill-chips">
+                  {skills.map((k, i) => (
+                    <span key={i} className="skill-chip">
+                      /{k}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {rest && <div className="plain">{rest}</div>}
+            </div>
+          )}
         </div>
       )}
     </>

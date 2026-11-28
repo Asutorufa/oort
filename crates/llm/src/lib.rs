@@ -38,3 +38,5 @@ mod reasoning_tests;
 mod server_tools_tests;
 #[cfg(test)]
 mod title_tests;
+#[cfg(test)]
+mod image_tests;

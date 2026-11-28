@@ -525,10 +525,12 @@ fn encode_responses_input(msg: &Message, include_reasoning: bool, out: &mut Vec<
                             ImageSource::Base64 { media_type, data } => {
                                 format!("data:{media_type};base64,{data}")
                             }
+                            ImageSource::Attachment { .. } => continue,
                         };
                         content.push(json!({
                             "type": "input_image",
-                            "image_url": url
+                            "image_url": url,
+                            "detail": "auto"
                         }));
                     }
                     ContentPart::Document { source, filename } => match source {

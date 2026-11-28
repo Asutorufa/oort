@@ -21,6 +21,8 @@ export function explainLoopError(message: string): Explained & { status: number 
   const lower = message.toLowerCase();
   let e: Explained;
   if (code === 429 || /resource_exhausted|rate limit|quota/.test(lower)) e = { title: "loop.rateLimit", body: "loop.rateLimit.body" };
+  // Added by the server when a provider rejects a request that carried images.
+  else if (lower.includes("may not support image input")) e = { title: "loop.image", body: "loop.image.body" };
   else if (code === 401 || code === 403) e = { title: "loop.auth", body: "loop.auth.body", settings: true };
   else if (code === 404) e = { title: "loop.notFound", body: "loop.notFound.body", settings: true };
   else if ((code !== null && code >= 500) || /overloaded|unavailable/.test(lower)) e = { title: "loop.server", body: "loop.server.body" };

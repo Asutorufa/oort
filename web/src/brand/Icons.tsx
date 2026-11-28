@@ -224,6 +224,24 @@ export const ZoomOutIcon = (p: P) => (
   </Svg>
 );
 /** Generic marks for provider kinds and vendor presets (not trademark logos). */
+export const ImagePlusIcon = (p: P) => (
+  <Svg {...p}>
+    <path d="M13 4H6a2.5 2.5 0 0 0-2.5 2.5v11A2.5 2.5 0 0 0 6 20h11a2.5 2.5 0 0 0 2.5-2.5V11" />
+    <path d="m5.5 18.5 5-5a1.8 1.8 0 0 1 2.5 0l4.5 4.5" />
+    <circle cx="9" cy="9" r="1.5" />
+    <path d="M18.5 3v6M15.5 6h6" />
+  </Svg>
+);
+export const ChevronLeftIcon = (p: P) => (
+  <Svg {...p}>
+    <path d="m15 6-6 6 6 6" />
+  </Svg>
+);
+export const ChevronRightIcon = (p: P) => (
+  <Svg {...p}>
+    <path d="m9 6 6 6-6 6" />
+  </Svg>
+);
 export const KindIcon = ({ kind, size = 18 }: { kind: string; size?: number }) => {
   switch (kind) {
     case "openai":

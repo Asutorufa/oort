@@ -1,9 +1,12 @@
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowUpIcon, BrainIcon, GlobeIcon, ShieldIcon, StopIcon, XIcon } from "../../brand/Icons";
+import { ArrowUpIcon, BrainIcon, GlobeIcon, ImagePlusIcon, ShieldIcon, StopIcon, XIcon } from "../../brand/Icons";
 import { APPROVAL_POLICIES, REASONING_LEVELS, type ApprovalPolicy, type CommandInfo, type InvokedSkill, type ReasoningEffort } from "../../api/types";
 import { popover, snappy, tap } from "../../lib/motion";
+import { useToast } from "../common/Toast";
 import { Select } from "../ui";
+import { DropZone, ImageStrip } from "./ComposerImages";
+import { IMAGE_TYPES, MAX_IMAGES, useImageQueue } from "./imageQueue";
 import { useT, type Key, type T } from "../../i18n";
 
 /** Japanese descriptions for the builtin commands (the server's text is English). */
@@ -67,8 +70,8 @@ export function Composer({
   webSearch?: boolean;
   webSearchSupported?: boolean;
   onWebSearch?: (enabled: boolean) => void;
-  onSend: (text: string, skills: InvokedSkill[]) => Promise<void>;
-  onInterrupt?: (text: string, skills: InvokedSkill[]) => Promise<void>;
+  onSend: (text: string, skills: InvokedSkill[], attachmentIds: string[]) => Promise<void>;
+  onInterrupt?: (text: string, skills: InvokedSkill[], attachmentIds: string[]) => Promise<void>;
   onCommand?: (name: string, args: string) => Promise<void>;
   onStop?: () => void;
   placeholder?: string;
@@ -81,6 +84,14 @@ export function Composer({
   const [dismissed, setDismissed] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const area = useRef<HTMLTextAreaElement>(null);
+  const root = useRef<HTMLDivElement>(null);
+  const picker = useRef<HTMLInputElement>(null);
+  const toast = useToast();
+  const images = useImageQueue(
+    useCallback((why) => toast(why === "limit" ? t("composer.imageLimit", { max: MAX_IMAGES }) : t("composer.imageUnsupported"), "error"), [toast, t]),
+  );
+  /** Nothing may be left behind: every attached image has finished uploading. */
+  const imagesReady = images.items.every((i) => i.status === "done");
 
   const query = /^\/([a-z0-9-]*)$/.exec(text)?.[1];
   const groups = useMemo(() => {
@@ -131,11 +142,14 @@ export function Composer({
     const typed = /^\/([a-z0-9-]+)(?:\s+(.*))?$/s.exec(t);
     const cmd = typed && commands.find((c) => c.kind === "command" && c.name === typed[1]);
     if (cmd) return runCommand(cmd.name, typed[2]?.trim() ?? "");
-    if ((!t && chips.length === 0) || sending) return;
+    if ((!t && chips.length === 0 && images.items.length === 0) || !imagesReady || sending) return;
     const skills = chips.map((c) => ({ name: c.name }));
+    const sent = images.items.map((i) => i.key);
+    const ids = images.items.map((i) => i.id!);
     setSending(true);
     try {
-      await (how === "interrupt" && onInterrupt ? onInterrupt(t, skills) : onSend(t, skills));
+      await (how === "interrupt" && onInterrupt ? onInterrupt(t, skills, ids) : onSend(t, skills, ids));
+      images.remove(sent);
       setText("");
       setChips([]);
       requestAnimationFrame(resize);
@@ -148,7 +162,7 @@ export function Composer({
   };
 
   const effective = REASONING_LEVELS.find((l) => l.value === effectiveReasoning);
-  const canSend = (text.trim() !== "" || chips.length > 0) && !sending && !disabled;
+  const canSend = (text.trim() !== "" || chips.length > 0 || images.items.length > 0) && imagesReady && !sending && !disabled;
   const option = (c: CommandInfo) => {
     const i = flat.indexOf(c);
     return (
@@ -164,7 +178,8 @@ export function Composer({
   };
 
   return (
-    <div className="dock-wrap">
+    <div className="dock-wrap" ref={root}>
+      <DropZone anchor={root} disabled={disabled} onFiles={images.add} />
       <div className={`dock ${disabled ? "disabled" : ""}`}>
         <AnimatePresence>
         {groups && flat.length > 0 && (
@@ -188,6 +203,7 @@ export function Composer({
           </motion.div>
         )}
         </AnimatePresence>
+        <ImageStrip items={images.items} onRemove={(key) => images.remove([key])} onRetry={images.retry} />
         {chips.length > 0 && (
           <div className="attached">
             {chips.map((c) => (
@@ -209,6 +225,13 @@ export function Composer({
           value={text}
           disabled={disabled}
           placeholder={placeholder ?? (busy ? t("composer.placeholderBusy") : t("composer.placeholder"))}
+          onPaste={(e) => {
+            const files = [...e.clipboardData.items].flatMap((i) => (i.kind === "file" && i.type.startsWith("image/") ? [i.getAsFile()] : [])).filter((f) => f !== null);
+            if (!files.length) return;
+            // Text in the same clipboard is still pasted as usual.
+            if (!e.clipboardData.types.includes("text/plain")) e.preventDefault();
+            images.add(files);
+          }}
           onChange={(e) => {
             setText(e.target.value);
             setSel(0);
@@ -230,6 +253,21 @@ export function Composer({
         />
         <div className="dock-bar">
           <div className="dock-tools">
+            <button type="button" className="tool-btn" disabled={disabled} aria-label={t("composer.attachImage")} title={t("composer.attachImage")} onClick={() => picker.current?.click()}>
+              <ImagePlusIcon size={14} />
+            </button>
+            <input
+              ref={picker}
+              type="file"
+              hidden
+              multiple
+              accept={IMAGE_TYPES.join(",")}
+              onChange={(e) => {
+                images.add([...(e.target.files ?? [])]);
+                // Lets the same file be picked again.
+                e.target.value = "";
+              }}
+            />
             {webSearchSupported && onWebSearch && (
               <button
                 type="button"

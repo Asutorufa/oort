@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use oort_llm::{ChatRequest, ContentPart, Message, Role, Usage, collect_stream};
+use oort_llm::{ChatRequest, ContentPart, ImageSource, Message, Role, Usage, collect_stream};
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
@@ -233,6 +233,13 @@ fn render_transcript(messages: &[Message], max_chars: usize) -> String {
     for m in messages {
         for part in &m.content {
             let line = match part {
+                ContentPart::Image {
+                    source: ImageSource::Attachment { filename, .. },
+                } => format!(
+                    "[{:?}] [image: {}]",
+                    m.role,
+                    filename.as_deref().unwrap_or("attached")
+                ),
                 ContentPart::Text { text, .. } => format!("[{:?}] {text}", m.role),
                 ContentPart::ToolCall(c) => format!("[tool_call {}] {}", c.name, c.arguments),
                 ContentPart::ToolResult(r) => {

@@ -18,7 +18,9 @@ use async_trait::async_trait;
 use oort_agent::{
     AgentEvent, AgentState, HookAction, LoopHook, ModelClient, Phase, SessionStore, TitleRequest,
 };
-use oort_llm::{ChatRequest, ChatResponse, Message, Role, ThinkingConfig, collect_stream};
+use oort_llm::{
+    ChatRequest, ChatResponse, ContentPart, Message, Role, ThinkingConfig, collect_stream,
+};
 
 use crate::api::Envelope;
 use crate::hub::Hub;
@@ -150,7 +152,17 @@ pub fn opening(state: &AgentState) -> Option<(String, String)> {
         .map(Message::text)
         .filter(|t| !t.trim().is_empty())
         .collect();
-    Some((messages[first].text(), reply.join("\n")))
+    let mut user = messages[first].text();
+    // A question made of images only still deserves a name.
+    if user.trim().is_empty()
+        && messages[first]
+            .content
+            .iter()
+            .any(|p| matches!(p, ContentPart::Image { .. }))
+    {
+        user = "Image".into();
+    }
+    Some((user, reply.join("\n")))
 }
 
 /// The sidecar request (tier 2). `None` on any failure.

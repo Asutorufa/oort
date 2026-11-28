@@ -312,8 +312,8 @@ function Session({ id, visible, onListChanged }: { id: string; visible: boolean;
               toast(enabled ? t("composer.webSearchOn") : t("composer.webSearchOff"));
             }
           }}
-          onSend={(text, skills) => send({ type: "steer", text, invoked_skills: skills })}
-          onInterrupt={(text, skills) => send({ type: "interrupt", text, invoked_skills: skills })}
+          onSend={(text, skills, attachment_ids) => send({ type: "steer", text, attachment_ids, invoked_skills: skills })}
+          onInterrupt={(text, skills, attachment_ids) => send({ type: "interrupt", text, attachment_ids, invoked_skills: skills })}
           onCommand={runCommand}
           onStop={() => sessions.cancel(id).catch((e) => setError(errorText(e)))}
         />

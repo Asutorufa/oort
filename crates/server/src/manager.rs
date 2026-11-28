@@ -20,6 +20,7 @@ use oort_agent::{
     SessionStore, TitleSource,
 };
 use oort_llm::{ContentPart, Message, Vendor};
+use oort_storage::attachments::Attachment;
 use tokio::sync::{Mutex, broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 
@@ -29,6 +30,7 @@ use crate::api::{
     PatchSessionRequest, ProviderSummary, RawMessage, SessionDetail, SessionExport, SessionSummary,
 };
 use crate::approval::ApprovalHandle;
+use crate::attachments::{check_ids, user_message};
 use crate::config::{SessionConfig, SkillBinding};
 use crate::hub::Hub;
 use crate::registry::{Registry, ToolSelection, parse_groups};
@@ -263,10 +265,11 @@ impl SessionManager {
                 format!("{system_prompt}\n\n{index}")
             }
         };
-        let initial: Vec<Message> = req
-            .message
-            .filter(|m| !m.trim().is_empty())
-            .map(Message::user)
+        check_ids(&req.attachment_ids)?;
+        let uploads = self.unsent_attachments(&req.attachment_ids).await?;
+        let text = req.message.filter(|m| !m.trim().is_empty());
+        let initial: Vec<Message> = (text.is_some() || !uploads.is_empty())
+            .then(|| user_message(&uploads, text.unwrap_or_default()))
             .into_iter()
             .collect();
         let state = AgentState::with_tools(system_prompt, initial, &frozen);
@@ -296,6 +299,15 @@ impl SessionManager {
             enabled_server_tools,
         };
         let id = self.store.create_session(meta, &state).await?;
+        if let Err(e) = self
+            .registry
+            .attachments
+            .claim_attachments(&id, &req.attachment_ids)
+            .await
+        {
+            self.store.delete_session(&id).await?;
+            return Err(e.into());
+        }
         self.ensure_active(&id).await?;
         Ok(id)
     }
@@ -378,19 +390,27 @@ impl SessionManager {
         let input = match input {
             InputRequest::Steer {
                 text,
+                attachment_ids,
                 invoked_skills,
-            } => match self.prepare_user_input(id, &text, invoked_skills).await? {
-                Expanded::Compact => LoopInput::Compact,
-                Expanded::Text(t) => LoopInput::Steer(Message::user(t)),
-                Expanded::Deferred => return Ok(()),
+            } => match self
+                .user_input(id, text, attachment_ids, invoked_skills)
+                .await?
+            {
+                Prepared::Compact => LoopInput::Compact,
+                Prepared::Message(m) => LoopInput::Steer(m),
+                Prepared::Deferred => return Ok(()),
             },
             InputRequest::Interrupt {
                 text,
+                attachment_ids,
                 invoked_skills,
-            } => match self.prepare_user_input(id, &text, invoked_skills).await? {
-                Expanded::Compact => LoopInput::Compact,
-                Expanded::Text(t) => LoopInput::Interrupt(Message::user(t)),
-                Expanded::Deferred => return Ok(()),
+            } => match self
+                .user_input(id, text, attachment_ids, invoked_skills)
+                .await?
+            {
+                Prepared::Compact => LoopInput::Compact,
+                Prepared::Message(m) => LoopInput::Interrupt(m),
+                Prepared::Deferred => return Ok(()),
             },
             InputRequest::Approval { call_id, decision } => {
                 LoopInput::Approval { call_id, decision }
@@ -922,6 +942,13 @@ fn retry_delay(message: &str, attempt: u32) -> Duration {
     }
 }
 
+/// What a user's input turns into.
+enum Prepared {
+    Compact,
+    Message(Message),
+    Deferred,
+}
+
 /// Result of interpreting user input with explicit skills / a leading `/command`.
 enum Expanded {
     Compact,
@@ -931,6 +958,55 @@ enum Expanded {
 }
 
 impl SessionManager {
+    /// Checks the attachments of a new session's first message (none may be in use yet).
+    async fn unsent_attachments(&self, ids: &[String]) -> Result<Vec<Attachment>, ApiError> {
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            let found = self.registry.attachments.get_attachment(id).await?;
+            match found {
+                Some(a) if a.session_id.is_none() => out.push(a),
+                _ => return Err(ApiError::BadRequest(format!("unknown attachment {id}"))),
+            }
+        }
+        Ok(out)
+    }
+
+    /// One user message from its text, skills and images; binds the images to the session.
+    async fn user_input(
+        &self,
+        id: &str,
+        text: String,
+        attachment_ids: Vec<String>,
+        invoked: Vec<InvokedSkill>,
+    ) -> Result<Prepared, ApiError> {
+        check_ids(&attachment_ids)?;
+        if text.trim().is_empty() && attachment_ids.is_empty() && invoked.is_empty() {
+            return Err(ApiError::BadRequest("the message is empty".into()));
+        }
+        self.store.load_state(id).await?;
+        let expanded = self
+            .prepare_user_input(id, &text, &attachment_ids, invoked)
+            .await?;
+        let text = match expanded {
+            Expanded::Compact if attachment_ids.is_empty() => return Ok(Prepared::Compact),
+            Expanded::Compact => {
+                return Err(ApiError::BadRequest("/compact takes no images".into()));
+            }
+            Expanded::Deferred => return Ok(Prepared::Deferred),
+            Expanded::Text(t) => t,
+        };
+        let attachments = self
+            .registry
+            .attachments
+            .claim_attachments(id, &attachment_ids)
+            .await
+            .map_err(|e| match e {
+                oort_agent::StoreError::Conflict(m) => ApiError::BadRequest(m),
+                other => other.into(),
+            })?;
+        Ok(Prepared::Message(user_message(&attachments, text)))
+    }
+
     /// Explicit skills (`invoked_skills`, or a leading `/name args`) are appended to *this*
     /// user message as `<active_skill>` blocks — never to the system prompt or older
     /// messages; the engine replaces repeats within an epoch by a short marker. Skills in
@@ -940,6 +1016,7 @@ impl SessionManager {
         &self,
         id: &str,
         text: &str,
+        attachment_ids: &[String],
         mut invoked: Vec<InvokedSkill>,
     ) -> Result<Expanded, ApiError> {
         let mut rest = text.to_string();
@@ -992,7 +1069,13 @@ impl SessionManager {
         }
         let rest = rest.trim().to_string();
         if !delegated.is_empty() {
-            self.delegate_skills(id, delegated, blocks, rest).await?;
+            // Bound now, so a bad id fails this request rather than the background report.
+            self.registry
+                .attachments
+                .claim_attachments(id, attachment_ids)
+                .await?;
+            self.delegate_skills(id, delegated, blocks, rest, attachment_ids.to_vec())
+                .await?;
             return Ok(Expanded::Deferred);
         }
         let ask = if rest.is_empty() {
@@ -1013,6 +1096,7 @@ impl SessionManager {
         skills: Vec<(oort_skills::Skill, Option<String>)>,
         inline_blocks: Vec<String>,
         user_text: String,
+        attachment_ids: Vec<String>,
     ) -> Result<(), ApiError> {
         let stored = self.store.load_state(id).await?;
         let cfg = session_settings(&stored.meta)?;
@@ -1100,6 +1184,7 @@ impl SessionManager {
                         &session_id,
                         InputRequest::Steer {
                             text: parts.join("\n\n"),
+                            attachment_ids,
                             invoked_skills: vec![],
                         },
                     )

@@ -19,12 +19,14 @@ use oort_llm::{
 use oort_mcp::{ClientOptions, McpConfig, McpError, ServerEntry};
 use oort_skills::SkillRegistry;
 use oort_storage::analytics::{AnalyticsStore, CallPurpose};
+use oort_storage::attachments::AttachmentStore;
 use serde::Serialize;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::api::ApiError;
 use crate::approval::{ApprovalHandle, DynamicApproval};
+use crate::attachments::AttachmentModel;
 use crate::config::{McpBinding, SessionConfig};
 use crate::metering::{Meter, MeteredExecutor, MeteredModel};
 use crate::mock_model::MockModel;
@@ -90,6 +92,8 @@ pub struct Registry {
     pub oauth: OAuthFlows,
     pub memories: Arc<dyn MemoryStore>,
     pub output_blobs: Arc<dyn oort_agent::ToolOutputBlobStore>,
+    /// Uploaded images.
+    pub attachments: Arc<dyn AttachmentStore>,
     /// Usage ledgers, budget and custom prices.
     pub analytics: Arc<dyn AnalyticsStore>,
     pub subagents: SubagentLimits,
@@ -106,6 +110,7 @@ pub trait Stores:
     + MemoryStore
     + oort_agent::ToolOutputBlobStore
     + AnalyticsStore
+    + AttachmentStore
     + 'static
 {
 }
@@ -116,6 +121,7 @@ impl<
         + MemoryStore
         + oort_agent::ToolOutputBlobStore
         + AnalyticsStore
+        + AttachmentStore
         + 'static,
 > Stores for T
 {
@@ -164,6 +170,7 @@ impl Registry {
         Self {
             memories: store.clone(),
             output_blobs: store.clone(),
+            attachments: store.clone(),
             analytics: store.clone(),
             subagents: SubagentLimits::default(),
             web: WebFetchOptions::default(),
@@ -397,7 +404,10 @@ impl Registry {
         session_id: &str,
         purpose: CallPurpose,
     ) -> Result<Arc<dyn ModelClient>, ApiError> {
-        let model = self.model_from(self.session_client(cfg).await?);
+        let model = AttachmentModel::wrap(
+            self.model_from(self.session_client(cfg).await?),
+            self.attachments.clone(),
+        );
         Ok(MeteredModel::wrap(
             model,
             self.meter(cfg, session_id).await,

@@ -5,6 +5,7 @@
 pub mod analytics_api;
 pub mod api;
 pub mod approval;
+pub mod attachments;
 pub mod commands;
 pub mod config;
 pub mod config_api;
