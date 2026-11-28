@@ -1,115 +1,113 @@
-/* Oort design tokens: two themes (iris = 星雲暮紫, lunar = 月光極簡) × light / dark.
-   Applied as <html data-theme="iris|lunar" data-mode="light|dark">. */
+/* Oort design tokens.
+   90% neutral surfaces + a small accent. Two themes (iris = 星雲暮紫, lunar = 月光極簡) differ only
+   in the accent; light / dark switch the neutrals. Applied as
+   <html data-theme="iris|lunar" data-mode="light|dark">.
 
+   The accent is reserved for: the send button, active indicator dots and progress fills. */
+
+/* ----- neutrals: light ----- */
+:root,
+[data-mode="light"] {
+  --bg-canvas: #FFFFFF;
+  --bg-sidebar: #F7F7F8;
+  --bg-surface: #FAFAFB;          /* inline cards, tool frames */
+  --bg-elevated: #FFFFFF;         /* floating input, popovers, menus, modals */
+  --bg-user-bubble: #F2F2F4;
+  --bg-code: #F4F4F6;
+  --bg-hover: rgba(0, 0, 0, 0.04);
+  --bg-selected: rgba(0, 0, 0, 0.06);
+  --border-subtle: rgba(0, 0, 0, 0.07);
+  --border-default: rgba(0, 0, 0, 0.12);
+  --border-strong: rgba(0, 0, 0, 0.24);
+  --text-primary: #18181B;
+  --text-secondary: #52525B;
+  --text-muted: #8E8E93;
+  --primary: #18181B;             /* primary buttons are neutral, not accent */
+  --primary-hover: #2E2E33;
+  --on-primary: #FFFFFF;
+  --ok: #1F8A4C;
+  --warn: #B45309;
+  --danger: #D92D20;
+  --diff-add: rgba(31, 138, 76, 0.10);
+  --diff-del: rgba(217, 45, 32, 0.08);
+  --chart-2: #A1A1AA;
+  --grid: #EFEFF1;
+  --shadow-float: 0 1px 2px rgba(0, 0, 0, 0.04), 0 6px 24px rgba(0, 0, 0, 0.06);
+  --shadow-pop: 0 2px 6px rgba(0, 0, 0, 0.05), 0 12px 32px rgba(0, 0, 0, 0.08);
+  --overlay: rgba(0, 0, 0, 0.28);
+  color-scheme: light;
+}
+
+/* ----- neutrals: dark ----- */
+[data-mode="dark"] {
+  --bg-canvas: #141416;
+  --bg-sidebar: #101012;
+  --bg-surface: #1A1A1D;
+  --bg-elevated: #1E1E22;
+  --bg-user-bubble: #232327;
+  --bg-code: #1C1C21;
+  --bg-hover: rgba(255, 255, 255, 0.05);
+  --bg-selected: rgba(255, 255, 255, 0.08);
+  --border-subtle: rgba(255, 255, 255, 0.07);
+  --border-default: rgba(255, 255, 255, 0.12);
+  --border-strong: rgba(255, 255, 255, 0.26);
+  --text-primary: #F4F4F5;
+  --text-secondary: #B4B4BB;
+  --text-muted: #7A7A82;
+  --primary: #F4F4F5;
+  --primary-hover: #DEDEE2;
+  --on-primary: #18181B;
+  --ok: #4ADE80;
+  --warn: #FBBF24;
+  --danger: #F87171;
+  --diff-add: rgba(74, 222, 128, 0.10);
+  --diff-del: rgba(248, 113, 113, 0.10);
+  --chart-2: #71717A;
+  --grid: #26262A;
+  --shadow-float: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 28px rgba(0, 0, 0, 0.35);
+  --shadow-pop: 0 2px 6px rgba(0, 0, 0, 0.3), 0 14px 36px rgba(0, 0, 0, 0.45);
+  --overlay: rgba(0, 0, 0, 0.5);
+  color-scheme: dark;
+}
+
+/* ----- accents ----- */
 :root,
 [data-theme="iris"][data-mode="light"] {
-  --bg-app: #FAF9FC;
-  --bg-sidebar: #F2EFF8;
-  --bg-surface: #FFFFFF;
-  --bg-subtle: #F4F1F9;
-  --bg-user: #EBE5F7;
-  --border: #E7E2F0;
-  --text: #1D1A26;
-  --text-2: #5D566E;
-  --muted: #8E879E;
-  --accent: #765AD8;
-  --accent-hover: #6247C2;
-  --accent-soft: rgba(118, 90, 216, 0.11);
-  --accent-text: #6247C2;
+  --accent: #5B5BD6;
+  --accent-hover: #4C4CC4;
   --on-accent: #FFFFFF;
-  --chart-1: #765AD8;
-  --chart-2: #C084FC;
-  --orbit-dot: #E879F9;
-  --grid: #ECE7F4;
-  --ok: #15803D;
-  --warn: #B45309;
-  --danger: #DC2626;
-  --diff-add: rgba(22, 163, 74, 0.12);
-  --diff-del: rgba(220, 38, 38, 0.10);
-  --shadow: 0 1px 2px rgba(29, 26, 38, 0.04), 0 8px 24px rgba(29, 26, 38, 0.06);
-  color-scheme: light;
+  --chart-1: #5B5BD6;
 }
-
 [data-theme="iris"][data-mode="dark"] {
-  --bg-app: #13111A;
-  --bg-sidebar: #0E0C14;
-  --bg-surface: #1A1724;
-  --bg-subtle: #221E2E;
-  --bg-user: #29223B;
-  --border: #2B263B;
-  --text: #F1EFF7;
-  --text-2: #ABA4BD;
-  --muted: #756E87;
-  --accent: #9178F0;
-  --accent-hover: #7E63E6;
-  --accent-soft: rgba(145, 120, 240, 0.16);
-  --accent-text: #C4B5FD;
+  --accent: #7C7CE6;
+  --accent-hover: #8E8EEC;
   --on-accent: #FFFFFF;
-  --chart-1: #A78BFA;
-  --chart-2: #E879F9;
-  --orbit-dot: #F0ABFC;
-  --grid: #262135;
-  --ok: #4ADE80;
-  --warn: #FBBF24;
-  --danger: #F87171;
-  --diff-add: rgba(74, 222, 128, 0.12);
-  --diff-del: rgba(248, 113, 113, 0.12);
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.35);
-  color-scheme: dark;
+  --chart-1: #8E8EEC;
 }
-
 [data-theme="lunar"][data-mode="light"] {
-  --bg-app: #FFFFFF;
-  --bg-sidebar: #F6F6F7;
-  --bg-surface: #FFFFFF;
-  --bg-subtle: #F4F4F5;
-  --bg-user: #EFEFF1;
-  --border: #E8E8EB;
-  --text: #18181B;
-  --text-2: #52525B;
-  --muted: #8E8E98;
   --accent: #18181B;
-  --accent-hover: #323238;
-  --accent-soft: rgba(24, 24, 27, 0.08);
-  --accent-text: #18181B;
+  --accent-hover: #2E2E33;
   --on-accent: #FFFFFF;
   --chart-1: #27272A;
-  --chart-2: #A1A1AA;
-  --orbit-dot: #10B981;
-  --grid: #EFEFF1;
-  --ok: #15803D;
-  --warn: #B45309;
-  --danger: #DC2626;
-  --diff-add: rgba(22, 163, 74, 0.12);
-  --diff-del: rgba(220, 38, 38, 0.10);
-  --shadow: 0 1px 2px rgba(24, 24, 27, 0.04), 0 8px 24px rgba(24, 24, 27, 0.06);
-  color-scheme: light;
 }
-
 [data-theme="lunar"][data-mode="dark"] {
-  --bg-app: #121214;
-  --bg-sidebar: #0C0C0E;
-  --bg-surface: #19191C;
-  --bg-subtle: #222226;
-  --bg-user: #27272B;
-  --border: #29292E;
-  --text: #F4F4F5;
-  --text-2: #A1A1AA;
-  --muted: #71717A;
   --accent: #F4F4F5;
-  --accent-hover: #E4E4E7;
-  --accent-soft: rgba(244, 244, 245, 0.12);
-  --accent-text: #F4F4F5;
+  --accent-hover: #DEDEE2;
   --on-accent: #18181B;
   --chart-1: #E4E4E7;
-  --chart-2: #71717A;
-  --orbit-dot: #34D399;
-  --grid: #242429;
-  --ok: #4ADE80;
-  --warn: #FBBF24;
-  --danger: #F87171;
-  --diff-add: rgba(74, 222, 128, 0.12);
-  --diff-del: rgba(248, 113, 113, 0.12);
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.35);
-  color-scheme: dark;
+}
+
+/* ----- aliases used by older rules (all neutral; none of them paint with the accent) ----- */
+:root {
+  --bg-app: var(--bg-canvas);
+  --bg-subtle: var(--bg-code);
+  --bg-user: var(--bg-user-bubble);
+  --border: var(--border-subtle);
+  --text: var(--text-primary);
+  --text-2: var(--text-secondary);
+  --muted: var(--text-muted);
+  --accent-soft: var(--bg-selected);
+  --accent-text: var(--text-primary);
+  --orbit-dot: var(--accent);
+  --shadow: var(--shadow-pop);
 }

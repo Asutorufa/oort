@@ -4,8 +4,8 @@ export type ThemeName = "iris" | "lunar";
 export type Mode = "light" | "dark";
 
 export const THEMES: { id: ThemeName; label: string; swatch: string }[] = [
-  { id: "iris", label: "星雲暮紫", swatch: "#765AD8" },
-  { id: "lunar", label: "月光極簡", swatch: "#18181B" },
+  { id: "iris", label: "星雲暮紫", swatch: "#5B5BD6" },
+  { id: "lunar", label: "月光極簡", swatch: "#52525B" },
 ];
 
 const THEME_KEY = "oort.theme";

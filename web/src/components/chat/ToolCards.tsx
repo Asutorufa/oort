@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { ApprovalPreview, PendingApproval, ToolCall, ToolResult } from "../../api/types";
 import { DiffView } from "../../widgets/ApprovalDiff";
+import { DecisionFooter } from "./Decision";
 import { JsonView } from "../common";
 import { Markdown } from "./LazyMarkdown";
 
@@ -48,7 +49,7 @@ export function AskUserCard({
       <header className="widget-head">
         <h4>{q.question}</h4>
         <span className="spacer" />
-        {answered ? <span className="pill ok">✓ 回答済み</span> : pending ? <span className="pill warn">回答待ち</span> : null}
+        {answered ? <span className="pill ok">回答済み</span> : pending ? <span className="pill warn">回答待ち</span> : null}
       </header>
       <div className="widget-body">
         {answered ? (
@@ -111,6 +112,13 @@ const TITLE: Record<string, string> = {
   configure_mcp_server: "MCP サーバーを登録します",
 };
 
+/** `/home/me/projects/x` → `~/…/projects/x` style: the last two segments are what matter. */
+function shortPath(p: string | null | undefined): string {
+  if (!p) return "作業ディレクトリ";
+  const parts = p.split("/").filter(Boolean);
+  return parts.length <= 2 ? p : `…/${parts.slice(-2).join("/")}`;
+}
+
 function Preview({ p }: { p: ApprovalPreview }) {
   switch (p.kind) {
     case "diff":
@@ -118,25 +126,22 @@ function Preview({ p }: { p: ApprovalPreview }) {
         <>
           <div className="diff-meta">
             <code className="chip">{p.path}</code>
-            {p.created && <span className="pill accent">新規作成</span>}
+            {p.created && <span className="pill">新規作成</span>}
           </div>
           <DiffView diff={p.diff || "（変更なし）"} />
         </>
       );
     case "command":
       return (
-        <div className="terminal">
-          <div className="term-bar">
-            <span className="term-dot" />
-            <span className="term-dot" />
-            <span className="term-dot" />
-            <span className="term-cwd">{p.cwd ?? ""}</span>
-            <span className="term-timeout">最長 {p.timeout_secs}s</span>
+        <div className="cmd-block">
+          <div className="cmd-meta">
+            <span className="cmd-cwd" title={p.cwd ?? ""}>
+              {shortPath(p.cwd)}
+            </span>
+            <span>·</span>
+            <span>最長 {p.timeout_secs}s</span>
           </div>
-          <pre>
-            <span className="term-prompt">$ </span>
-            {p.command}
-          </pre>
+          <pre>{p.command}</pre>
         </div>
       );
     case "skill":
@@ -145,7 +150,7 @@ function Preview({ p }: { p: ApprovalPreview }) {
           <div className="row">
             <b className="mono">/{p.name}</b>
             {p.update && <span className="pill warn">上書き</span>}
-            {p.execution_mode === "subagent" && <span className="pill accent">Subagent</span>}
+            {p.execution_mode === "subagent" && <span className="pill">Subagent</span>}
             {p.argument_hint && <code className="chip">{p.argument_hint}</code>}
           </div>
           <p className="lead">{p.description}</p>
@@ -171,6 +176,20 @@ function Preview({ p }: { p: ApprovalPreview }) {
   }
 }
 
+/** Natural-language subtitle for a pending approval (the server's reason is for logs). */
+export function approvalSubtitle(name: string, reason: string): string {
+  const byTool: Record<string, string> = {
+    run_command: "このコマンドを実行するには承認が必要です",
+    write_file: "このファイルを変更するには承認が必要です",
+    save_skill: "Skill を保存するには承認が必要です",
+    configure_mcp_server: "MCP サーバーを登録するには承認が必要です",
+  };
+  if (byTool[name]) return byTool[name];
+  if (/always_ask/.test(reason)) return "毎回確認する設定のため、承認が必要です";
+  if (/side effects/.test(reason)) return "外部に影響する操作のため、承認が必要です";
+  return "実行するには承認が必要です";
+}
+
 /** Approval for a side-effecting call, with a tool-specific preview. */
 export function ApprovalCard({
   pending,
@@ -181,37 +200,21 @@ export function ApprovalCard({
   onApprove: () => Promise<void>;
   onDeny: (reason: string) => Promise<void>;
 }) {
-  const [reason, setReason] = useState("");
-  const [busy, setBusy] = useState(false);
   const { call, preview } = pending;
-  const act = async (f: () => Promise<void>) => {
-    setBusy(true);
-    try {
-      await f();
-    } finally {
-      setBusy(false);
-    }
-  };
   return (
     <section className="widget widget-approval">
       <header className="widget-head">
-        <h4>{TITLE[call.name] ?? <><span className="tool-name">{call.name.replace("__", " · ")}</span> を実行してよいですか？</>}</h4>
+        <div className="widget-titles">
+          <h4>{TITLE[call.name] ?? <><span className="tool-name">{call.name.replace("__", " · ")}</span> を実行します</>}</h4>
+          <p className="widget-sub">{approvalSubtitle(call.name, pending.reason)}</p>
+        </div>
         <span className="spacer" />
         <span className="pill warn">承認待ち</span>
       </header>
       <div className="widget-body">
-        <p className="muted">{pending.reason}</p>
         {preview ? <Preview p={preview} /> : <JsonView value={call.arguments} />}
-        <div className="wactions">
-          <button className="btn primary" disabled={busy || preview?.kind === "error"} onClick={() => act(onApprove)}>
-            承認して実行
-          </button>
-          <input className="reason" placeholder="キャンセルの理由（任意）" value={reason} onChange={(e) => setReason(e.target.value)} />
-          <button className="btn" disabled={busy} onClick={() => act(() => onDeny(reason || "ユーザーがキャンセルしました"))}>
-            キャンセル
-          </button>
-        </div>
       </div>
+      <DecisionFooter canApprove={preview?.kind !== "error"} onApprove={onApprove} onDeny={onDeny} />
     </section>
   );
 }

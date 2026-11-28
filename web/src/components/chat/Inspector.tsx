@@ -6,6 +6,8 @@ import { fmtMs, pct } from "../common";
 import { DebugPanel } from "./DebugPanel";
 
 /** Right-hand drawer with the internals: prefix cache, latency, compaction, raw history. */
+const TRACE_STATUS: Record<string, string> = { idle: "完了", running: "実行中", needs_approval: "承認待ち", halted: "停止" };
+
 export function Inspector({
   detail,
   log,
@@ -129,7 +131,7 @@ function TraceView({ id, onBack, onClose, onInspect }: { id: string; onBack?: ()
             <div className="trace-meta">
               <b>{d.title}</b>
               <div className="muted">
-                深さ {d.lineage.depth} · {d.status} · {d.turn} ターン · キャッシュ {pct(d.usage.cache_hit_rate)}
+                深さ {d.lineage.depth} · {TRACE_STATUS[d.status] ?? d.status} · {d.turn} ターン · キャッシュ {pct(d.usage.cache_hit_rate)}
               </div>
             </div>
             <ol className="trace">

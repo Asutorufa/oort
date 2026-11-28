@@ -1,27 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { ContentPart, PlanStep, RawMessage, SessionDetail, SessionSummary, ToolCall, ToolResult } from "../../api/types";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import type { ContentPart, RawMessage, SessionDetail, SessionSummary, ToolCall, ToolResult } from "../../api/types";
+import { ChevronDown } from "../../brand/Icons";
 import { OortMark } from "../../brand/OortMark";
 import type { Live, SubagentLive, ToolTimes } from "../../hooks/useSessionStream";
 import { asWidget, parseResponse, responsesById, type WidgetActions } from "../../widgets/protocol";
 import { Widget } from "../../widgets/WidgetRegistry";
 import { fmtMs, JsonView } from "../common";
 import { Markdown } from "./LazyMarkdown";
-import { PlanTracker } from "./PlanTracker";
-import { SubagentCard } from "./SubagentCard";
+import { RowCard, SubagentCard } from "./SubagentCard";
 import { ApprovalCard, AskUserCard, McpConfiguredCard } from "./ToolCards";
-
-/** The latest `update_plan` steps in the history (the plan survives reloads this way). */
-function lastPlan(raw: RawMessage[]): PlanStep[] | null {
-  for (let i = raw.length - 1; i >= 0; i--) {
-    for (const p of [...raw[i].content].reverse()) {
-      if (p.kind === "tool_call" && p.name === "update_plan") {
-        const steps = (p.arguments as { steps?: PlanStep[] } | null)?.steps;
-        if (Array.isArray(steps)) return steps;
-      }
-    }
-  }
-  return null;
-}
 
 const RENDER_WIDGET = "render_widget";
 
@@ -64,24 +51,26 @@ function parseUserText(text: string) {
 }
 
 function SkillReport({ skill, error, body }: { skill: string; error: boolean; body: string }) {
-  const [open, setOpen] = useState(false);
   return (
-    <section className="subagent">
-      <header className="subagent-head">
-        <span className="sa-icon">◇</span>
-        <span className="sa-profile">スキル /{skill}</span>
-        <span className={`pill ${error ? "danger" : "ok"}`}>{error ? "エラー" : "完了"}</span>
-        <span className="spacer" />
-        <button className="link" onClick={() => setOpen(!open)}>
-          {open ? "結果を閉じる" : "結果を表示"}
-        </button>
-      </header>
-      {open && (
-        <div className="sa-summary">
-          <Markdown text={body} />
-        </div>
-      )}
-    </section>
+    <RowCard state={error ? "error" : "done"} title={`/${skill}`} subject="スキルをサブエージェントで実行しました" meta={error ? "エラー" : undefined}>
+      <div className="rowcard-section">
+        <div className="rowcard-label">{error ? "エラー" : "結果"}</div>
+        <Markdown text={body} />
+      </div>
+    </RowCard>
+  );
+}
+
+/**
+ * One assistant turn: the brand mark appears once at the top, and every step of the turn
+ * (thinking, tools, subagents, approvals, the answer) stacks in a single column next to it.
+ */
+function Turn({ mark = true, live, children }: { mark?: boolean; live?: boolean; children: ReactNode }) {
+  return (
+    <div className={`row-assistant ${live ? "live" : ""}`}>
+      <div className="avatar">{mark && <OortMark size={18} />}</div>
+      <div className="assistant-body">{children}</div>
+    </div>
   );
 }
 
@@ -95,7 +84,7 @@ function UserBubble({ msg, widgetTitles }: { msg: RawMessage; widgetTitles: Map<
     return (
       <div className="row-user">
         <div className="bubble user response" title={text}>
-          <span className="resp-icon">↩</span> {label}
+          {label}
           {what && <span className="muted"> · {what}</span>}
         </div>
       </div>
@@ -105,12 +94,9 @@ function UserBubble({ msg, widgetTitles }: { msg: RawMessage; widgetTitles: Map<
   return (
     <>
       {reports.map((r, i) => (
-        <div className="row-assistant" key={i}>
-          <div className="avatar">
-            <OortMark size={22} />
-          </div>
+        <Turn key={i} mark={false}>
           <SkillReport {...r} />
-        </div>
+        </Turn>
       ))}
       {(rest || skills.length > 0) && (
         <div className="row-user">
@@ -119,7 +105,7 @@ function UserBubble({ msg, widgetTitles }: { msg: RawMessage; widgetTitles: Map<
               <div className="skill-chips">
                 {skills.map((k, i) => (
                   <span key={i} className="skill-chip">
-                    ✦ {k}
+                    /{k}
                   </span>
                 ))}
               </div>
@@ -186,7 +172,9 @@ function ActivityRow({
         <span>{parts}</span>
         {total > 0 && <span className="muted">({fmtMs(total)})</span>}
         {failed > 0 && <span className="pill danger">{failed} 件エラー</span>}
-        <span className="chev">⌄</span>
+        <span className="chev">
+          <ChevronDown size={13} />
+        </span>
       </button>
       {open && (
         <div className="activity-body">
@@ -213,7 +201,6 @@ interface ThreadProps {
   toolTimes: ToolTimes;
   actions: WidgetActions;
   subagents: Record<string, SubagentLive>;
-  plan: PlanStep[] | null;
   children: SessionSummary[];
   onTrace: (subSessionId: string) => void;
   onAnswer: (callId: string, content: string) => Promise<void>;
@@ -223,7 +210,7 @@ interface ThreadProps {
 /** Calls shown as their own cards (not in the activity line). */
 const CARD_TOOLS = new Set([RENDER_WIDGET, "spawn_subagent", "ask_user", "update_plan", "configure_mcp_server"]);
 
-export function Thread({ detail, live, toolTimes, actions, subagents, plan, children, onTrace, onAnswer, onStartWithMcp }: ThreadProps) {
+export function Thread({ detail, live, toolTimes, actions, subagents, children, onTrace, onAnswer, onStartWithMcp }: ThreadProps) {
   const box = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const groups = useMemo(() => groupMessages(detail.raw), [detail.raw]);
@@ -253,17 +240,13 @@ export function Thread({ detail, live, toolTimes, actions, subagents, plan, chil
     if (el && stick.current) el.scrollTop = el.scrollHeight;
   }, [detail.raw.length, live.text.length, live.thinking.length, detail.pending_approvals.length]);
 
-  const assistant = (msgs: RawMessage[], key: number) => {
+  const assistantParts = (msgs: RawMessage[]) => {
     const parts: ContentPart[] = msgs.filter((m) => m.role === "assistant").flatMap((m) => m.content);
     const thinking = parts.flatMap((p) => (p.kind === "thinking" ? [p.thinking] : []));
     const calls = parts.flatMap((p) => (p.kind === "tool_call" && !CARD_TOOLS.has(p.name) ? [p as ToolCall] : []));
     const latencyMs = msgs.reduce((s, m) => s + (latency.get(m.seq) ?? 0), 0);
     return (
-      <div className="row-assistant" key={key}>
-        <div className="avatar">
-          <OortMark size={22} />
-        </div>
-        <div className="assistant-body">
+      <>
           <ActivityRow thinking={thinking} calls={calls} results={results} running={running} toolTimes={toolTimes} latencyMs={latencyMs} />
           {msgs.map((m) =>
             m.content.map((p, i) => {
@@ -317,8 +300,7 @@ export function Thread({ detail, live, toolTimes, actions, subagents, plan, chil
               return null;
             }),
           )}
-        </div>
-      </div>
+      </>
     );
   };
 
@@ -327,7 +309,44 @@ export function Thread({ detail, live, toolTimes, actions, subagents, plan, chil
   // while they run; their report arrives as a message.
   const reportsIn = new Set(detail.raw.filter((m) => m.role === "user").flatMap((m) => [...textOf(m).matchAll(/session="([^"]+)"/g)].map((x) => x[1])));
   const skillRuns = Object.entries(subagents).filter(([id, s]) => id.startsWith("skill:") && !reportsIn.has(s.subSessionId));
-  const planSteps = plan ?? lastPlan(detail.raw);
+
+  const showLive = !!(live.text || live.thinking || (busy && !live.runningTools.length));
+  const hasTail = otherApprovals.length > 0 || skillRuns.length > 0 || showLive;
+  const tailInLast = groups[groups.length - 1]?.kind === "assistant";
+  // Steps that belong to the turn in progress: they join the last assistant turn (one mark).
+  const tail = (
+    <>
+      {otherApprovals.map((pa) => (
+        <ApprovalCard key={pa.call.id} pending={pa} onApprove={() => actions.approve(pa.call.id)} onDeny={(reason) => actions.deny(pa.call.id, reason)} />
+      ))}
+      {skillRuns.map(([id, s]) => (
+        <SubagentCard
+          key={id}
+          task={children.find((c) => c.id === s.subSessionId)?.title ?? "スキルを実行中"}
+          profile={s.profile}
+          live={s}
+          subSessionId={s.subSessionId}
+          onTrace={onTrace}
+        />
+      ))}
+      {showLive && (
+        <>
+          {live.thinking && !live.text && <div className="activity-row ghost">思考中…</div>}
+          {live.text ? (
+            <Markdown text={live.text} />
+          ) : (
+            !live.thinking && (
+              <div className="typing" aria-label="応答を待っています">
+                <span />
+                <span />
+                <span />
+              </div>
+            )
+          )}
+        </>
+      )}
+    </>
+  );
 
   return (
     <div
@@ -339,53 +358,23 @@ export function Thread({ detail, live, toolTimes, actions, subagents, plan, chil
       }}
     >
       <div className="thread-inner">
-        {planSteps && planSteps.length > 0 && <PlanTracker steps={planSteps} />}
-        {groups.map((g, i) => (
-          <div key={i}>
-            {g.kind === "user" && cutAt.has(g.msg.seq) && <div className="epoch">ここまでの会話は要約されています</div>}
-            {g.kind === "user" ? <UserBubble msg={g.msg} widgetTitles={widgetTitles} /> : assistant(g.msgs, i)}
-          </div>
-        ))}
-
-        {otherApprovals.map((pa) => (
-          <div className="row-assistant" key={pa.call.id}>
-            <div className="avatar">
-              <OortMark size={22} />
+        {groups.map((g, i) => {
+          const isLast = i === groups.length - 1;
+          return (
+            <div key={i} className="group">
+              {g.kind === "user" && cutAt.has(g.msg.seq) && <div className="epoch">ここまでの会話は要約されています</div>}
+              {g.kind === "user" ? (
+                <UserBubble msg={g.msg} widgetTitles={widgetTitles} />
+              ) : (
+                <Turn live={isLast && showLive}>
+                  {assistantParts(g.msgs)}
+                  {isLast && tail}
+                </Turn>
+              )}
             </div>
-            <ApprovalCard
-              pending={pa}
-              onApprove={() => actions.approve(pa.call.id)}
-              onDeny={(reason) => actions.deny(pa.call.id, reason)}
-            />
-          </div>
-        ))}
-
-        {skillRuns.map(([id, s]) => (
-          <div className="row-assistant" key={id}>
-            <div className="avatar">
-              <OortMark size={22} />
-            </div>
-            <SubagentCard
-              task={children.find((c) => c.id === s.subSessionId)?.title ?? "スキルを実行中"}
-              profile={s.profile}
-              live={s}
-              subSessionId={s.subSessionId}
-              onTrace={onTrace}
-            />
-          </div>
-        ))}
-
-        {(live.text || live.thinking || (busy && !live.runningTools.length)) && (
-          <div className="row-assistant live">
-            <div className="avatar">
-              <OortMark size={22} className="spin" />
-            </div>
-            <div className="assistant-body">
-              {live.thinking && !live.text && <div className="activity-row ghost">思考中…</div>}
-              {live.text ? <Markdown text={live.text} /> : !live.thinking && <div className="typing"><span /><span /><span /></div>}
-            </div>
-          </div>
-        )}
+          );
+        })}
+        {!tailInLast && hasTail && <Turn live={showLive}>{tail}</Turn>}
       </div>
     </div>
   );

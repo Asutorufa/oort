@@ -1,18 +1,18 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { errorText, sessions } from "../api";
 import type { SessionSummary } from "../api/types";
-import { ToolIcon } from "../brand/Icons";
+import { LayersIcon, MemoryIcon, ModelIcon, MoonIcon, MoreIcon, PlusIcon, SidebarIcon, SparkIcon, SunIcon, ToolIcon } from "../brand/Icons";
 import { OortMark } from "../brand/OortMark";
 import { href, navigate, type View } from "../hooks/useHashRoute";
 import { THEMES, useTheme } from "../theme/ThemeProvider";
 import { Modal } from "../components/common";
 
 const NAV: { view: View; label: string; icon: ReactNode }[] = [
-  { view: "mcp", label: "ツール & MCP", icon: <ToolIcon size={15} /> },
-  { view: "skills", label: "Skills", icon: "✦" },
-  { view: "memories", label: "メモリ", icon: "❍" },
-  { view: "models", label: "モデル設定", icon: "◎" },
-  { view: "presets", label: "Presets", icon: "❖" },
+  { view: "mcp", label: "ツール & MCP", icon: <ToolIcon /> },
+  { view: "skills", label: "Skills", icon: <SparkIcon /> },
+  { view: "memories", label: "メモリ", icon: <MemoryIcon /> },
+  { view: "models", label: "モデル設定", icon: <ModelIcon /> },
+  { view: "presets", label: "Presets", icon: <LayersIcon /> },
 ];
 
 function group(ms: number): string {
@@ -75,15 +75,17 @@ export function Sidebar({
     <aside className={`sidebar ${collapsed ? "collapsed" : ""}`}>
       <div className="sb-top">
         <a className="brand" href={href("chat")} title="Oort">
-          <OortMark size={26} />
+          <OortMark size={20} />
           <span className="brand-name">Oort</span>
         </a>
         <button className="btn ghost icon collapse" onClick={() => setCollapsed(!collapsed)} aria-label={collapsed ? "サイドバーを開く" : "サイドバーを閉じる"}>
-          {collapsed ? "»" : "«"}
+          <SidebarIcon />
         </button>
       </div>
       <a className="new-chat" href={href("chat", "new")} title="新しいチャット">
-        <span className="plus">＋</span>
+        <span className="plus">
+          <PlusIcon />
+        </span>
         <span className="label">新しいチャット</span>
       </a>
 
@@ -120,7 +122,7 @@ export function Sidebar({
                     setMenu(menu === s.id ? null : s.id);
                   }}
                 >
-                  ⋯
+                  <MoreIcon />
                 </button>
                 {menu === s.id && (
                   <div className="menu" onClick={(e) => e.stopPropagation()}>
@@ -166,20 +168,24 @@ export function Sidebar({
             <span className="label">{n.label}</span>
           </a>
         ))}
-        <div className="theme-row">
-          {THEMES.map((t) => (
-            <button
-              key={t.id}
-              className={`theme-dot ${theme === t.id ? "on" : ""}`}
-              style={{ background: t.swatch }}
-              title={t.label}
-              aria-label={`テーマ: ${t.label}`}
-              onClick={() => setTheme(t.id)}
-            />
-          ))}
-          <span className="spacer" />
-          <button className="btn ghost icon" onClick={() => setMode(mode === "light" ? "dark" : "light")} title={mode === "light" ? "ダークモード" : "ライトモード"}>
-            {mode === "light" ? "☾" : "☀"}
+        <div className="util-row">
+          <div className="theme-seg" role="radiogroup" aria-label="テーマ">
+            {THEMES.map((t) => (
+              <button
+                key={t.id}
+                role="radio"
+                aria-checked={theme === t.id}
+                className={theme === t.id ? "on" : ""}
+                title={t.label}
+                onClick={() => setTheme(t.id)}
+              >
+                <span className="swatch" style={{ background: t.swatch }} />
+                <span className="label">{t.label}</span>
+              </button>
+            ))}
+          </div>
+          <button className="mode-btn" onClick={() => setMode(mode === "light" ? "dark" : "light")} title={mode === "light" ? "ダークモードにする" : "ライトモードにする"} aria-label="表示モードを切り替え">
+            {mode === "light" ? <MoonIcon /> : <SunIcon />}
           </button>
         </div>
       </div>

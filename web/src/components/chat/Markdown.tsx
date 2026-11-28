@@ -23,19 +23,24 @@ function CodeBlock({ node, children, ...rest }: ComponentProps<"pre"> & { node?:
     .find((c) => c.startsWith("language-"))
     ?.slice("language-".length);
   const text = hastText(code).replace(/\n$/, "");
+  // Short untagged output ("Wrote a.txt (+1 -1).", a one-word answer) is a result line, not
+  // source code: no language label, no copy bar, no highlighting.
+  if (!lang && text.split("\n").length <= 3 && text.length <= 240) {
+    return <div className="result-line">{text}</div>;
+  }
   return (
     <div className="code-block">
       <div className="code-head">
-        <span className="muted">{lang ?? "text"}</span>
+        <span>{lang ?? ""}</span>
         <button
-          className="small ghost"
+          className="text-btn"
           onClick={async () => {
             await copyText(text);
             setCopied(true);
             window.setTimeout(() => setCopied(false), 1200);
           }}
         >
-          {copied ? "copied" : "copy"}
+          {copied ? "コピーしました" : "コピー"}
         </button>
       </div>
       <pre {...rest}>{children}</pre>

@@ -210,7 +210,7 @@ export function PresetsView({ selected }: { selected: string | null }) {
                     onChange={(on) => set("skill_ids", on ? [...form.skill_ids, k.id] : form.skill_ids.filter((x) => x !== k.id))}
                     label={
                       <span title={k.description}>
-                        ✦ <span className="mono">{k.name}</span>
+                        <span className="mono">/{k.name}</span>
                       </span>
                     }
                   />

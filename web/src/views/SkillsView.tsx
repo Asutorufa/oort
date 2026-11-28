@@ -169,7 +169,7 @@ export function SkillsView({ selected }: { selected: string | null }) {
             {current?.source.kind === "file" && (
               <div className="note">
                 ファイル由来の Skill です（<code>{current.source.path}</code>）。編集するにはファイルを書き換えるか、
-                <button className="link" onClick={copyToDb}>
+                <button className="text-btn" onClick={copyToDb}>
                   アプリにコピーして編集
                 </button>
                 してください。

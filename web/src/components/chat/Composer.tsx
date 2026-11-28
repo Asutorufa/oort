@@ -1,5 +1,16 @@
 import { useMemo, useRef, useState } from "react";
+import { ArrowUpIcon, StopIcon, XIcon } from "../../brand/Icons";
 import { APPROVAL_POLICIES, type ApprovalPolicy, type CommandInfo, type InvokedSkill } from "../../api/types";
+
+/** Japanese descriptions for the builtin commands (the server's text is English). */
+const COMMAND_TEXT: Record<string, string> = {
+  compact: "会話履歴を要約してコンテキストを整理",
+  approval: "ツール実行の承認ポリシーを切り替え",
+  stop: "実行中の応答をすぐに停止",
+  export: "この会話を JSON で書き出し",
+  new: "新しい会話を開始（プリセットを指定可）",
+};
+const describe = (c: CommandInfo) => (c.kind === "command" ? (COMMAND_TEXT[c.name] ?? c.description) : c.description);
 
 /** Commands that run as soon as they are picked (no argument to type). */
 const INSTANT = new Set(["compact", "stop", "export"]);
@@ -115,9 +126,11 @@ export function Composer({
     return (
       <li key={`${c.kind}:${c.name}`} className={i === sel ? "active" : ""} onMouseEnter={() => setSel(i)} onMouseDown={(e) => (e.preventDefault(), choose(c))}>
         <span className="slash-name">/{c.name}</span>
-        {c.argument_hint && <span className="slash-hint">{c.argument_hint}</span>}
-        {c.subagent && <span className="pill accent tiny">Subagent</span>}
-        <span className="muted ellipsis">{c.description}</span>
+        <span className="slash-hint">{c.argument_hint ?? ""}</span>
+        <span className="slash-desc">
+          {describe(c)}
+          {c.subagent && <span className="pill tiny">Subagent</span>}
+        </span>
       </li>
     );
   };
@@ -139,21 +152,24 @@ export function Composer({
                 <ul>{groups.system.map(option)}</ul>
               </>
             )}
-            <div className="slash-foot">↑↓ 選択 · Enter / Tab 決定 · Esc 閉じる</div>
+            <div className="slash-foot">
+              <kbd>↑</kbd>
+              <kbd>↓</kbd> 選択 <kbd>Enter</kbd> 決定 <kbd>Esc</kbd> 閉じる
+            </div>
           </div>
         )}
         {chips.length > 0 && (
           <div className="attached">
             {chips.map((c) => (
               <span key={c.name} className="attached-chip" title={c.description}>
-                ✦ {c.name}
-                {c.subagent && <span className="pill accent tiny">Subagent</span>}
+                /{c.name}
+                {c.subagent && <span className="pill tiny">Subagent</span>}
                 <button aria-label={`${c.name} を外す`} onClick={() => setChips(chips.filter((x) => x.name !== c.name))}>
-                  ×
+                  <XIcon size={12} stroke={2} />
                 </button>
               </span>
             ))}
-            {chips[chips.length - 1]?.argument_hint && <span className="muted">{chips[chips.length - 1].argument_hint} を本文に</span>}
+            {chips[chips.length - 1]?.argument_hint && <span className="muted">本文に {chips[chips.length - 1].argument_hint} を書いてください</span>}
           </div>
         )}
         <textarea
@@ -196,8 +212,8 @@ export function Composer({
           {busy ? (
             <>
               {!canSend && onStop && (
-                <button className="btn icon" title="停止" onClick={onStop}>
-                  ■
+                <button className="btn send stop" title="停止" aria-label="停止" onClick={onStop}>
+                  <StopIcon size={14} />
                 </button>
               )}
               {canSend && (
@@ -212,8 +228,8 @@ export function Composer({
               )}
             </>
           ) : (
-            <button className="btn primary send" disabled={!canSend} onClick={() => submit("send")} aria-label="送信">
-              ↑
+            <button className="btn send" disabled={!canSend} onClick={() => submit("send")} aria-label="送信">
+              <ArrowUpIcon size={16} stroke={2} />
             </button>
           )}
         </div>
