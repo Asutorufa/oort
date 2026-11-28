@@ -1,16 +1,29 @@
+import { motion } from "motion/react";
 import { useEffect, useState } from "react";
 import { errorText, sessions } from "../../api";
 import type { SessionDetail, TurnUsage } from "../../api/types";
-import type { LogEntry } from "../../hooks/useSessionStream";
-import { DebugPanel } from "./DebugPanel";
+import { ArrowLeftIcon, XIcon } from "../../brand/Icons";
+import type { ConnState, LogEntry } from "../../hooks/useSessionStream";
 import { useI18n, type Key } from "../../i18n";
+import { spring } from "../../lib/motion";
+import { HistoryTab } from "./InspectorHistory";
+import { LogTab } from "./InspectorLog";
+import { Overview } from "./InspectorOverview";
 
-/** Right-hand drawer with the internals: prefix cache, latency, compaction, raw history. */
 const TRACE_STATUS: Record<string, Key> = { idle: "trace.done", running: "status.running", needs_approval: "status.needsApproval", halted: "status.halted" };
 
+type Tab = "overview" | "history" | "log";
+const TABS: { id: Tab; label: Key }[] = [
+  { id: "overview", label: "insp.tab.overview" },
+  { id: "history", label: "debug.history" },
+  { id: "log", label: "insp.tab.log" },
+];
+
+/** Right-hand drawer with the internals: a fixed summary, then overview, history and event log tabs. */
 export function Inspector({
   detail,
   log,
+  conn,
   trace,
   onCloseTrace,
   onInspect,
@@ -20,6 +33,7 @@ export function Inspector({
 }: {
   detail: SessionDetail;
   log: LogEntry[];
+  conn: ConnState;
   /** A subagent session to show instead of this one. */
   trace?: string | null;
   onCloseTrace?: () => void;
@@ -28,66 +42,105 @@ export function Inspector({
   onStop: () => void;
   onClose: () => void;
 }) {
-  const { t, fmt } = useI18n();
+  const { t } = useI18n();
+  const [tab, setTab] = useState<Tab>("overview");
   if (trace) return <TraceView id={trace} onBack={onCloseTrace} onClose={onClose} onInspect={onInspect} />;
-  const turns = detail.usage.per_turn;
-  const cached = turns.reduce((s, x) => s + x.cache_read_tokens, 0);
-  const prompt = turns.reduce((s, x) => s + x.prompt_tokens, 0);
-  const last = turns[turns.length - 1];
+  // A loop that is merely alive but idle has nothing to stop.
+  const working = detail.active && (detail.status === "running" || detail.status === "needs_approval");
   return (
     <aside className="inspector" aria-label={t("insp.title")}>
       <header className="inspector-head">
         <h3>{t("insp.title")}</h3>
+        {working && detail.status === "running" && !detail.last_error && <span className="insp-pulse" title={t("status.running")} />}
         <span className="spacer" />
-        <button className="btn ghost icon" onClick={onClose} aria-label={t("common.close")}>
-          ✕
+        <button className="insp-icon" onClick={onClose} aria-label={t("common.close")}>
+          <XIcon size={15} />
         </button>
       </header>
-      <div className="inspector-body">
-        <section className="cache-card">
-          <div className="cache-head">
-            <span>{t("insp.prefixCache")}</span>
-            <b>{fmt.percent(detail.usage.cache_hit_rate)}</b>
+      <Summary detail={detail} working={working} onCompact={onCompact} onStop={onStop} />
+      <div className="insp-tabs" role="tablist">
+        {TABS.map((x) => (
+          <button key={x.id} type="button" role="tab" id={`insp-tab-${x.id}`} aria-selected={tab === x.id} className={tab === x.id ? "on" : ""} onClick={() => setTab(x.id)}>
+            {t(x.label)}
+            {x.id === "history" && <span className="insp-count">{detail.raw.length}</span>}
+            {tab === x.id && <motion.span layoutId="inspector-tab-indicator" className="insp-tab-indicator" transition={spring} />}
+          </button>
+        ))}
+      </div>
+      <div className="insp-panel" role="tabpanel" aria-labelledby={`insp-tab-${tab}`}>
+        {tab === "overview" && (
+          <div className="insp-scroll insp-overview">
+            <Overview detail={detail} onInspect={onInspect} />
           </div>
-          <div className="cache-bar" title={t("insp.cacheBar", { cached: fmt.number(cached), prompt: fmt.number(prompt) })}>
-            <div className="hit" style={{ width: `${prompt ? (cached / prompt) * 100 : 0}%` }} />
-          </div>
-          <div className="cache-legend">
-            <span>
-              <i className="sw hit" /> {t("insp.cached", { n: fmt.number(cached) })}
-            </span>
-            <span>
-              <i className="sw miss" /> {t("insp.fresh", { n: fmt.number(prompt - cached) })}
-            </span>
-          </div>
-          {last && (
-            <div className="stats">
-              <div className="stat">
-                <span className="muted">{t("insp.ttft")}</span>
-                <b>{fmt.ms(last.ttft_ms)}</b>
-              </div>
-              <div className="stat">
-                <span className="muted">{t("insp.total")}</span>
-                <b>{fmt.ms(last.latency_ms)}</b>
-              </div>
-              <div className="stat">
-                <span className="muted">{t("insp.lastHit")}</span>
-                <b>{fmt.percent(last.cache_hit_rate)}</b>
-              </div>
-            </div>
-          )}
-          <div className="row">
-            <button className="btn small" onClick={onCompact} disabled={detail.status === "halted"} title={t("insp.compactHint")}>
-              {t("insp.compact")}
-            </button>
-            <button className="btn small ghost" onClick={onStop} disabled={!detail.active}>
-              {t("insp.stopLoop")}
-            </button>
-          </div>
-        </section>
-        <DebugPanel detail={detail} log={log} onInspect={onInspect} />
+        )}
+        {tab === "history" && <HistoryTab detail={detail} />}
+        {tab === "log" && <LogTab log={log} conn={conn} />}
       </div>
     </aside>
+  );
+}
+
+/** Always visible: latency and cache of the last call, and how full the context is. */
+function Summary({ detail, working, onCompact, onStop }: { detail: SessionDetail; working: boolean; onCompact: () => void; onStop: () => void }) {
+  const { t, fmt } = useI18n();
+  const { usage, context } = detail;
+  const cached = usage.per_turn.reduce((s, x) => s + x.cache_read_tokens, 0);
+  const prompt = usage.per_turn.reduce((s, x) => s + x.prompt_tokens, 0);
+  const last = usage.per_turn[usage.per_turn.length - 1];
+  const used = context.tokens == null ? 0 : Math.min(1, context.tokens / context.max_tokens);
+  const threshold = Math.min(1, context.compaction_threshold / context.max_tokens);
+  return (
+    <div className="insp-summary">
+      <div className="insp-metrics">
+        <div>
+          <span>{t("insp.cache")}</span>
+          <b>
+            {fmt.percent(usage.cache_hit_rate)}
+            {last && <small title={t("insp.lastHit")}>{fmt.percent(last.cache_hit_rate)}</small>}
+          </b>
+        </div>
+        <div>
+          <span>{t("insp.ttft")}</span>
+          <b>{fmt.ms(last?.ttft_ms)}</b>
+        </div>
+        <div>
+          <span>{t("insp.total")}</span>
+          <b>{fmt.ms(last?.latency_ms)}</b>
+        </div>
+      </div>
+      <div>
+        <div className="insp-bar" title={t("insp.cacheBar", { cached: fmt.number(cached), prompt: fmt.number(prompt) })}>
+          <span style={{ width: `${prompt ? (cached / prompt) * 100 : 0}%` }} />
+        </div>
+        <div className="insp-legend">
+          <span>{t("insp.cached", { n: fmt.number(cached) })}</span>
+          <span>{t("insp.fresh", { n: fmt.number(prompt - cached) })}</span>
+        </div>
+      </div>
+      <div>
+        <div className="insp-context">
+          <span className="insp-context-label">{t("debug.context")}</span>
+          <span className="insp-context-value">
+            {context.tokens == null ? "—" : fmt.number(context.tokens)} / {fmt.number(context.max_tokens)}
+          </span>
+          <span className="spacer" />
+          <button className="insp-action" onClick={onCompact} disabled={detail.status === "halted"} title={t("insp.compactHint")}>
+            {t("insp.compact")}
+          </button>
+          {working && (
+            <button className="insp-action stop" onClick={onStop} title={t("insp.stopLoop")}>
+              {t("insp.stop")}
+            </button>
+          )}
+        </div>
+        <div className="insp-meter" title={t("debug.compactAt", { at: fmt.number(context.compaction_threshold) })}>
+          <div className="insp-bar">
+            <span style={{ width: `${used * 100}%` }} />
+          </div>
+          <i style={{ left: `${threshold * 100}%` }} />
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -114,17 +167,17 @@ function TraceView({ id, onBack, onClose, onInspect }: { id: string; onBack?: ()
     <aside className="inspector" aria-label={t("trace.title")}>
       <header className="inspector-head">
         {onBack && (
-          <button className="btn ghost icon" onClick={onBack} aria-label={t("common.back")}>
-            ←
+          <button className="insp-icon" onClick={onBack} aria-label={t("common.back")}>
+            <ArrowLeftIcon size={15} />
           </button>
         )}
         <h3>{t("trace.title")}</h3>
         <span className="spacer" />
-        <button className="btn ghost icon" onClick={onClose} aria-label={t("common.close")}>
-          ✕
+        <button className="insp-icon" onClick={onClose} aria-label={t("common.close")}>
+          <XIcon size={15} />
         </button>
       </header>
-      <div className="inspector-body">
+      <div className="insp-scroll insp-trace">
         {err && <div className="error-text">{err}</div>}
         {!d ? (
           <div className="muted">{t("common.loading")}</div>
@@ -185,7 +238,7 @@ function TraceView({ id, onBack, onClose, onInspect }: { id: string; onBack?: ()
                 </li>
               ))}
             </ol>
-            <DebugPanel detail={d} log={[]} onInspect={onInspect} />
+            <Overview detail={d} onInspect={onInspect} />
           </>
         )}
       </div>

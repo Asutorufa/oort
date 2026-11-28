@@ -1,23 +1,15 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState } from "react";
 import { errorText, sessions } from "../api";
 import type { SessionSummary } from "../api/types";
-import { GlobeIcon, LayersIcon, MemoryIcon, ModelIcon, MoonIcon, MoreIcon, PlusIcon, SidebarIcon, SparkIcon, SunIcon, ToolIcon } from "../brand/Icons";
+import { MoreIcon, PlusIcon, SearchIcon, SettingsIcon, SidebarIcon } from "../brand/Icons";
 import { OortMark } from "../brand/OortMark";
-import { href, navigate, type View } from "../hooks/useHashRoute";
-import { THEMES, useTheme } from "../theme/ThemeProvider";
+import { href, navigate } from "../hooks/useHashRoute";
 import { AnimatePresence, motion } from "motion/react";
-import { Popover, SegmentedControl, Select } from "../components/ui";
-import { LOCALES, useI18n, type Key, type Locale } from "../i18n";
+import { Popover } from "../components/ui";
+import { useT, type Key } from "../i18n";
+import { SETTINGS_SHORTCUT } from "../lib/shortcuts";
 import { fade, spring } from "../lib/motion";
 import { Modal } from "../components/common";
-
-const NAV: { view: View; label: Key; icon: ReactNode }[] = [
-  { view: "mcp", label: "nav.tools", icon: <ToolIcon /> },
-  { view: "skills", label: "nav.skills", icon: <SparkIcon /> },
-  { view: "memories", label: "nav.memories", icon: <MemoryIcon /> },
-  { view: "models", label: "nav.models", icon: <ModelIcon /> },
-  { view: "presets", label: "nav.presets", icon: <LayersIcon /> },
-];
 
 function group(ms: number): Key {
   const d = new Date(ms);
@@ -26,21 +18,20 @@ function group(ms: number): Key {
   return days <= 0 ? "sidebar.today" : days === 1 ? "sidebar.yesterday" : days < 7 ? "sidebar.last7" : "sidebar.older";
 }
 
-/** Collapsible left sidebar: brand, new chat, conversations, navigation, theme. */
+/** Collapsible left sidebar: brand, new chat, conversations and the way into settings. */
 export function Sidebar({
-  view,
   selected,
   items,
   onChanged,
+  onOpenSettings,
 }: {
-  view: View;
   selected: string | null;
   items: SessionSummary[];
   onChanged: () => void;
+  onOpenSettings: () => void;
 }) {
-  const { theme, mode, setTheme, setMode } = useTheme();
-  const { t, locale, setLocale } = useI18n();
-  const tr = t;
+  const t = useT();
+  const [query, setQuery] = useState("");
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem("oort.sidebar") === "collapsed");
   const [menu, setMenu] = useState<string | null>(null);
   const moreRefs = useRef<Record<string, HTMLButtonElement | null>>({});
@@ -87,33 +78,55 @@ export function Sidebar({
   };
 
   let lastGroup = "";
+  const needle = query.trim().toLowerCase();
+  const shown = needle ? items.filter((s) => (s.title || t("common.untitled")).toLowerCase().includes(needle)) : items;
   return (
     <aside className={`sidebar ${collapsed ? "collapsed" : ""}`}>
       <div className="sb-top">
-        <a className="brand" href={href("chat")} title="Oort">
-          <OortMark size={20} />
-          <span className="brand-name">Oort</span>
-        </a>
-        <button className="btn ghost icon collapse" onClick={() => setCollapsed(!collapsed)} aria-label={collapsed ? t("sidebar.expand") : t("sidebar.collapse")}>
-          <SidebarIcon />
-        </button>
+        {collapsed ? (
+          // The mark doubles as the expand button, so the header stays one 48px row.
+          <button className="sb-icon sb-expand" onClick={() => setCollapsed(false)} aria-label={t("sidebar.expand")} title={t("sidebar.expand")}>
+            <span className="sb-mark">
+              <OortMark size={20} />
+            </span>
+            <span className="sb-expand-icon">
+              <SidebarIcon size={16} />
+            </span>
+          </button>
+        ) : (
+          <>
+            <a className="brand" href={href("chat")} title="Oort">
+              <OortMark size={20} />
+              <span>Oort</span>
+            </a>
+            <button className="sb-icon sb-toggle" onClick={() => setCollapsed(true)} aria-label={t("sidebar.collapse")} title={t("sidebar.collapse")}>
+              <SidebarIcon size={16} />
+            </button>
+          </>
+        )}
       </div>
-      <a className="new-chat" href={href("chat", "new")} title={t("sidebar.newChat")}>
-        <span className="plus">
-          <PlusIcon />
-        </span>
-        <span className="label">{t("sidebar.newChat")}</span>
-      </a>
+      <div className="sb-actions">
+        <a className={collapsed ? "sb-icon" : "new-chat"} href={href("chat", "new")} title={t("sidebar.newChat")} aria-label={t("sidebar.newChat")}>
+          <PlusIcon size={16} />
+          {!collapsed && <span>{t("sidebar.newChat")}</span>}
+        </a>
+      </div>
 
       <nav className="conversations" aria-label={t("sidebar.conversations")}>
-        {items.map((s) => {
+        {items.length > 0 && (
+          <div className="sb-search">
+            <SearchIcon size={14} />
+            <input value={query} placeholder={t("sidebar.search")} aria-label={t("sidebar.search")} onChange={(e) => setQuery(e.target.value)} />
+          </div>
+        )}
+        {shown.map((s) => {
           const g = group(s.updated_at);
           const header = g !== lastGroup ? ((lastGroup = g), <div className="conv-group">{t(g)}</div>) : null;
           return (
             <div key={s.id}>
               {header}
-              <div className={`conv ${s.id === selected && view === "chat" ? "active" : ""}`} onClick={() => navigate("chat", s.id)} title={s.title || t("common.untitled")}>
-                {s.id === selected && view === "chat" && <motion.span layoutId="sidebar-conv-active" className="nav-highlight" transition={spring} />}
+              <div className={`conv ${s.id === selected ? "active" : ""}`} onClick={() => navigate("chat", s.id)} title={s.title || t("common.untitled")}>
+                {s.id === selected && <motion.span layoutId="sidebar-conv-active" className="nav-highlight" transition={spring} />}
                 {s.failed ? <span className="dot error" title={t("sidebar.failed")} /> : s.status === "running" ? <span className="pulse" /> : s.status === "needs_approval" ? <span className="dot warn" title={t("status.needsApproval")} /> : null}
                 {renaming === s.id ? (
                   <input
@@ -156,6 +169,7 @@ export function Sidebar({
           );
         })}
         {items.length === 0 && <div className="conv-empty">{t("sidebar.empty")}</div>}
+        {items.length > 0 && shown.length === 0 && <div className="conv-empty">{t("sidebar.noMatch")}</div>}
         {error && (
           <div className="conv-empty error-text" onClick={() => setError(null)}>
             {error}
@@ -209,48 +223,20 @@ export function Sidebar({
       </Popover>
 
       <div className="sb-bottom">
-        {NAV.map((n) => (
-          <a key={n.view} href={href(n.view)} className={`nav ${view === n.view ? "active" : ""}`} title={t(n.label)}>
-            {view === n.view && <motion.span layoutId="sidebar-nav-active" className="nav-highlight" transition={spring} />}
-            <span className="icon">{n.icon}</span>
-            <span className="label">{t(n.label)}</span>
-          </a>
-        ))}
-        <div className="util-row">
-          <SegmentedControl
-            size="sm"
-            className="theme-seg"
-            ariaLabel={t("sidebar.theme")}
-            value={theme}
-            onChange={setTheme}
-            options={THEMES.map((th) => ({
-              value: th.id,
-              title: tr(th.label),
-              label: (
-                <>
-                  <span className="swatch" style={{ background: th.swatch }} />
-                  <span className="label">{tr(th.label)}</span>
-                </>
-              ),
-            }))}
-          />
-          <Select<Locale>
-            variant="ghost"
-            placement="top"
-            align="end"
-            className="lang-btn"
-            ariaLabel={t("sidebar.language")}
-            title={t("sidebar.language")}
-            icon={<GlobeIcon size={14} />}
-            value={locale}
-            onChange={setLocale}
-            renderValue={() => LOCALES.find((l) => l.id === locale)?.code}
-            options={LOCALES.map((l) => ({ value: l.id, label: l.native, description: l.code }))}
-          />
-          <button className="mode-btn" onClick={() => setMode(mode === "light" ? "dark" : "light")} title={mode === "light" ? t("sidebar.toDark") : t("sidebar.toLight")} aria-label={t("sidebar.toggleMode")}>
-            {mode === "light" ? <MoonIcon /> : <SunIcon />}
-          </button>
-        </div>
+        <button
+          className={collapsed ? "sb-icon" : "sb-settings"}
+          onClick={onOpenSettings}
+          title={t("settings.openHint", { shortcut: SETTINGS_SHORTCUT })}
+          aria-label={t("settings.title")}
+        >
+          <SettingsIcon size={16} />
+          {!collapsed && (
+            <>
+              <span className="sb-settings-label">{t("settings.title")}</span>
+              <kbd className="sb-shortcut">{SETTINGS_SHORTCUT}</kbd>
+            </>
+          )}
+        </button>
       </div>
 
       {confirm && (

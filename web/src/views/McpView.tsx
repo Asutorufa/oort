@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
 import { errorText, mcpServers, oauth as oauthApi } from "../api";
 import type { McpServer, McpServerInput, McpTest, McpToolInfo, McpTransport, ToolCallResult } from "../api/types";
-import { Badge, Empty, ErrorBar, JsonView, Modal } from "../components/common";
+import { ToolIcon } from "../brand/Icons";
+import { Badge, ErrorBar, JsonView, Modal } from "../components/common";
 import { Field, JsonEditor, KeyValueEditor, LinesEditor, SecretInput, Toggle } from "../components/forms";
 import { SegmentedControl, Select } from "../components/ui";
+import { AddButton, EmptyState, HeaderActions, ListItem, useAutoSelect } from "../components/settings/MasterDetail";
 import { navigate } from "../hooks/useHashRoute";
 import { useResource } from "../hooks/useResource";
 import { useI18n, useT } from "../i18n";
@@ -323,6 +325,8 @@ export function McpView({ selected }: { selected: string | null }) {
     setTool(null);
   }, [current?.id, isNew]);
 
+  useAutoSelect("mcp", list.data, selected, (m) => m.is_enabled);
+
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setForm((f) => ({ ...f, [k]: v }));
 
   const discover = async () => {
@@ -358,29 +362,39 @@ export function McpView({ selected }: { selected: string | null }) {
 
   const tools = test && test !== "running" ? test.tools : [];
 
+  if (list.data?.length === 0 && !isNew)
+    return (
+      <>
+        <HeaderActions>
+          <AddButton label={t("common.add")} onClick={() => navigate("mcp", "new")} />
+        </HeaderActions>
+        <ErrorBar error={list.error} />
+        <EmptyState icon={<ToolIcon size={20} />} title={t("mcp.emptyTitle")} action={{ label: t("common.add"), onClick: () => navigate("mcp", "new") }}>
+          {t("mcp.emptyHint")}
+        </EmptyState>
+      </>
+    );
+
   return (
     <div className="master-detail">
+      <HeaderActions>
+        <AddButton label={t("common.add")} onClick={() => navigate("mcp", "new")} />
+      </HeaderActions>
       <aside className="pane left">
-        <div className="pane-head">
-          <h3>{t("mcp.title")}</h3>
-          <button className="primary small" onClick={() => navigate("mcp", "new")}>
-            + Add
-          </button>
-        </div>
         <ErrorBar error={list.error} />
-        <ul className="item-list">
+        <ul className="md-list">
           {(list.data ?? []).map((m) => (
-            <li key={m.id} className={m.id === selected ? "selected" : ""} onClick={() => navigate("mcp", m.id)}>
-              <div className="row">
-                <b className="mono">{m.name}</b>
-                <span className="spacer" />
-                {!m.is_enabled && <Badge>{t("common.disabled")}</Badge>}
-                <Badge tone="info">{m.transport === "stdio" ? "stdio" : "http"}</Badge>
-              </div>
-              <div className="muted mono ellipsis">{m.transport === "stdio" ? [m.command, ...m.args].join(" ") : m.url}</div>
-            </li>
+            <ListItem
+              key={m.id}
+              selected={m.id === selected}
+              onSelect={() => navigate("mcp", m.id)}
+              icon={<ToolIcon size={15} />}
+              title={m.name}
+              sub={m.transport === "stdio" ? `stdio · ${[m.command, ...m.args].join(" ")}` : m.url}
+              mono
+              off={m.is_enabled ? undefined : t("common.disabled")}
+            />
           ))}
-          {list.data?.length === 0 && <li className="muted">{t("mcp.noneYet")}</li>}
         </ul>
       </aside>
 
@@ -521,7 +535,7 @@ export function McpView({ selected }: { selected: string | null }) {
             {current && <Playground server={current} tools={tools} tool={tool} onTool={setTool} />}
           </>
         ) : (
-          <Empty>{t("mcp.empty")}</Empty>
+          null
         )}
       </main>
       {confirm && current && (

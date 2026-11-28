@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
 import { errorText, memories } from "../api";
 import type { Memory } from "../api/types";
-import { Empty, ErrorBar, Modal } from "../components/common";
+import { MemoryIcon } from "../brand/Icons";
+import { ErrorBar, Modal } from "../components/common";
 import { useI18n } from "../i18n";
 import { Field } from "../components/forms";
+import { AddButton, EmptyState, HeaderActions, ListItem, useAutoSelect } from "../components/settings/MasterDetail";
 import { navigate } from "../hooks/useHashRoute";
 import { useResource } from "../hooks/useResource";
 
@@ -47,6 +49,8 @@ export function MemoriesView({ selected }: { selected: string | null }) {
     setError(null);
   }, [current?.id, current?.updated_at, isNew]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  useAutoSelect("memories", list.data, selected);
+
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setForm((f) => ({ ...f, [k]: v }));
   const save = async () => {
     try {
@@ -70,39 +74,39 @@ export function MemoriesView({ selected }: { selected: string | null }) {
     }
   };
 
+  if (list.data?.length === 0 && !query && !debounced && !isNew)
+    return (
+      <>
+        <HeaderActions>
+          <AddButton label={t("common.add")} onClick={() => navigate("memories", "new")} />
+        </HeaderActions>
+        <ErrorBar error={list.error} />
+        <EmptyState icon={<MemoryIcon size={20} />} title={t("mem.empty")} action={{ label: t("common.add"), onClick: () => navigate("memories", "new") }}>
+          {t("mem.intro")}
+        </EmptyState>
+      </>
+    );
+
   return (
     <div className="master-detail">
+      <HeaderActions>
+        <AddButton label={t("common.add")} onClick={() => navigate("memories", "new")} />
+      </HeaderActions>
       <aside className="pane left">
-        <div className="pane-head">
-          <h3>{t("mem.title")}</h3>
-          <span className="spacer" />
-          <button className="btn primary small" onClick={() => navigate("memories", "new")}>
-            ＋ {t("common.add")}
-          </button>
-        </div>
         <input className="filter" placeholder={t("mem.search")} value={query} onChange={(e) => setQuery(e.target.value)} />
         <ErrorBar error={list.error} />
-        <ul className="item-list">
+        <ul className="md-list">
           {(list.data ?? []).map((m) => (
-            <li key={m.id} className={m.id === selected ? "selected" : ""} onClick={() => navigate("memories", m.id)}>
-              <div className="row">
-                <b className="ellipsis">{m.title}</b>
-                <span className="spacer" />
-                {m.scope !== "global" && <span className="chip">{m.scope}</span>}
-              </div>
-              <div className="muted ellipsis">{m.content}</div>
-              {m.tags.length > 0 && (
-                <div>
-                  {m.tags.map((t) => (
-                    <span key={t} className="chip">
-                      #{t}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </li>
+            <ListItem
+              key={m.id}
+              selected={m.id === selected}
+              onSelect={() => navigate("memories", m.id)}
+              icon={<MemoryIcon size={15} />}
+              title={m.title}
+              sub={m.scope !== "global" ? `${m.scope} · ${m.content}` : m.content}
+            />
           ))}
-          {list.data?.length === 0 && <li className="muted">{debounced ? t("mem.notFound") : t("mem.empty")}</li>}
+          {list.data?.length === 0 && <li className="md-none">{t("mem.notFound")}</li>}
         </ul>
       </aside>
       <main className="pane detail">
@@ -138,7 +142,7 @@ export function MemoriesView({ selected }: { selected: string | null }) {
             </div>
           </div>
         ) : (
-          <Empty>{t("mem.intro")}</Empty>
+          null
         )}
       </main>
       {confirm && current && (

@@ -15,6 +15,9 @@ interface Pos {
   maxHeight: number;
 }
 
+/** Dispatched on `window` to dismiss every open popover (e.g. when a full-screen layer opens). */
+export const CLOSE_POPOVERS = "oort:close-popovers";
+
 const GAP = 6;
 /** Minimum distance from the viewport edges (borders and corners never touch the edge). */
 const MARGIN = 16;
@@ -87,11 +90,13 @@ export function Popover({
     };
     const esc = (e: KeyboardEvent) => e.key === "Escape" && (e.stopPropagation(), onClose());
     window.addEventListener("mousedown", outside);
+    window.addEventListener(CLOSE_POPOVERS, onClose);
     window.addEventListener("keydown", esc, true);
     window.addEventListener("resize", update);
     window.addEventListener("scroll", update, true);
     return () => {
       window.removeEventListener("mousedown", outside);
+      window.removeEventListener(CLOSE_POPOVERS, onClose);
       window.removeEventListener("keydown", esc, true);
       window.removeEventListener("resize", update);
       window.removeEventListener("scroll", update, true);

@@ -39,7 +39,8 @@ A Rust LLM agent workspace.
 `web/` (React + Vite) is a consumer-style app:
 
 - **Chat**: a centered thread with Markdown (highlighted, copyable code), Intelligent UI cards (charts, tables, forms, approval diffs, action chips), and one quiet activity line per turn (e.g. "thought and ran 2 tools (0.22s)") that expands into thinking and tool details. The floating composer completes `/` skills and commands, switches the approval policy, and while the agent works offers *queue* (Steer) and *interrupt and send* (Interrupt). The **Inspector** drawer holds the internals: prefix-cache hit rate and breakdown, TTFT and total time per call, manual compaction, raw vs active history, and the event log. The event stream resumes after reloads and dropped connections.
-- **Sidebar** (collapsible): new chat, conversations (running / waiting-for-approval indicators, rename, export JSON, delete), navigation, theme dots (`iris` and `lunar`) and light/dark, remembered in `localStorage`.
+- **Sidebar** (collapsible): new chat, conversation search and list (running / waiting-for-approval indicators, rename, export JSON, delete), and one button into settings.
+- **Settings** (`⌘,` / `Ctrl+,`, `Esc` to close): a full-screen workspace over the chat, which stays mounted. General & appearance (language, light / dark / system, accent theme), then the pages below.
 - **Tools & MCP**: servers, connection test and tool discovery, the Tool Playground, and OAuth 2.0 (authorize in a popup, scopes and expiry, reconnect / disconnect).
 - **Skills**: `SKILL.md` files and app-made skills, search, preview and editor, rescan.
 - **Model settings** (providers) and **Presets** (provider, model, prompt, MCP servers, skills, approval policy).
