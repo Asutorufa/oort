@@ -21,7 +21,9 @@ use sqlx::{Row, SqliteConnection, SqlitePool};
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
+pub mod analytics;
 mod config;
+pub mod pricing;
 
 /// [`SessionStore`] and [`oort_agent::ConfigStore`] backed by one SQLite database.
 #[derive(Debug, Clone)]
@@ -60,7 +62,13 @@ impl SqliteSessionStore {
     /// Wraps an existing pool (its connections must enable `foreign_keys`) and migrates it.
     pub async fn from_pool(pool: SqlitePool) -> Result<Self, StoreError> {
         MIGRATOR.run(&pool).await.map_err(backend)?;
-        Ok(Self { pool })
+        let store = Self { pool };
+        // Statistics only: a failure must not keep the workbench from starting (the marker
+        // is rolled back with it, so the next start tries again).
+        if let Err(e) = analytics::backfill(&store).await {
+            tracing::warn!(error = %e, "usage backfill failed");
+        }
+        Ok(store)
     }
 
     pub fn pool(&self) -> &SqlitePool {
@@ -450,6 +458,9 @@ impl SessionStore for SqliteSessionStore {
                 .execute(&mut *tx)
                 .await
                 .map_err(classify)?;
+        }
+        for sid in &ids {
+            analytics::snapshot_title(&mut tx, sid).await?;
         }
         for sid in &ids {
             for table in ["tool_output_blobs", "llm_calls", "compactions", "messages"] {

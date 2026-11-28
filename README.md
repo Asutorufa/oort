@@ -145,6 +145,18 @@ Each provider has an `auto_retry` setting (`{ "enabled": false, "max_attempts": 
 
 `/compact`, `/approval <auto|readonly|ask>`, `/stop`, `/export` and `/new [preset]` run without the model (`POST /api/commands/run`); `GET /api/commands` lists them together with user-invocable skills. Invoking a skill (`/name args` or `invoked_skills` on input) appends `<active_skill name="…">` with `$ARGUMENTS` substituted to that user message only; a skill already loaded in the current epoch is replaced by `<skill_already_loaded name="…" />` (the set is persisted and cleared by compaction). Skills with `execution_mode: subagent` run in a subagent and their report is sent back as a message.
 
+### Usage and budget
+
+Every LLM call (conversation turns, subagents, compaction and title requests) and every executed tool call is appended to its own ledger (`usage_ledger`, `tool_usage_ledger`). Deleting a chat keeps those rows (`session_id` becomes `NULL`). Recording only observes the streams: requests, history and the provider's prefix cache are unchanged. A stream that is interrupted before the provider reports usage is not counted.
+
+Costs are estimates. A price is resolved from your override, then the built-in list-price table (`crates/storage/src/pricing.rs`, a 2026-11 snapshot), then `ollama` = free; unknown models count as $0 until you set a price. The budget only warns (a dot in the settings navigation); it never stops a chat. Usage recorded before this feature is copied into the ledger once at startup.
+
+| Endpoint | Meaning |
+|---|---|
+| `GET /api/analytics/usage?range=7d\|30d\|month\|20w&tz_offset_minutes=&calendar_month=YYYY-MM` | Summary, budget status, daily series, per model / tool / chat breakdown |
+| `GET / PUT /api/analytics/budget` | `{monthly_budget_usd, warning_threshold_pct}` |
+| `GET / PUT / DELETE /api/analytics/pricing` | Custom USD prices per 1M tokens (`model_pattern`, a trailing `*` matches a prefix); changes re-price recorded calls unless `recalculate` is `false` |
+
 ### API
 
 | Endpoint | Purpose |

@@ -472,7 +472,7 @@ impl SessionManager {
         let (user, assistant) = title::opening(&stored.state)
             .ok_or_else(|| ApiError::BadRequest("the conversation is still empty".into()))?;
         let cfg = session_settings(&stored.meta)?;
-        let new = match self.registry.title_model(&cfg).await? {
+        let new = match self.registry.title_model(&cfg, id).await? {
             Some(model) => title::generate(model.as_ref(), &cfg.model, &user, &assistant).await,
             None => title::fallback(&user),
         }
@@ -723,7 +723,7 @@ impl SessionManager {
                 session_id: id.to_string(),
                 native: native_title,
                 wanted: Arc::clone(&title_wanted),
-                model: self.registry.title_model(&cfg).await?,
+                model: self.registry.title_model(&cfg, id).await?,
                 model_id: Arc::clone(&live_model),
                 in_flight: Arc::clone(&self.titling),
             })

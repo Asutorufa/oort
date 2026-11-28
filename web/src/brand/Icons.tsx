@@ -54,6 +54,12 @@ export const LayersIcon = (p: P) => (
     <path d="m3.5 12.5 8.5 4.5 8.5-4.5" />
   </Svg>
 );
+export const ChartIcon = (p: P) => (
+  <Svg {...p}>
+    <path d="M3.5 3.5v15a2 2 0 0 0 2 2h15" />
+    <path d="M8 16.5v-3M13 16.5v-11M18 16.5v-8" />
+  </Svg>
+);
 export const PlusIcon = (p: P) => (
   <Svg {...p}>
     <path d="M12 5v14M5 12h14" />

@@ -18,6 +18,7 @@ use oort_llm::{
 };
 use oort_mcp::{ClientOptions, McpConfig, McpError, ServerEntry};
 use oort_skills::SkillRegistry;
+use oort_storage::analytics::{AnalyticsStore, CallPurpose};
 use serde::Serialize;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -25,6 +26,7 @@ use tokio_util::sync::CancellationToken;
 use crate::api::ApiError;
 use crate::approval::{ApprovalHandle, DynamicApproval};
 use crate::config::{McpBinding, SessionConfig};
+use crate::metering::{Meter, MeteredExecutor, MeteredModel};
 use crate::mock_model::MockModel;
 use crate::oauth::OAuthFlows;
 use crate::pool::McpPool;
@@ -88,6 +90,8 @@ pub struct Registry {
     pub oauth: OAuthFlows,
     pub memories: Arc<dyn MemoryStore>,
     pub output_blobs: Arc<dyn oort_agent::ToolOutputBlobStore>,
+    /// Usage ledgers, budget and custom prices.
+    pub analytics: Arc<dyn AnalyticsStore>,
     pub subagents: SubagentLimits,
     builtin: Arc<dyn ToolExecutor>,
     mock_word_delay: Duration,
@@ -96,7 +100,13 @@ pub struct Registry {
 
 /// Everything the registry stores (one SQLite database in practice).
 pub trait Stores:
-    ConfigStore + OAuthTokenStore + SkillStore + MemoryStore + oort_agent::ToolOutputBlobStore + 'static
+    ConfigStore
+    + OAuthTokenStore
+    + SkillStore
+    + MemoryStore
+    + oort_agent::ToolOutputBlobStore
+    + AnalyticsStore
+    + 'static
 {
 }
 impl<
@@ -105,6 +115,7 @@ impl<
         + SkillStore
         + MemoryStore
         + oort_agent::ToolOutputBlobStore
+        + AnalyticsStore
         + 'static,
 > Stores for T
 {
@@ -153,6 +164,7 @@ impl Registry {
         Self {
             memories: store.clone(),
             output_blobs: store.clone(),
+            analytics: store.clone(),
             subagents: SubagentLimits::default(),
             web: WebFetchOptions::default(),
             config: store.clone(),
@@ -350,12 +362,47 @@ impl Registry {
         }
     }
 
-    /// The model client of a session (current provider record, or env keys for legacy ones).
+    /// Who a session's model calls are booked on.
+    async fn meter(&self, cfg: &SessionConfig, session_id: &str) -> Meter {
+        let record = self.provider_record(cfg).await;
+        let (vendor, kind) = match &record {
+            Some(p) => (p.vendor.as_str().to_string(), p.kind),
+            // Legacy sessions only know the protocol they were created with.
+            None => (
+                match cfg.provider.as_str() {
+                    "anthropic" => "anthropic",
+                    "openai" | "openai_responses" => "openai",
+                    "gemini" => "gemini",
+                    _ => "custom",
+                }
+                .to_string(),
+                ProviderKind::parse(&cfg.provider).unwrap_or(ProviderKind::Openai),
+            ),
+        };
+        Meter {
+            store: self.analytics.clone(),
+            session_id: Some(session_id.to_string()),
+            provider_id: cfg.provider_id.clone(),
+            vendor,
+            kind,
+            model: cfg.model.clone(),
+        }
+    }
+
+    /// The model client of a session (current provider record, or env keys for legacy ones),
+    /// recording what its calls cost.
     pub async fn session_model(
         &self,
         cfg: &SessionConfig,
+        session_id: &str,
+        purpose: CallPurpose,
     ) -> Result<Arc<dyn ModelClient>, ApiError> {
-        Ok(self.model_from(self.session_client(cfg).await?))
+        let model = self.model_from(self.session_client(cfg).await?);
+        Ok(MeteredModel::wrap(
+            model,
+            self.meter(cfg, session_id).await,
+            purpose,
+        ))
     }
 
     /// The client of title requests: one attempt, no retries. `None` for the offline mock,
@@ -363,10 +410,15 @@ impl Registry {
     pub async fn title_model(
         &self,
         cfg: &SessionConfig,
+        session_id: &str,
     ) -> Result<Option<Arc<dyn ModelClient>>, ApiError> {
         Ok(match self.session_client(cfg).await? {
             Built::Mock => None,
-            Built::Llm(p) => Some(Arc::new(*p) as Arc<dyn ModelClient>),
+            Built::Llm(p) => Some(MeteredModel::wrap(
+                Arc::new(*p),
+                self.meter(cfg, session_id).await,
+                CallPurpose::Title,
+            )),
         })
     }
 
@@ -590,9 +642,14 @@ impl Registry {
         server_tools: Option<oort_agent::LiveServerTools>,
         title: Option<TitleHook>,
     ) -> Result<Agent, ApiError> {
-        let model = self.session_model(cfg).await?;
+        let model = self
+            .session_model(cfg, session_id, CallPurpose::Turn)
+            .await?;
         let provider_rec = self.provider_record(cfg).await;
-        let defaults = provider_rec.as_ref().map(|p| p.defaults).unwrap_or_default();
+        let defaults = provider_rec
+            .as_ref()
+            .map(|p| p.defaults)
+            .unwrap_or_default();
         let extra_body = provider_rec.and_then(|p| p.extra_body);
         let bindings = if cfg.is_legacy() {
             self.legacy_bindings(state).await
@@ -628,7 +685,13 @@ impl Registry {
         if !missing.is_empty() {
             tracing::warn!(session = %session_id, ?missing, "frozen tools not offered by any live server");
         }
-        let mut b = Agent::builder(model.clone(), pinned)
+        let tools = MeteredExecutor::wrap(
+            pinned,
+            self.analytics.clone(),
+            session_id,
+            bindings.iter().map(|b| b.prefix.as_str()),
+        );
+        let mut b = Agent::builder(model, tools)
             .context_manager(Arc::new(cfg.context_manager_with_tools(
                 session_id,
                 &defaults,
@@ -650,6 +713,9 @@ impl Registry {
                 max_chars_per_message: 120,
             }))
         } else {
+            let model = self
+                .session_model(cfg, session_id, CallPurpose::Compaction)
+                .await?;
             b.compactor(Arc::new(LlmCompactor::new(model)))
         };
         // Persistence runs last so it records what the other hooks decided.
