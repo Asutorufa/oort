@@ -91,6 +91,11 @@ function CodeBlock({ node, children, ...rest }: ComponentProps<"pre"> & { node?:
 const components = {
   pre: CodeBlock,
   a: (props: ComponentProps<"a">) => <a {...props} target="_blank" rel="noreferrer noopener" />,
+  table: ({ children, ...rest }: ComponentProps<"table">) => (
+    <div className="md-table-wrap">
+      <table {...rest}>{children}</table>
+    </div>
+  ),
 };
 
 /** GitHub-flavored Markdown with math (KaTeX), Mermaid diagrams, and highlighted code blocks. */
