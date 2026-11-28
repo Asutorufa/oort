@@ -11,8 +11,8 @@ use async_trait::async_trait;
 use oort_agent::store::{assemble_state, canonical_tools_json};
 use oort_agent::{
     AgentState, ApprovalPolicyKind, CompactionCheckpoint, Lineage, LlmCallStats, NewSession,
-    SessionId, SessionMeta, SessionSnapshot, SessionStatus, SessionStore, StepDelta, StoreError,
-    StoredSession,
+    ReasoningEffort, SessionId, SessionMeta, SessionSnapshot, SessionStatus, SessionStore,
+    StepDelta, StoreError, StoredSession,
 };
 use oort_llm::{ContentPart, Message, Role, Usage};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow};
@@ -92,8 +92,8 @@ impl SessionStore for SqliteSessionStore {
             "INSERT INTO sessions (id, title, provider, model, config_json, approval_policy, system_prompt, \
              frozen_tools, status, halt_reason, pending_calls, pending_steers, compaction_requested, \
              turn, usage_json, created_at, updated_at, parent_session_id, parent_tool_call_id, depth, \
-             workspace_root, enabled_builtin_groups_json, loaded_skills_json) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             workspace_root, enabled_builtin_groups_json, loaded_skills_json, reasoning_effort) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(&meta.title)
@@ -118,6 +118,7 @@ impl SessionStore for SqliteSessionStore {
         .bind(&meta.lineage.workspace_root)
         .bind(to_json(&meta.lineage.builtin_groups))
         .bind(to_json(&snap.loaded_skills))
+        .bind(meta.reasoning_effort.as_str())
         .execute(&mut *tx)
         .await
         .map_err(classify)?;
@@ -319,6 +320,33 @@ impl SessionStore for SqliteSessionStore {
         found(done.rows_affected(), id)
     }
 
+    async fn set_model(&self, id: &str, model: &str) -> Result<(), StoreError> {
+        let done = sqlx::query("UPDATE sessions SET model = ?, updated_at = ? WHERE id = ?")
+            .bind(model)
+            .bind(now_ms())
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(classify)?;
+        found(done.rows_affected(), id)
+    }
+
+    async fn set_reasoning_effort(
+        &self,
+        id: &str,
+        effort: ReasoningEffort,
+    ) -> Result<(), StoreError> {
+        let done =
+            sqlx::query("UPDATE sessions SET reasoning_effort = ?, updated_at = ? WHERE id = ?")
+                .bind(effort.as_str())
+                .bind(now_ms())
+                .bind(id)
+                .execute(&self.pool)
+                .await
+                .map_err(classify)?;
+        found(done.rows_affected(), id)
+    }
+
     async fn list_children(&self, id: &str) -> Result<Vec<SessionMeta>, StoreError> {
         let rows = sqlx::query(&format!(
             "{META_SELECT} WHERE s.parent_session_id = ? ORDER BY s.created_at, s.id"
@@ -507,6 +535,7 @@ fn meta_from_row(row: &SqliteRow) -> Result<SessionMeta, StoreError> {
         model: row.get("model"),
         config: from_json(row.get("config_json"), "config_json")?,
         approval_policy: ApprovalPolicyKind::parse(row.get("approval_policy"))?,
+        reasoning_effort: ReasoningEffort::parse(row.get("reasoning_effort"))?,
         lineage: Lineage {
             parent_session_id: row.get("parent_session_id"),
             parent_tool_call_id: row.get("parent_tool_call_id"),

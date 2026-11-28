@@ -39,6 +39,9 @@ pub struct CreateSessionRequest {
     pub max_context_tokens: Option<u64>,
     #[serde(default)]
     pub max_tokens: Option<u32>,
+    /// Thinking level (`default`: the preset's, then the provider's).
+    #[serde(default)]
+    pub reasoning_effort: Option<oort_agent::ReasoningEffort>,
     /// Skill ids (DB ids or `file:<name>`) whose index is frozen into the session.
     #[serde(default)]
     pub skill_ids: Option<Vec<String>>,
@@ -64,6 +67,12 @@ pub struct PatchSessionRequest {
     pub title: Option<String>,
     #[serde(default)]
     pub approval_policy: Option<ApprovalPolicyKind>,
+    /// Changes the thinking level from the next request on (history is untouched).
+    #[serde(default)]
+    pub reasoning_effort: Option<oort_agent::ReasoningEffort>,
+    /// Switches the model (same provider) from the next request on.
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -104,6 +113,8 @@ pub struct SessionSummary {
     #[serde(flatten)]
     pub meta: SessionMeta,
     pub active: bool,
+    /// The last loop exited with an error (details in the session detail's `last_error`).
+    pub failed: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -180,6 +191,11 @@ pub struct SessionDetail {
     #[serde(flatten)]
     pub meta: SessionMeta,
     pub active: bool,
+    /// Why the loop last stopped with an error (an LLM 429, a network failure, …). Cleared when
+    /// the loop starts again; while it is set the session is not resumed automatically.
+    pub last_error: Option<LoopError>,
+    /// The thinking level requests use: the session's, or the provider's when it is `default`.
+    pub effective_reasoning_effort: oort_agent::ReasoningEffort,
     pub settings: SessionConfig,
     pub phase: Phase,
     pub system_prompt: String,
@@ -193,6 +209,19 @@ pub struct SessionDetail {
     pub active_view: ActiveView,
     pub usage: UsageView,
     pub context: ContextView,
+}
+
+/// A loop that exited with an error, kept so clients can show it and offer a retry.
+#[derive(Debug, Clone, Serialize)]
+pub struct LoopError {
+    pub message: String,
+    /// Unix milliseconds.
+    pub at: i64,
+    /// When the loop is retried automatically (provider setting), in Unix milliseconds.
+    pub retry_at: Option<i64>,
+    /// Automatic retries already made for this failure streak, and the provider's limit.
+    pub attempt: u32,
+    pub max_attempts: u32,
 }
 
 impl SessionDetail {
@@ -265,6 +294,8 @@ impl SessionDetail {
 
         Self {
             active,
+            last_error: None,
+            effective_reasoning_effort: Default::default(),
             phase: state.phase.clone(),
             system_prompt: state.system_prompt().to_string(),
             tools: state.tool_snapshot().map(<[_]>::to_vec).unwrap_or_default(),
@@ -342,6 +373,8 @@ pub enum Envelope {
         seq: u64,
         title: String,
         approval_policy: ApprovalPolicyKind,
+        reasoning_effort: oort_agent::ReasoningEffort,
+        model: String,
     },
     /// The session was deleted; the stream ends.
     Deleted {

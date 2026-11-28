@@ -39,12 +39,12 @@ pub use compact::{
 };
 pub use composite::{CompositeBuilder, CompositeToolExecutor, Namespace, PinnedToolExecutor};
 pub use config_store::{
-    ApprovalPolicyKind, ConfigStore, McpAuth, McpServerRecord, McpTransportKind, MemoryHit,
-    MemoryQuery, MemoryRecord, MemoryStore, OAuthClientSource, OAuthStatus, OAuthTokenRecord,
-    OAuthTokenStore, PresetRecord, ProviderKind, ProviderRecord, SkillExecutionMode,
-    SkillInvocation, SkillRecord, SkillStore,
+    ApprovalPolicyKind, AutoRetry, ConfigStore, McpAuth, McpServerRecord, McpTransportKind,
+    MemoryHit, MemoryQuery, MemoryRecord, MemoryStore, OAuthClientSource, OAuthStatus,
+    OAuthTokenRecord, OAuthTokenStore, PresetRecord, ProviderDefaults, ProviderKind,
+    ProviderRecord, ReasoningEffort, SkillExecutionMode, SkillInvocation, SkillRecord, SkillStore,
 };
-pub use context::{ContextManager, DefaultContextManager, RequestParams};
+pub use context::{ContextManager, DefaultContextManager, LiveModel, LiveThinking, RequestParams};
 pub use engine::{Agent, AgentBuilder, INTERRUPTED_TOOL_RESULT, StepOutcome};
 pub use error::AgentError;
 pub use hook::{
