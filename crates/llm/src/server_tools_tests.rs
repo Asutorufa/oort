@@ -189,17 +189,30 @@ fn gemini_openrouter_qwen_and_custom_extra_body() {
     assert!(g_tools.contains(&json!({ "code_execution": {} })));
     assert!(g_body.get("toolConfig").is_none());
 
-    // Gemini (server tools + custom function declarations -> must enable includeServerSideToolInvocations)
+    // Gemini (server tools + custom function declarations -> must enable includeServerSideToolInvocations
+    // and strip unsupported JSON Schema fields like `additionalProperties`)
     let req_with_fn = req.clone().with_tools(vec![crate::ToolDefinition {
-        name: "current_time".into(),
-        description: "Get current time".into(),
-        parameters: json!({ "type": "object", "properties": {} }),
+        name: "configure_mcp_server".into(),
+        description: "Configure MCP".into(),
+        parameters: json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "headers": { "type": "object", "additionalProperties": { "type": "string" } },
+                "env": { "type": ["object", "null"], "additionalProperties": { "type": "string" } }
+            }
+        }),
     }]);
     let (_, g_body_fn) = gem.build_request_json(&req_with_fn).unwrap();
     assert_eq!(
         g_body_fn["toolConfig"]["includeServerSideToolInvocations"],
         true
     );
+    let fn_params = &g_body_fn["tools"][0]["functionDeclarations"][0]["parameters"];
+    assert!(fn_params.get("additionalProperties").is_none());
+    assert!(fn_params["properties"]["headers"].get("additionalProperties").is_none());
+    assert_eq!(fn_params["properties"]["env"]["type"], "object");
+    assert_eq!(fn_params["properties"]["env"]["nullable"], true);
 
     // OpenRouter (both protocols)
     let or_chat = OpenAIClient::new("ork", "openai/gpt-4o").with_vendor(Vendor::Openrouter);

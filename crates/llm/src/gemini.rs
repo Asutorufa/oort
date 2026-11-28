@@ -617,11 +617,92 @@ fn map_gemini_thinking_level(effort: ReasoningEffort) -> &'static str {
     }
 }
 
+/// Recursively strips JSON Schema keywords that Gemini's Protobuf `Schema` rejects
+/// (such as `additionalProperties`, `$schema`, `$defs`, `examples`) while preserving
+/// user-defined property names inside `properties`.
+fn sanitize_gemini_schema(schema: &Value) -> Value {
+    let Some(obj) = schema.as_object() else {
+        return schema.clone();
+    };
+    let mut out = serde_json::Map::new();
+    let mut set_nullable = false;
+    for (k, v) in obj {
+        match k.as_str() {
+            "additionalProperties"
+            | "$schema"
+            | "$id"
+            | "$defs"
+            | "definitions"
+            | "examples"
+            | "propertyNames"
+            | "patternProperties"
+            | "unevaluatedProperties"
+            | "dependentRequired"
+            | "dependentSchemas"
+            | "minContains"
+            | "maxContains"
+            | "contentEncoding"
+            | "contentMediaType"
+            | "readOnly"
+            | "writeOnly"
+            | "deprecated" => continue,
+            "const" => {
+                out.insert("enum".to_string(), Value::Array(vec![v.clone()]));
+            }
+            "type" => {
+                if let Some(arr) = v.as_array() {
+                    let mut non_null = None;
+                    for item in arr {
+                        if item.as_str() == Some("null") {
+                            set_nullable = true;
+                        } else if non_null.is_none() {
+                            non_null = item.as_str();
+                        }
+                    }
+                    if let Some(t) = non_null {
+                        out.insert("type".to_string(), Value::String(t.to_string()));
+                    }
+                } else {
+                    out.insert(k.clone(), v.clone());
+                }
+            }
+            "properties" => {
+                if let Some(props) = v.as_object() {
+                    let mut cleaned = serde_json::Map::new();
+                    for (pk, pv) in props {
+                        cleaned.insert(pk.clone(), sanitize_gemini_schema(pv));
+                    }
+                    out.insert(k.clone(), Value::Object(cleaned));
+                }
+            }
+            "items" => {
+                out.insert(k.clone(), sanitize_gemini_schema(v));
+            }
+            "anyOf" => {
+                if let Some(arr) = v.as_array() {
+                    out.insert(
+                        k.clone(),
+                        Value::Array(arr.iter().map(sanitize_gemini_schema).collect()),
+                    );
+                }
+            }
+            _ => {
+                out.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    if set_nullable {
+        out.entry("nullable".to_string())
+            .or_insert(Value::Bool(true));
+    }
+    Value::Object(out)
+}
+
 fn encode_gemini_function_declaration(tool: &ToolDefinition) -> GeminiFunctionDeclaration {
     GeminiFunctionDeclaration {
         name: tool.name.clone(),
         description: tool.description.clone(),
-        parameters: tool.parameters.clone(),
+        parameters: sanitize_gemini_schema(&tool.parameters),
     }
 }
 
