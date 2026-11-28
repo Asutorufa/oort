@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import type { SecretSource } from "../../api/types";
+import { BUILTIN_GROUPS, type SecretSource } from "../../api/types";
 
 export function Field({ label, hint, children }: { label: string; hint?: ReactNode; children: ReactNode }) {
   return (
@@ -169,5 +169,48 @@ export function Toggle({ checked, onChange, label }: { checked: boolean; onChang
       <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
       {label}
     </label>
+  );
+}
+
+/** Builtin tool groups as toggles; the workspace path appears when Local Workspace is on. */
+export function GroupToggles({
+  value,
+  onChange,
+  workspaceRoot,
+  onWorkspaceRoot,
+  compact,
+}: {
+  value: string[];
+  onChange: (v: string[]) => void;
+  workspaceRoot: string;
+  onWorkspaceRoot: (v: string) => void;
+  compact?: boolean;
+}) {
+  const on = (id: string) => value.includes(id);
+  return (
+    <div className={`group-toggles ${compact ? "compact" : ""}`}>
+      <div className="toggle-row">
+        {BUILTIN_GROUPS.map((g) => (
+          <button
+            key={g.id}
+            type="button"
+            className={`toggle-chip ${on(g.id) ? "on" : ""}`}
+            title={g.hint}
+            aria-pressed={on(g.id)}
+            onClick={() => onChange(on(g.id) ? value.filter((x) => x !== g.id) : [...value, g.id])}
+          >
+            {g.label}
+          </button>
+        ))}
+      </div>
+      {on("workspace") && (
+        <input
+          className="mono workspace-input"
+          value={workspaceRoot}
+          placeholder="/path/to/project（このフォルダの中だけを読み書きします）"
+          onChange={(e) => onWorkspaceRoot(e.target.value)}
+        />
+      )}
+    </div>
   );
 }

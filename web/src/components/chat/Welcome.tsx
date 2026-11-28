@@ -5,6 +5,7 @@ import { ToolIcon } from "../../brand/Icons";
 import { OortMark } from "../../brand/OortMark";
 import { useResource } from "../../hooks/useResource";
 import { ErrorBar } from "../common";
+import { GroupToggles } from "../forms";
 import { Composer } from "./Composer";
 import { ModelPicker } from "./ModelPicker";
 
@@ -19,6 +20,8 @@ export function Welcome({ onCreated }: { onCreated: (id: string) => void }) {
   const [model, setModel] = useState("");
   const [skillIds, setSkillIds] = useState<string[]>([]);
   const [serverIds, setServerIds] = useState<string[]>([]);
+  const [groups, setGroups] = useState<string[]>(() => JSON.parse(localStorage.getItem("oort.groups") ?? '["core_ux","memory","utilities"]'));
+  const [workspace, setWorkspace] = useState(() => localStorage.getItem("oort.workspace") ?? "");
   const [error, setError] = useState<string | null>(null);
 
   const enabled = (providerList.data ?? []).filter((p) => p.is_enabled);
@@ -32,7 +35,18 @@ export function Welcome({ onCreated }: { onCreated: (id: string) => void }) {
     const title = firstLine.length > 40 ? `${firstLine.slice(0, 40)}…` : firstLine;
     const req: CreateSessionRequest = presetId
       ? { preset_id: presetId, message, title }
-      : { provider_id: provider?.id, model: model.trim() || undefined, skill_ids: skillIds, mcp_server_ids: serverIds, message, title };
+      : {
+          provider_id: provider?.id,
+          model: model.trim() || undefined,
+          skill_ids: skillIds,
+          mcp_server_ids: serverIds,
+          builtin_groups: groups,
+          workspace_root: groups.includes("workspace") ? workspace.trim() : undefined,
+          message,
+          title,
+        };
+    localStorage.setItem("oort.groups", JSON.stringify(groups));
+    localStorage.setItem("oort.workspace", workspace);
     try {
       const d = await sessions.create(req);
       onCreated(d.id);
@@ -71,9 +85,12 @@ export function Welcome({ onCreated }: { onCreated: (id: string) => void }) {
             ))}
           </div>
         )}
+        {!presetId && (
+          <GroupToggles value={groups} onChange={setGroups} workspaceRoot={workspace} onWorkspaceRoot={setWorkspace} compact />
+        )}
         <ErrorBar error={error} onDismiss={() => setError(null)} />
       </div>
-      <Composer busy={false} skills={[]} onSend={start} autoFocus placeholder="メッセージを入力して新しいチャットを始める" />
+      <Composer busy={false} commands={[]} onSend={(text) => start(text)} autoFocus placeholder="メッセージを入力して新しいチャットを始める" />
     </div>
   );
 }

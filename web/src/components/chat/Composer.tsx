@@ -1,64 +1,106 @@
 import { useMemo, useRef, useState } from "react";
-import { APPROVAL_POLICIES, type ApprovalPolicy, type Skill } from "../../api/types";
+import { APPROVAL_POLICIES, type ApprovalPolicy, type CommandInfo, type InvokedSkill } from "../../api/types";
 
-interface Command {
-  name: string;
-  hint: string;
-}
-
-const COMMANDS: Command[] = [{ name: "compact", hint: "会話を要約してコンテキストを空ける" }];
+/** Commands that run as soon as they are picked (no argument to type). */
+const INSTANT = new Set(["compact", "stop", "export"]);
 
 /**
- * Floating input dock. While the agent works, the two ways to talk are explicit:
- * "キューに追記" (Steer, applied at the next safe point) and "中断して送信" (Interrupt).
+ * Floating input dock.
+ *
+ * `/` opens a palette with two groups — skills and system commands. Picking a skill attaches it
+ * as a removable chip (sent with the next message); typing `/skill args` and Enter sends it
+ * directly. System commands run immediately (no model call). While the agent works, the two
+ * ways to talk are explicit: queue (Steer) and interrupt.
  */
 export function Composer({
   busy,
   disabled,
-  skills,
+  commands,
   policy,
   onPolicy,
   onSend,
   onInterrupt,
+  onCommand,
   onStop,
   placeholder,
   autoFocus,
 }: {
   busy: boolean;
   disabled?: boolean;
-  skills: Skill[];
+  commands: CommandInfo[];
   policy?: ApprovalPolicy;
   onPolicy?: (p: ApprovalPolicy) => void;
-  onSend: (text: string) => Promise<void>;
-  onInterrupt?: (text: string) => Promise<void>;
+  onSend: (text: string, skills: InvokedSkill[]) => Promise<void>;
+  onInterrupt?: (text: string, skills: InvokedSkill[]) => Promise<void>;
+  onCommand?: (name: string, args: string) => Promise<void>;
   onStop?: () => void;
   placeholder?: string;
   autoFocus?: boolean;
 }) {
   const [text, setText] = useState("");
+  const [chips, setChips] = useState<CommandInfo[]>([]);
   const [sel, setSel] = useState(0);
+  const [dismissed, setDismissed] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const area = useRef<HTMLTextAreaElement>(null);
 
-  // `/` completion while the first word is being typed.
-  const slash = /^\/([a-z0-9-]*)$/.exec(text);
-  const options = useMemo(() => {
-    if (!slash) return [];
-    const q = slash[1];
-    return [
-      ...COMMANDS.filter((c) => c.name.startsWith(q)).map((c) => ({ name: c.name, hint: c.hint, kind: "command" as const })),
-      ...skills.filter((s) => s.name.includes(q)).map((s) => ({ name: s.name, hint: s.description, kind: "skill" as const })),
-    ].slice(0, 8);
-  }, [slash?.[1], skills]); // eslint-disable-line react-hooks/exhaustive-deps
+  const query = /^\/([a-z0-9-]*)$/.exec(text)?.[1];
+  const groups = useMemo(() => {
+    if (query === undefined || dismissed === text) return null;
+    const match = (c: CommandInfo) => c.name.includes(query) && !chips.some((x) => x.name === c.name);
+    const rank = (c: CommandInfo) => (c.name.startsWith(query) ? 0 : 1);
+    const pick = (kind: CommandInfo["kind"]) => commands.filter((c) => c.kind === kind && match(c)).sort((a, b) => rank(a) - rank(b));
+    return { skills: pick("skill").slice(0, 8), system: pick("command") };
+  }, [query, commands, chips, dismissed, text]);
+  const flat = groups ? [...groups.skills, ...groups.system] : [];
+
+  const resize = () => {
+    const el = area.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
+  };
+
+  const runCommand = async (name: string, args: string) => {
+    if (!onCommand) return;
+    setSending(true);
+    try {
+      await onCommand(name, args);
+      setText("");
+    } catch {
+      // The caller shows the error.
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const choose = (c: CommandInfo) => {
+    setSel(0);
+    if (c.kind === "skill") {
+      setChips([...chips, c]);
+      setText("");
+    } else if (INSTANT.has(c.name) && !c.argument_hint) {
+      runCommand(c.name, "");
+    } else {
+      setText(`/${c.name} `);
+    }
+    area.current?.focus();
+  };
 
   const submit = async (how: "send" | "interrupt") => {
     const t = text.trim();
-    if (!t || sending) return;
+    // `/command args` typed in full runs the command.
+    const typed = /^\/([a-z0-9-]+)(?:\s+(.*))?$/s.exec(t);
+    const cmd = typed && commands.find((c) => c.kind === "command" && c.name === typed[1]);
+    if (cmd) return runCommand(cmd.name, typed[2]?.trim() ?? "");
+    if ((!t && chips.length === 0) || sending) return;
+    const skills = chips.map((c) => ({ name: c.name }));
     setSending(true);
     try {
-      await (how === "interrupt" && onInterrupt ? onInterrupt(t) : onSend(t));
+      await (how === "interrupt" && onInterrupt ? onInterrupt(t, skills) : onSend(t, skills));
       setText("");
-      if (area.current) area.current.style.height = "auto";
+      setChips([]);
+      requestAnimationFrame(resize);
     } catch {
       // The caller shows the error; the text stays so nothing is lost.
     } finally {
@@ -67,25 +109,52 @@ export function Composer({
     }
   };
 
-  const pick = (name: string) => {
-    setText(`/${name} `);
-    setSel(0);
-    area.current?.focus();
+  const canSend = (text.trim() !== "" || chips.length > 0) && !sending && !disabled;
+  const option = (c: CommandInfo) => {
+    const i = flat.indexOf(c);
+    return (
+      <li key={`${c.kind}:${c.name}`} className={i === sel ? "active" : ""} onMouseEnter={() => setSel(i)} onMouseDown={(e) => (e.preventDefault(), choose(c))}>
+        <span className="slash-name">/{c.name}</span>
+        {c.argument_hint && <span className="slash-hint">{c.argument_hint}</span>}
+        {c.subagent && <span className="pill accent tiny">Subagent</span>}
+        <span className="muted ellipsis">{c.description}</span>
+      </li>
+    );
   };
 
   return (
     <div className="dock-wrap">
       <div className={`dock ${disabled ? "disabled" : ""}`}>
-        {options.length > 0 && (
-          <ul className="slash-menu" role="listbox">
-            {options.map((o, i) => (
-              <li key={o.name} className={i === sel ? "active" : ""} onMouseDown={(e) => (e.preventDefault(), pick(o.name))}>
-                <span className="slash-name">/{o.name}</span>
-                <span className="slash-kind">{o.kind === "skill" ? "スキル" : "コマンド"}</span>
-                <span className="muted ellipsis">{o.hint}</span>
-              </li>
+        {groups && flat.length > 0 && (
+          <div className="slash-menu" role="listbox">
+            {groups.skills.length > 0 && (
+              <>
+                <div className="slash-group">スキル</div>
+                <ul>{groups.skills.map(option)}</ul>
+              </>
+            )}
+            {groups.system.length > 0 && (
+              <>
+                <div className="slash-group">システムコマンド</div>
+                <ul>{groups.system.map(option)}</ul>
+              </>
+            )}
+            <div className="slash-foot">↑↓ 選択 · Enter / Tab 決定 · Esc 閉じる</div>
+          </div>
+        )}
+        {chips.length > 0 && (
+          <div className="attached">
+            {chips.map((c) => (
+              <span key={c.name} className="attached-chip" title={c.description}>
+                ✦ {c.name}
+                {c.subagent && <span className="pill accent tiny">Subagent</span>}
+                <button aria-label={`${c.name} を外す`} onClick={() => setChips(chips.filter((x) => x.name !== c.name))}>
+                  ×
+                </button>
+              </span>
             ))}
-          </ul>
+            {chips[chips.length - 1]?.argument_hint && <span className="muted">{chips[chips.length - 1].argument_hint} を本文に</span>}
+          </div>
         )}
         <textarea
           ref={area}
@@ -97,16 +166,16 @@ export function Composer({
           onChange={(e) => {
             setText(e.target.value);
             setSel(0);
-            const el = e.currentTarget;
-            el.style.height = "auto";
-            el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
+            resize();
           }}
           onKeyDown={(e) => {
-            if (options.length) {
-              if (e.key === "ArrowDown") return e.preventDefault(), setSel((sel + 1) % options.length);
-              if (e.key === "ArrowUp") return e.preventDefault(), setSel((sel - 1 + options.length) % options.length);
-              if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) return e.preventDefault(), pick(options[sel].name);
+            if (flat.length) {
+              if (e.key === "ArrowDown") return e.preventDefault(), setSel((sel + 1) % flat.length);
+              if (e.key === "ArrowUp") return e.preventDefault(), setSel((sel - 1 + flat.length) % flat.length);
+              if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing)) return e.preventDefault(), choose(flat[sel]);
+              if (e.key === "Escape") return e.preventDefault(), setDismissed(text);
             }
+            if (e.key === "Backspace" && text === "" && chips.length) setChips(chips.slice(0, -1));
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
               submit("send");
@@ -126,12 +195,12 @@ export function Composer({
           <span className="spacer" />
           {busy ? (
             <>
-              {!text.trim() && onStop && (
+              {!canSend && onStop && (
                 <button className="btn icon" title="停止" onClick={onStop}>
                   ■
                 </button>
               )}
-              {text.trim() && (
+              {canSend && (
                 <>
                   <button className="btn ghost" disabled={sending} onClick={() => submit("interrupt")} title="いまの応答を止めて、このメッセージを送ります">
                     中断して送信
@@ -143,7 +212,7 @@ export function Composer({
               )}
             </>
           ) : (
-            <button className="btn primary send" disabled={!text.trim() || sending || disabled} onClick={() => submit("send")} aria-label="送信">
+            <button className="btn primary send" disabled={!canSend} onClick={() => submit("send")} aria-label="送信">
               ↑
             </button>
           )}
