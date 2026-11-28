@@ -531,6 +531,8 @@ async fn config_crud_and_reference_checks() {
         builtin_tools: false,
         approval_policy: ApprovalPolicyKind::AlwaysAsk,
         skill_ids: vec!["file:review".into()],
+        builtin_groups: vec!["memory".into()],
+        workspace_root: None,
         created_at: 1,
         updated_at: 1,
     };
@@ -638,6 +640,7 @@ async fn skills_crud() {
         body: "# Steps\n1. read".into(),
         allowed_tools: vec!["read_file".into()],
         tags: vec!["dev".into()],
+        invocation: Default::default(),
         created_at: 1,
         updated_at: 1,
     };
@@ -657,4 +660,227 @@ async fn skills_crud() {
         s.get_skill("k1").await,
         Err(StoreError::NotFound(_))
     ));
+}
+
+// ----- agent foundation ----------------------------------------------------------------------
+
+fn memory(id: &str, title: &str, content: &str, tags: &[&str], scope: &str) -> MemoryRecord {
+    MemoryRecord {
+        id: id.into(),
+        title: title.into(),
+        content: content.into(),
+        tags: tags.iter().map(|t| t.to_string()).collect(),
+        scope: scope.into(),
+        created_at: 1,
+        updated_at: 1,
+    }
+}
+
+#[tokio::test]
+async fn memories_full_text_search_in_japanese_chinese_and_english() {
+    let s = SqliteSessionStore::in_memory().await.unwrap();
+    for m in [
+        memory(
+            "m1",
+            "コーディング規約",
+            "このプロジェクトではタブではなくスペース4つでインデントする",
+            &["style"],
+            "global",
+        ),
+        memory(
+            "m2",
+            "部署配置",
+            "生产环境部署使用蓝绿发布策略，回滚时间不超过五分钟",
+            &["ops"],
+            "global",
+        ),
+        memory(
+            "m3",
+            "Deploy checklist",
+            "Always run the database migrations before restarting the API servers",
+            &["ops"],
+            "proj-a",
+        ),
+        memory(
+            "m4",
+            "好み",
+            "ユーザーは返答を簡潔な箇条書きで受け取るのを好む",
+            &["prefs"],
+            "global",
+        ),
+    ] {
+        s.create_memory(&m).await.unwrap();
+    }
+    let ids = |hits: Vec<MemoryHit>| hits.into_iter().map(|h| h.memory.id).collect::<Vec<_>>();
+    let q = |text: &str| MemoryQuery {
+        text: text.into(),
+        ..Default::default()
+    };
+
+    assert_eq!(
+        ids(s.search_memories(&q("インデント")).await.unwrap()),
+        ["m1"]
+    );
+    assert_eq!(
+        ids(s.search_memories(&q("蓝绿发布")).await.unwrap()),
+        ["m2"]
+    );
+    assert_eq!(
+        ids(s.search_memories(&q("database migrations")).await.unwrap()),
+        ["m3"]
+    );
+    assert_eq!(
+        ids(s.search_memories(&q("箇条書き")).await.unwrap()),
+        ["m4"]
+    );
+    // Short (< 3 chars) queries fall back to LIKE.
+    assert_eq!(ids(s.search_memories(&q("規約")).await.unwrap()), ["m1"]);
+    assert_eq!(ids(s.search_memories(&q("回滚")).await.unwrap()), ["m2"]);
+    // Tag and scope filters; FTS scores are positive.
+    let ops = s
+        .search_memories(&MemoryQuery {
+            text: String::new(),
+            tags: vec!["ops".into()],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(ops.len(), 2);
+    let scoped = s
+        .search_memories(&MemoryQuery {
+            text: "migrations".into(),
+            scope: Some("proj-a".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(scoped.len(), 1);
+    assert!(scoped[0].score > 0.0);
+    assert!(
+        s.search_memories(&MemoryQuery {
+            text: "migrations".into(),
+            scope: Some("global".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .is_empty()
+    );
+    // Punctuation in queries is literal, not FTS syntax.
+    assert!(s.search_memories(&q("\"AND OR*")).await.is_ok());
+
+    // Updates are re-indexed; deletes leave the index.
+    let mut m = s.get_memory("m3").await.unwrap();
+    m.content = "Rotate the TLS certificates every quarter".into();
+    s.update_memory(&m).await.unwrap();
+    assert!(
+        s.search_memories(&q("migrations"))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        ids(s.search_memories(&q("certificates")).await.unwrap()),
+        ["m3"]
+    );
+    s.delete_memory("m3").await.unwrap();
+    assert!(
+        s.search_memories(&q("certificates"))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn subagent_sessions_form_a_tree_hidden_from_the_list() {
+    let h = Harness::new(vec![]).await;
+    let (parent, _) = h.create(vec![Message::user("p")]).await;
+    let frozen = FrozenToolset::freeze(executor(&[]).as_ref()).unwrap();
+    let child_state = AgentState::with_tools("child", vec![Message::user("c")], &frozen);
+    let mk = |pid: &str, depth: u32| NewSession {
+        provider: "mock".into(),
+        model: "m".into(),
+        lineage: Lineage {
+            parent_session_id: Some(pid.into()),
+            parent_tool_call_id: Some("call_1".into()),
+            depth,
+            workspace_root: Some("/tmp/ws".into()),
+            builtin_groups: vec!["utilities".into()],
+        },
+        ..Default::default()
+    };
+    let child = h
+        .store
+        .create_session(mk(&parent, 1), &child_state)
+        .await
+        .unwrap();
+    let grandchild = h
+        .store
+        .create_session(mk(&child, 2), &child_state)
+        .await
+        .unwrap();
+
+    let top: Vec<String> = h
+        .store
+        .list_sessions()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|m| m.id)
+        .collect();
+    assert_eq!(top, std::slice::from_ref(&parent), "children are not top-level sessions");
+    let kids = h.store.list_children(&parent).await.unwrap();
+    assert_eq!(kids.len(), 1);
+    assert_eq!(kids[0].lineage.depth, 1);
+    assert_eq!(kids[0].lineage.builtin_groups, ["utilities"]);
+    assert_eq!(kids[0].lineage.workspace_root.as_deref(), Some("/tmp/ws"));
+
+    let err = sqlx::query("UPDATE sessions SET workspace_root = '/' WHERE id = ?")
+        .bind(&child)
+        .execute(h.store.pool())
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("immutable"), "{err}");
+
+    // Deleting the parent removes the whole tree.
+    h.store.delete_session(&parent).await.unwrap();
+    for id in [&parent, &child, &grandchild] {
+        assert!(matches!(
+            h.store.load_state(id).await,
+            Err(StoreError::NotFound(_))
+        ));
+    }
+}
+
+#[tokio::test]
+async fn loaded_skills_and_skill_invocation_round_trip() {
+    let h = Harness::new(vec![]).await;
+    let (id, mut state) = h.create(vec![Message::user("x")]).await;
+    state.loaded_skills.insert("review".into());
+    h.store
+        .update_session_status(&id, &SessionSnapshot::from_state(&state))
+        .await
+        .unwrap();
+    let loaded = h.store.load_state(&id).await.unwrap().state;
+    assert!(loaded.loaded_skills.contains("review"));
+
+    let k = SkillRecord {
+        id: "k".into(),
+        name: "deep-dive".into(),
+        description: "d".into(),
+        body: "b".into(),
+        allowed_tools: vec![],
+        tags: vec![],
+        invocation: SkillInvocation {
+            user_invocable: false,
+            argument_hint: Some("<topic>".into()),
+            execution_mode: SkillExecutionMode::Subagent,
+            subagent_profile: Some("researcher".into()),
+        },
+        created_at: 1,
+        updated_at: 1,
+    };
+    h.store.create_skill(&k).await.unwrap();
+    assert_eq!(h.store.get_skill("k").await.unwrap(), k);
 }

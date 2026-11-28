@@ -18,6 +18,9 @@ import type {
   SkillsReload,
   OAuthStatus,
   ToolCallResult,
+  CommandInfo,
+  CommandResult,
+  Memory,
 } from "./types";
 
 export { ApiError, errorText } from "./client";
@@ -33,6 +36,20 @@ export const sessions = {
   input: (id: string, input: InputRequest) => request<void>("POST", `/sessions/${id}/input`, input),
   cancel: (id: string) => request<void>("POST", `/sessions/${id}/cancel`),
   eventsUrl: (id: string) => `/api/sessions/${id}/events`,
+  children: (id: string) => request<SessionSummary[]>("GET", `/sessions/${id}/children`),
+};
+
+export const commands = {
+  list: () => request<CommandInfo[]>("GET", "/commands"),
+  run: (name: string, sessionId?: string | null, args?: string) =>
+    request<CommandResult>("POST", "/commands/run", { session_id: sessionId ?? undefined, name, arguments: args || undefined }),
+};
+
+export const memories = {
+  search: (q = "", tag = "") => request<Memory[]>("GET", `/memories?q=${encodeURIComponent(q)}&tag=${encodeURIComponent(tag)}`),
+  create: (m: Partial<Memory>) => request<Memory>("POST", "/memories", m),
+  update: (id: string, m: Partial<Memory>) => request<Memory>("PUT", `/memories/${id}`, m),
+  remove: (id: string) => request<void>("DELETE", `/memories/${id}`),
 };
 
 export const providers = {

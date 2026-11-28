@@ -10,8 +10,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use oort_agent::store::{assemble_state, canonical_tools_json};
 use oort_agent::{
-    AgentState, ApprovalPolicyKind, CompactionCheckpoint, LlmCallStats, NewSession, SessionId,
-    SessionMeta, SessionSnapshot, SessionStatus, SessionStore, StepDelta, StoreError,
+    AgentState, ApprovalPolicyKind, CompactionCheckpoint, Lineage, LlmCallStats, NewSession,
+    SessionId, SessionMeta, SessionSnapshot, SessionStatus, SessionStore, StepDelta, StoreError,
     StoredSession,
 };
 use oort_llm::{ContentPart, Message, Role, Usage};
@@ -91,8 +91,9 @@ impl SessionStore for SqliteSessionStore {
         sqlx::query(
             "INSERT INTO sessions (id, title, provider, model, config_json, approval_policy, system_prompt, \
              frozen_tools, status, halt_reason, pending_calls, pending_steers, compaction_requested, \
-             turn, usage_json, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             turn, usage_json, created_at, updated_at, parent_session_id, parent_tool_call_id, depth, \
+             workspace_root, enabled_builtin_groups_json, loaded_skills_json) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(&meta.title)
@@ -111,6 +112,12 @@ impl SessionStore for SqliteSessionStore {
         .bind(to_json(&snap.usage))
         .bind(now)
         .bind(now)
+        .bind(&meta.lineage.parent_session_id)
+        .bind(&meta.lineage.parent_tool_call_id)
+        .bind(meta.lineage.depth)
+        .bind(&meta.lineage.workspace_root)
+        .bind(to_json(&meta.lineage.builtin_groups))
+        .bind(to_json(&snap.loaded_skills))
         .execute(&mut *tx)
         .await
         .map_err(classify)?;
@@ -126,7 +133,7 @@ impl SessionStore for SqliteSessionStore {
 
     async fn list_sessions(&self) -> Result<Vec<SessionMeta>, StoreError> {
         let rows = sqlx::query(&format!(
-            "{META_SELECT} ORDER BY s.updated_at DESC, s.id DESC"
+            "{META_SELECT} WHERE s.parent_session_id IS NULL ORDER BY s.updated_at DESC, s.id DESC"
         ))
         .fetch_all(&self.pool)
         .await
@@ -151,6 +158,7 @@ impl SessionStore for SqliteSessionStore {
             compaction_requested: row.get("compaction_requested"),
             turn: row.get("turn"),
             usage: from_json(row.get("usage_json"), "usage_json")?,
+            loaded_skills: from_json(row.get("loaded_skills_json"), "loaded_skills_json")?,
         };
         let system_prompt: String = row.get("system_prompt");
         let frozen_tools: String = row.get("frozen_tools");
@@ -311,28 +319,52 @@ impl SessionStore for SqliteSessionStore {
         found(done.rows_affected(), id)
     }
 
-    /// Marks the row `deleting` (which the delete triggers require) and removes everything in
-    /// one transaction.
+    async fn list_children(&self, id: &str) -> Result<Vec<SessionMeta>, StoreError> {
+        let rows = sqlx::query(&format!(
+            "{META_SELECT} WHERE s.parent_session_id = ? ORDER BY s.created_at, s.id"
+        ))
+        .bind(id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend)?;
+        rows.iter().map(meta_from_row).collect()
+    }
+
+    /// Deletes the session and its subagent descendants (children first) in one transaction.
+    /// Every row is marked `deleting` first, which the delete triggers require.
     async fn delete_session(&self, id: &str) -> Result<(), StoreError> {
         let mut tx = self.pool.begin().await.map_err(backend)?;
-        let done = sqlx::query("UPDATE sessions SET deleting = 1 WHERE id = ?")
-            .bind(id)
-            .execute(&mut *tx)
-            .await
-            .map_err(classify)?;
-        found(done.rows_affected(), id)?;
-        for table in ["llm_calls", "compactions", "messages"] {
-            sqlx::query(&format!("DELETE FROM {table} WHERE session_id = ?"))
-                .bind(id)
+        let ids: Vec<String> = sqlx::query_scalar(
+            "WITH RECURSIVE tree(id, depth) AS (SELECT id, 0 FROM sessions WHERE id = ? \
+             UNION ALL SELECT s.id, t.depth + 1 FROM sessions s JOIN tree t ON s.parent_session_id = t.id) \
+             SELECT id FROM tree ORDER BY depth DESC",
+        )
+        .bind(id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(backend)?;
+        found(ids.len() as u64, id)?;
+        for sid in &ids {
+            sqlx::query("UPDATE sessions SET deleting = 1 WHERE id = ?")
+                .bind(sid)
                 .execute(&mut *tx)
                 .await
                 .map_err(classify)?;
         }
-        sqlx::query("DELETE FROM sessions WHERE id = ?")
-            .bind(id)
-            .execute(&mut *tx)
-            .await
-            .map_err(classify)?;
+        for sid in &ids {
+            for table in ["llm_calls", "compactions", "messages"] {
+                sqlx::query(&format!("DELETE FROM {table} WHERE session_id = ?"))
+                    .bind(sid)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(classify)?;
+            }
+            sqlx::query("DELETE FROM sessions WHERE id = ?")
+                .bind(sid)
+                .execute(&mut *tx)
+                .await
+                .map_err(classify)?;
+        }
         tx.commit().await.map_err(backend)
     }
 }
@@ -435,7 +467,8 @@ async fn update_status(
 ) -> Result<(), StoreError> {
     let done = sqlx::query(
         "UPDATE sessions SET status = ?, halt_reason = ?, pending_calls = ?, pending_steers = ?, \
-         compaction_requested = ?, turn = ?, usage_json = ?, updated_at = ? WHERE id = ?",
+         compaction_requested = ?, turn = ?, usage_json = ?, loaded_skills_json = ?, updated_at = ? \
+         WHERE id = ?",
     )
     .bind(s.status.as_str())
     .bind(&s.halt_reason)
@@ -444,6 +477,7 @@ async fn update_status(
     .bind(s.compaction_requested)
     .bind(s.turn)
     .bind(to_json(&s.usage))
+    .bind(to_json(&s.loaded_skills))
     .bind(now_ms())
     .bind(id)
     .execute(conn)
@@ -473,6 +507,16 @@ fn meta_from_row(row: &SqliteRow) -> Result<SessionMeta, StoreError> {
         model: row.get("model"),
         config: from_json(row.get("config_json"), "config_json")?,
         approval_policy: ApprovalPolicyKind::parse(row.get("approval_policy"))?,
+        lineage: Lineage {
+            parent_session_id: row.get("parent_session_id"),
+            parent_tool_call_id: row.get("parent_tool_call_id"),
+            depth: row.get::<i64, _>("depth") as u32,
+            workspace_root: row.get("workspace_root"),
+            builtin_groups: from_json(
+                row.get("enabled_builtin_groups_json"),
+                "enabled_builtin_groups_json",
+            )?,
+        },
         status: SessionStatus::parse(row.get("status"))?,
         turn: row.get("turn"),
         message_count: row.get::<i64, _>("message_count") as u64,

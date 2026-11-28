@@ -42,6 +42,13 @@ pub struct CreateSessionRequest {
     /// Skill ids (DB ids or `file:<name>`) whose index is frozen into the session.
     #[serde(default)]
     pub skill_ids: Option<Vec<String>>,
+    /// Builtin tool groups (`self_config`, `core_ux`, `memory`, `utilities`, `subagent`,
+    /// `workspace`).
+    #[serde(default)]
+    pub builtin_groups: Option<Vec<String>>,
+    /// Required with the `workspace` group: an existing directory.
+    #[serde(default)]
+    pub workspace_root: Option<String>,
     /// Offer `render_widget` (default true).
     #[serde(default)]
     pub widgets: Option<bool>,
@@ -60,15 +67,27 @@ pub struct PatchSessionRequest {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct InvokedSkill {
+    pub name: String,
+    #[serde(default)]
+    pub arguments: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum InputRequest {
     /// Soft insert (also how a new message is sent to an idle session).
     Steer {
         text: String,
+        /// Skills attached explicitly (chips / `/name`), appended to this message.
+        #[serde(default)]
+        invoked_skills: Vec<InvokedSkill>,
     },
     /// Hard interrupt of the current turn.
     Interrupt {
         text: String,
+        #[serde(default)]
+        invoked_skills: Vec<InvokedSkill>,
     },
     Approval {
         call_id: String,
@@ -106,6 +125,11 @@ pub struct CheckpointView {
 pub struct PendingApproval {
     pub call: ToolCall,
     pub reason: String,
+    /// `approval` (approve / deny) or `input` (answer with `decision: "answer"`).
+    pub kind: &'static str,
+    /// What the card shows: a diff, the command, the skill or server settings.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview: Option<serde_json::Value>,
 }
 
 /// Usage of one LLM call, normalized across providers.
@@ -162,6 +186,8 @@ pub struct SessionDetail {
     pub tools: Vec<ToolDefinition>,
     pub pending_approvals: Vec<PendingApproval>,
     pub pending_steers: usize,
+    /// Skills whose body is loaded in the current epoch (explicit invocation).
+    pub loaded_skills: Vec<String>,
     pub raw: Vec<RawMessage>,
     pub checkpoints: Vec<CheckpointView>,
     pub active_view: ActiveView,
@@ -222,6 +248,14 @@ impl SessionDetail {
                     Some(ToolDecision::NeedHumanApproval { reason }) => Some(PendingApproval {
                         call: c.clone(),
                         reason: reason.clone(),
+                        kind: "approval",
+                        preview: None,
+                    }),
+                    Some(ToolDecision::NeedUserInput { reason }) => Some(PendingApproval {
+                        call: c.clone(),
+                        reason: reason.clone(),
+                        kind: "input",
+                        preview: None,
                     }),
                     _ => None,
                 })
@@ -236,6 +270,7 @@ impl SessionDetail {
             tools: state.tool_snapshot().map(<[_]>::to_vec).unwrap_or_default(),
             pending_approvals,
             pending_steers: state.pending_steers.len(),
+            loaded_skills: state.loaded_skills.iter().cloned().collect(),
             raw,
             checkpoints: state
                 .checkpoints()

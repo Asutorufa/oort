@@ -1,0 +1,28 @@
+[package]
+name = "oort-tools"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "oort builtin tools: self-config, plan/ask, memory, utilities, local workspace"
+
+[dependencies]
+oort-agent = { path = "../agent" }
+oort-llm = { path = "../llm" }
+oort-mcp = { path = "../mcp" }
+async-trait = { workspace = true }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+libc = "0.2"
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+similar = "2.7"
+tokio = { workspace = true, features = ["process", "io-util", "time", "fs", "net", "macros", "rt"] }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+axum = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

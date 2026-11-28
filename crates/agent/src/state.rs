@@ -1,6 +1,6 @@
 //! Serializable agent state: the single source of truth for a session.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use oort_llm::{ContentPart, Message, Role, ToolCall, ToolDefinition, Usage};
 use serde::{Deserialize, Serialize};
@@ -12,8 +12,31 @@ use crate::error::AgentError;
 #[serde(tag = "decision", rename_all = "snake_case")]
 pub enum ToolDecision {
     Approve,
-    Deny { reason: String },
-    NeedHumanApproval { reason: String },
+    Deny {
+        reason: String,
+    },
+    NeedHumanApproval {
+        reason: String,
+    },
+    /// The call asks the user something (e.g. `ask_user`): it waits like an approval, and the
+    /// user's answer becomes its result instead of executing it.
+    NeedUserInput {
+        reason: String,
+    },
+    /// Resolved [`ToolDecision::NeedUserInput`]: the answer is the tool result.
+    Answered {
+        content: String,
+    },
+}
+
+impl ToolDecision {
+    /// Waiting for a human (approval or answer).
+    pub fn is_pending(&self) -> bool {
+        matches!(
+            self,
+            Self::NeedHumanApproval { .. } | Self::NeedUserInput { .. }
+        )
+    }
 }
 
 /// Where the state machine currently is. Each [`crate::Agent::step`] advances it by one transition.
@@ -87,6 +110,9 @@ pub struct AgentState {
     /// Number of LLM turns started.
     pub turn: u32,
     pub usage: UsageLedger,
+    /// Skills whose full body entered the history in the current epoch (explicit invocation).
+    /// Cleared by compaction (the bodies may have been summarized away).
+    pub loaded_skills: BTreeSet<String>,
 }
 
 impl AgentState {
@@ -104,6 +130,7 @@ impl AgentState {
             checkpoints: Vec::new(),
             phase,
             pending_steers: VecDeque::new(),
+            loaded_skills: BTreeSet::new(),
             compaction_requested: false,
             turn: 0,
             usage: UsageLedger::default(),
@@ -186,6 +213,7 @@ impl AgentState {
             checkpoints: self.checkpoints,
             phase: self.phase,
             pending_steers: self.pending_steers,
+            loaded_skills: self.loaded_skills,
             compaction_requested: self.compaction_requested,
             turn: self.turn,
             usage: self.usage,
@@ -220,6 +248,7 @@ impl AgentState {
             checkpoints: parts.checkpoints,
             phase: parts.phase,
             pending_steers: parts.pending_steers,
+            loaded_skills: parts.loaded_skills,
             compaction_requested: parts.compaction_requested,
             turn: parts.turn,
             usage: parts.usage,
@@ -256,6 +285,7 @@ pub struct StateParts {
     pub compaction_requested: bool,
     pub turn: u32,
     pub usage: UsageLedger,
+    pub loaded_skills: BTreeSet<String>,
 }
 
 fn has_open_calls(messages: &[Message]) -> bool {

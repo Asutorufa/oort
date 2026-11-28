@@ -423,6 +423,9 @@ pub struct PresetInput {
     pub builtin_tools: Option<bool>,
     pub approval_policy: Option<ApprovalPolicyKind>,
     pub skill_ids: Option<Vec<String>>,
+    pub builtin_groups: Option<Vec<String>>,
+    /// Empty string clears it.
+    pub workspace_root: Option<String>,
 }
 
 impl PresetInput {
@@ -439,6 +442,8 @@ impl PresetInput {
             builtin_tools: true,
             approval_policy: ApprovalPolicyKind::default(),
             skill_ids: vec![],
+            builtin_groups: vec![],
+            workspace_root: None,
             created_at: now,
             updated_at: now,
         };
@@ -451,7 +456,18 @@ impl PresetInput {
     }
 
     pub fn apply(self, cur: &PresetRecord) -> Result<PresetRecord, ApiError> {
+        if let Some(g) = &self.builtin_groups {
+            crate::registry::parse_groups(g)?;
+        }
         Ok(PresetRecord {
+            builtin_groups: self
+                .builtin_groups
+                .clone()
+                .unwrap_or_else(|| cur.builtin_groups.clone()),
+            workspace_root: match &self.workspace_root {
+                Some(r) => Some(r.trim().to_string()).filter(|r| !r.is_empty()),
+                None => cur.workspace_root.clone(),
+            },
             id: cur.id.clone(),
             name: match self.name {
                 Some(n) => required(Some(n), "name")?,
@@ -623,6 +639,12 @@ pub struct SkillInput {
     pub body: Option<String>,
     pub allowed_tools: Option<Vec<String>>,
     pub tags: Option<Vec<String>>,
+    pub user_invocable: Option<bool>,
+    /// Empty string clears it.
+    pub argument_hint: Option<String>,
+    pub execution_mode: Option<oort_agent::SkillExecutionMode>,
+    /// Empty string clears it.
+    pub subagent_profile: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -642,6 +664,7 @@ impl SkillInput {
             body: String::new(),
             allowed_tools: vec![],
             tags: vec![],
+            invocation: Default::default(),
             created_at: now,
             updated_at: now,
         };
@@ -671,6 +694,18 @@ impl SkillInput {
                 .allowed_tools
                 .unwrap_or_else(|| cur.allowed_tools.clone()),
             tags: self.tags.unwrap_or_else(|| cur.tags.clone()),
+            invocation: oort_agent::SkillInvocation {
+                user_invocable: self.user_invocable.unwrap_or(cur.invocation.user_invocable),
+                argument_hint: match self.argument_hint {
+                    Some(h) => Some(h.trim().to_string()).filter(|h| !h.is_empty()),
+                    None => cur.invocation.argument_hint.clone(),
+                },
+                execution_mode: self.execution_mode.unwrap_or(cur.invocation.execution_mode),
+                subagent_profile: match self.subagent_profile {
+                    Some(p) => Some(p.trim().to_string()).filter(|p| !p.is_empty()),
+                    None => cur.invocation.subagent_profile.clone(),
+                },
+            },
             created_at: cur.created_at,
             updated_at: now_ms().max(cur.updated_at + 1),
         };

@@ -25,6 +25,7 @@ pub mod io;
 pub mod metrics;
 pub mod model;
 pub mod secret;
+pub mod skill_inject;
 pub mod state;
 pub mod store;
 mod stream;
@@ -38,9 +39,10 @@ pub use compact::{
 };
 pub use composite::{CompositeBuilder, CompositeToolExecutor, Namespace, PinnedToolExecutor};
 pub use config_store::{
-    ApprovalPolicyKind, ConfigStore, McpAuth, McpServerRecord, McpTransportKind, OAuthClientSource,
-    OAuthStatus, OAuthTokenRecord, OAuthTokenStore, PresetRecord, ProviderKind, ProviderRecord,
-    SkillRecord, SkillStore,
+    ApprovalPolicyKind, ConfigStore, McpAuth, McpServerRecord, McpTransportKind, MemoryHit,
+    MemoryQuery, MemoryRecord, MemoryStore, OAuthClientSource, OAuthStatus, OAuthTokenRecord,
+    OAuthTokenStore, PresetRecord, ProviderKind, ProviderRecord, SkillExecutionMode,
+    SkillInvocation, SkillRecord, SkillStore,
 };
 pub use context::{ContextManager, DefaultContextManager, RequestParams};
 pub use engine::{Agent, AgentBuilder, INTERRUPTED_TOOL_RESULT, StepOutcome};
@@ -50,6 +52,7 @@ pub use hook::{
 };
 pub use io::{
     AgentEvent, ApprovalDecision, EventSink, Inbox, InterruptPoint, LoopInput, PhaseKind,
+    PlanStatus, PlanStep,
 };
 pub use metrics::{LlmCallStats, RequestHashes, RequestSummary};
 pub use model::{ModelClient, RetryingModel};
@@ -57,7 +60,7 @@ pub use model::{ModelClient, RetryingModel};
 pub use oort_llm::ContentPart as ContentBlock;
 pub use state::{AgentState, CompactionCheckpoint, Phase, StateParts, ToolDecision, UsageLedger};
 pub use store::{
-    NewSession, PendingCalls, PersistenceHook, SessionId, SessionJournal, SessionMeta,
+    Lineage, NewSession, PendingCalls, PersistenceHook, SessionId, SessionJournal, SessionMeta,
     SessionSnapshot, SessionStatus, SessionStore, StepDelta, StoreError, StoredSession,
 };
 pub use tool::{

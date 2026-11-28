@@ -74,6 +74,8 @@ pub struct SessionSnapshot {
     pub compaction_requested: bool,
     pub turn: u32,
     pub usage: UsageLedger,
+    #[serde(default)]
+    pub loaded_skills: Vec<String>,
 }
 
 impl SessionSnapshot {
@@ -107,6 +109,7 @@ impl SessionSnapshot {
             compaction_requested: state.compaction_requested,
             turn: state.turn,
             usage: state.usage.clone(),
+            loaded_skills: state.loaded_skills.iter().cloned().collect(),
         }
     }
 
@@ -158,6 +161,22 @@ pub struct NewSession {
     /// Mutable later via [`SessionStore::set_approval_policy`].
     #[serde(default)]
     pub approval_policy: ApprovalPolicyKind,
+    #[serde(default)]
+    pub lineage: Lineage,
+}
+
+/// Where a session sits in a subagent tree, and its immutable tool environment.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Lineage {
+    /// Set for subagent sessions (hidden from the top-level list).
+    pub parent_session_id: Option<SessionId>,
+    /// The parent's tool call that spawned it (`skill:<id>` for skill-run subagents).
+    pub parent_tool_call_id: Option<String>,
+    pub depth: u32,
+    /// Root directory of the workspace tools (only when the `workspace` group is enabled).
+    pub workspace_root: Option<String>,
+    /// Builtin tool groups enabled at creation.
+    pub builtin_groups: Vec<String>,
 }
 
 /// Session metadata (one row of `sessions`).
@@ -169,6 +188,7 @@ pub struct SessionMeta {
     pub model: String,
     pub config: serde_json::Value,
     pub approval_policy: ApprovalPolicyKind,
+    pub lineage: Lineage,
     pub status: SessionStatus,
     pub turn: u32,
     pub message_count: u64,
@@ -249,8 +269,11 @@ pub trait SessionStore: Send + Sync {
         state: &AgentState,
     ) -> Result<SessionId, StoreError>;
 
-    /// All sessions, most recently updated first.
+    /// Top-level sessions (no parent), most recently updated first.
     async fn list_sessions(&self) -> Result<Vec<SessionMeta>, StoreError>;
+
+    /// Direct children (subagent sessions) of `id`, oldest first.
+    async fn list_children(&self, id: &str) -> Result<Vec<SessionMeta>, StoreError>;
 
     async fn load_state(&self, id: &str) -> Result<StoredSession, StoreError>;
 
@@ -338,6 +361,7 @@ pub fn assemble_state(
         compaction_requested: snapshot.compaction_requested,
         turn: snapshot.turn,
         usage: snapshot.usage,
+        loaded_skills: snapshot.loaded_skills.into_iter().collect(),
     })?)
 }
 

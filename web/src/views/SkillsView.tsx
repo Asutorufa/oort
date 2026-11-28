@@ -3,7 +3,7 @@ import { errorText, skills } from "../api";
 import type { Skill, SkillInput, SkillsReload } from "../api/types";
 import { Markdown } from "../components/chat/LazyMarkdown";
 import { Badge, Empty, ErrorBar, Modal } from "../components/common";
-import { Field } from "../components/forms";
+import { Field, Toggle } from "../components/forms";
 import { navigate } from "../hooks/useHashRoute";
 import { useResource } from "../hooks/useResource";
 
@@ -13,15 +13,33 @@ interface Form {
   body: string;
   allowed_tools: string;
   tags: string;
+  user_invocable: boolean;
+  argument_hint: string;
+  execution_mode: "inline" | "subagent";
+  subagent_profile: string;
 }
 
-const blank: Form = { name: "", description: "", body: "## 手順\n\n1. ", allowed_tools: "", tags: "" };
+const blank: Form = {
+  name: "",
+  description: "",
+  body: "## 手順\n\n1. ",
+  allowed_tools: "",
+  tags: "",
+  user_invocable: true,
+  argument_hint: "",
+  execution_mode: "inline",
+  subagent_profile: "",
+};
 const toForm = (k: Skill): Form => ({
   name: k.name,
   description: k.description,
   body: k.body,
   allowed_tools: k.allowed_tools.join(", "),
   tags: k.tags.join(", "),
+  user_invocable: k.user_invocable,
+  argument_hint: k.argument_hint ?? "",
+  execution_mode: k.execution_mode,
+  subagent_profile: k.subagent_profile ?? "",
 });
 const list = (s: string) =>
   s
@@ -122,6 +140,7 @@ export function SkillsView({ selected }: { selected: string | null }) {
               <div className="row">
                 <b className="mono">/{k.name}</b>
                 <span className="spacer" />
+                {k.execution_mode === "subagent" && <Badge tone="info">Subagent</Badge>}
                 <Badge tone={k.source.kind === "file" ? "muted" : "info"}>{k.source.kind === "file" ? "SKILL.md" : "アプリ"}</Badge>
               </div>
               <div className="muted ellipsis">{k.description}</div>
@@ -188,6 +207,43 @@ export function SkillsView({ selected }: { selected: string | null }) {
                 <Field label="説明" hint="会話の最初に固定されるのはこの説明だけです。いつ使うべきかを短く書いてください">
                   <input value={form.description} disabled={!editable} onChange={(e) => set("description", e.target.value)} />
                 </Field>
+                <div className="grid2">
+                  <Field label="呼び出し" hint="/名前 でユーザーが明示的に呼び出せるか">
+                    <Toggle checked={form.user_invocable} onChange={(v) => editable && set("user_invocable", v)} label="/ コマンドとして表示する" />
+                  </Field>
+                  <Field label="引数のヒント" hint="例: <domain>（本文の $ARGUMENTS に入ります）">
+                    <input className="mono" value={form.argument_hint} disabled={!editable} placeholder="<target>" onChange={(e) => set("argument_hint", e.target.value)} />
+                  </Field>
+                </div>
+                <div className="grid2">
+                  <Field label="実行方法" hint="Subagent は隔離された環境で実行し、要約だけを会話に返します">
+                    <span className="seg">
+                      <button className={form.execution_mode === "inline" ? "on" : ""} disabled={!editable} onClick={() => set("execution_mode", "inline")}>
+                        会話に読み込む
+                      </button>
+                      <button className={form.execution_mode === "subagent" ? "on" : ""} disabled={!editable} onClick={() => set("execution_mode", "subagent")}>
+                        Subagent に任せる
+                      </button>
+                    </span>
+                  </Field>
+                  {form.execution_mode === "subagent" && (
+                    <Field label="Subagent プロファイル" hint="preset:名前 で Preset のモデルとプロンプトも使えます">
+                      <input
+                        className="mono"
+                        list="subagent-profiles"
+                        value={form.subagent_profile}
+                        disabled={!editable}
+                        placeholder="explorer"
+                        onChange={(e) => set("subagent_profile", e.target.value)}
+                      />
+                      <datalist id="subagent-profiles">
+                        <option value="explorer">探索</option>
+                        <option value="researcher">リサーチ</option>
+                        <option value="reviewer">レビュー</option>
+                      </datalist>
+                    </Field>
+                  )}
+                </div>
                 <Field label="想定するツール（任意）" hint="カンマ区切り。本文の冒頭に案内として表示されます">
                   <input className="mono" value={form.allowed_tools} disabled={!editable} onChange={(e) => set("allowed_tools", e.target.value)} />
                 </Field>

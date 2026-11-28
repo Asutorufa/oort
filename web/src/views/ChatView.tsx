@@ -1,5 +1,6 @@
-import { useMemo, useState } from "react";
-import { errorText, sessions, skills as skillsApi } from "../api";
+import { useEffect, useMemo, useState } from "react";
+import { commands as commandsApi, errorText, sessions } from "../api";
+import { useToast } from "../components/common/Toast";
 import type { ApprovalPolicy, InputRequest, TurnUsage } from "../api/types";
 import { Composer } from "../components/chat/Composer";
 import { Inspector } from "../components/chat/Inspector";
@@ -29,11 +30,20 @@ export function ChatView({ selected, onListChanged }: { selected: string | null;
 }
 
 function Session({ id, onListChanged }: { id: string; onListChanged: () => void }) {
-  const { detail, live, log, conn, error: loadError, refresh, toolTimes } = useSessionStream(id, () => {
+  const { detail, live, log, conn, error: loadError, refresh, toolTimes, subagents, plan } = useSessionStream(id, () => {
     onListChanged();
     navigate("chat");
   });
-  const skillList = useResource(skillsApi.list);
+  const commandList = useResource(commandsApi.list);
+  const childList = useResource(() => sessions.children(id));
+  const toast = useToast();
+  const [trace, setTrace] = useState<string | null>(null);
+  // Children appear as subagents start; refresh their list when one is new.
+  const knownChildren = Object.values(subagents).map((s) => s.subSessionId).join(",");
+  const reloadChildren = childList.reload;
+  useEffect(() => {
+    reloadChildren();
+  }, [knownChildren, detail?.raw.length, reloadChildren]);
   const [error, setError] = useState<string | null>(null);
   const [inspector, setInspector] = useState(false);
   const [inspect, setInspect] = useState<TurnUsage | null>(null);
@@ -63,6 +73,42 @@ function Session({ id, onListChanged }: { id: string; onListChanged: () => void 
       await sessions.patch(id, req);
       refresh();
       onListChanged();
+    } catch (e) {
+      setError(errorText(e));
+    }
+  };
+
+  const runCommand = async (name: string, args: string) => {
+    try {
+      const r = await commandsApi.run(name, id, args);
+      toast(r.message);
+      if (r.effect.download) window.location.href = r.effect.download;
+      if (r.effect.navigate_session) {
+        onListChanged();
+        navigate("chat", r.effect.navigate_session);
+      }
+      refresh();
+    } catch (e) {
+      toast(errorText(e), "error");
+      throw e;
+    }
+  };
+
+  /** A new chat like this one, plus the MCP server just registered. */
+  const startWithMcp = async (serverId: string) => {
+    if (!detail) return;
+    try {
+      const d = await sessions.create({
+        provider_id: detail.settings.provider_id,
+        model: detail.settings.model,
+        mcp_server_ids: [...detail.settings.mcp_servers.map((b) => b.id), serverId],
+        builtin_groups: detail.lineage.builtin_groups,
+        workspace_root: detail.lineage.workspace_root ?? undefined,
+        approval_policy: detail.approval_policy,
+        title: `${detail.title || "新しい会話"}（MCP 追加）`,
+      });
+      onListChanged();
+      navigate("chat", d.id);
     } catch (e) {
       setError(errorText(e));
     }
@@ -100,26 +146,46 @@ function Session({ id, onListChanged }: { id: string; onListChanged: () => void 
           </button>
         </header>
         <ErrorBar error={error} onDismiss={() => setError(null)} />
-        <Thread detail={detail} live={live} toolTimes={toolTimes} actions={actions} />
+        <Thread
+          detail={detail}
+          live={live}
+          toolTimes={toolTimes}
+          actions={actions}
+          subagents={subagents}
+          plan={plan}
+          children={childList.data ?? []}
+          onTrace={(sid) => {
+            setTrace(sid);
+            setInspector(true);
+          }}
+          onAnswer={(callId, content) => send({ type: "approval", call_id: callId, decision: "answer", content })}
+          onStartWithMcp={startWithMcp}
+        />
         <Composer
           busy={busy}
           disabled={detail.status === "halted"}
-          skills={skillList.data ?? []}
+          commands={commandList.data ?? []}
           policy={detail.approval_policy}
           onPolicy={(p) => patch({ approval_policy: p })}
-          onSend={(text) => send({ type: "steer", text })}
-          onInterrupt={(text) => send({ type: "interrupt", text })}
+          onSend={(text, skills) => send({ type: "steer", text, invoked_skills: skills })}
+          onInterrupt={(text, skills) => send({ type: "interrupt", text, invoked_skills: skills })}
+          onCommand={runCommand}
           onStop={() => sessions.cancel(id).catch((e) => setError(errorText(e)))}
         />
       </div>
       {inspector && (
         <Inspector
+          trace={trace}
+          onCloseTrace={() => setTrace(null)}
           detail={detail}
           log={log}
           onInspect={setInspect}
           onCompact={() => send({ type: "compact" }).catch(() => {})}
           onStop={() => sessions.cancel(id).catch((e) => setError(errorText(e)))}
-          onClose={() => setInspector(false)}
+          onClose={() => {
+            setInspector(false);
+            setTrace(null);
+          }}
         />
       )}
       {inspect && <TurnInspector turn={inspect} prev={prevTurn} onClose={() => setInspect(null)} />}

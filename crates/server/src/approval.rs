@@ -31,6 +31,18 @@ pub struct DynamicApproval(pub Arc<ApprovalHandle>);
 #[async_trait]
 impl LoopHook for DynamicApproval {
     async fn before_tool(&self, _s: &AgentState, call: &ToolCall, read_only: bool) -> ToolDecision {
+        // Questions wait for an answer, whatever the policy.
+        if call.name == oort_tools::ASK_USER {
+            return ToolDecision::NeedUserInput {
+                reason: "waiting for your answer".into(),
+            };
+        }
+        // High-risk tools always ask, even under "approve everything".
+        if oort_tools::ALWAYS_ASK.contains(&call.name.as_str()) {
+            return ToolDecision::NeedHumanApproval {
+                reason: format!("`{}` always needs your approval", call.name),
+            };
+        }
         // An approval card exists to be decided by a human, whatever the policy.
         if crate::session_tools::is_approval_widget(&call.name, &call.arguments) {
             return ToolDecision::NeedHumanApproval {

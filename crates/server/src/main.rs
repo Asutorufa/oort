@@ -19,7 +19,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let registry = Arc::new(
         Registry::new(store.clone(), builtin)
             .with_skill_dirs(cfg.skill_dirs.clone())
-            .with_public_url(&cfg.public_url),
+            .with_public_url(&cfg.public_url)
+            .with_web_fetch(oort_tools::builtin::utilities::WebFetchOptions {
+                // Opt-in for trusted local setups; private targets are refused by default (SSRF).
+                allow_private: std::env::var("OORT_WEB_FETCH_ALLOW_PRIVATE")
+                    .is_ok_and(|v| v == "1"),
+                ..Default::default()
+            }),
     );
     tracing::info!(dirs = ?cfg.skill_dirs, redirect_uri = %registry.oauth.redirect_uri(), "skills and OAuth configured");
     if let Some(path) = &cfg.mcp_config {

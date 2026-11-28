@@ -13,7 +13,7 @@ pub mod frontmatter;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use oort_agent::{SkillRecord, SkillStore, StoreError};
+use oort_agent::{SkillExecutionMode, SkillInvocation, SkillRecord, SkillStore, StoreError};
 use serde::Serialize;
 use tokio::sync::RwLock;
 
@@ -34,6 +34,10 @@ pub struct Skill {
     pub body: String,
     pub allowed_tools: Vec<String>,
     pub tags: Vec<String>,
+    /// `/name` invocation settings (`user_invocable`, `argument_hint`, `execution_mode`,
+    /// `subagent_profile` in the frontmatter).
+    #[serde(flatten)]
+    pub invocation: SkillInvocation,
     pub source: SkillSource,
     pub updated_at: i64,
 }
@@ -41,6 +45,19 @@ pub struct Skill {
 impl Skill {
     pub fn is_editable(&self) -> bool {
         self.source == SkillSource::Db
+    }
+
+    /// The body for an explicit invocation, with `$ARGUMENTS` replaced (appended at the end
+    /// when the body does not use it), wrapped for [`oort_agent::skill_inject`].
+    pub fn invocation_block(&self, arguments: Option<&str>) -> String {
+        let args = arguments.map(str::trim).unwrap_or("");
+        let mut body = self.body.clone();
+        if body.contains("$ARGUMENTS") {
+            body = body.replace("$ARGUMENTS", args);
+        } else if !args.is_empty() {
+            body.push_str(&format!("\n\nArguments: {args}"));
+        }
+        oort_agent::skill_inject::active_skill_block(&self.name, &body)
     }
 
     /// What `load_skill` / `/name` deliver to the model.
@@ -67,6 +84,7 @@ impl From<SkillRecord> for Skill {
             body: r.body,
             allowed_tools: r.allowed_tools,
             tags: r.tags,
+            invocation: r.invocation,
             source: SkillSource::Db,
             updated_at: r.updated_at,
         }
@@ -111,6 +129,32 @@ pub fn parse_skill_file(path: &Path, text: &str, mtime_ms: i64) -> Result<Skill,
         .ok_or("`description` is required")?
         .to_string();
     let list = |k: &str| front.get(k).map(|v| v.to_list()).unwrap_or_default();
+    let text = |k: &str| {
+        front
+            .get(k)
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+    };
+    let execution_mode = match text("execution_mode").as_deref() {
+        None | Some("inline") => SkillExecutionMode::Inline,
+        Some("subagent") => SkillExecutionMode::Subagent,
+        Some(other) => {
+            return Err(format!(
+                "execution_mode must be inline or subagent, not {other:?}"
+            ));
+        }
+    };
+    let invocation = SkillInvocation {
+        user_invocable: !matches!(
+            text("user_invocable").as_deref(),
+            Some("false" | "no" | "0")
+        ),
+        argument_hint: text("argument_hint"),
+        execution_mode,
+        subagent_profile: text("subagent_profile"),
+    };
     Ok(Skill {
         id: format!("{FILE_PREFIX}{name}"),
         name,
@@ -118,6 +162,7 @@ pub fn parse_skill_file(path: &Path, text: &str, mtime_ms: i64) -> Result<Skill,
         body,
         allowed_tools: list("allowed_tools"),
         tags: list("tags"),
+        invocation,
         source: SkillSource::File {
             path: path.to_path_buf(),
         },
@@ -350,6 +395,7 @@ mod tests {
                 body: "db body".into(),
                 allowed_tools: vec![],
                 tags: vec![],
+                invocation: Default::default(),
                 created_at: 0,
                 updated_at: 0,
             })
@@ -395,6 +441,44 @@ mod tests {
         assert_eq!(reg.reload().await.0, 4);
         assert!(reg.by_name("beta").await.unwrap().is_some());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn invocation_metadata_and_arguments() {
+        let s = parse_skill_file(
+            Path::new("/x/deep/SKILL.md"),
+            "---\ndescription: d\nuser_invocable: false\nargument_hint: <topic>\nexecution_mode: subagent\nsubagent_profile: researcher\n---\nResearch $ARGUMENTS deeply.",
+            0,
+        )
+        .unwrap();
+        assert!(!s.invocation.user_invocable);
+        assert_eq!(s.invocation.argument_hint.as_deref(), Some("<topic>"));
+        assert_eq!(s.invocation.execution_mode, SkillExecutionMode::Subagent);
+        assert_eq!(s.invocation.subagent_profile.as_deref(), Some("researcher"));
+        assert!(
+            s.invocation_block(Some("rust async"))
+                .contains("Research rust async deeply.")
+        );
+        let plain = parse_skill_file(
+            Path::new("/x/p/SKILL.md"),
+            "---\ndescription: d\n---\nBody",
+            0,
+        )
+        .unwrap();
+        assert!(plain.invocation.user_invocable);
+        assert!(
+            plain
+                .invocation_block(Some("x"))
+                .contains("Body\n\nArguments: x")
+        );
+        assert!(
+            parse_skill_file(
+                Path::new("/x/q/SKILL.md"),
+                "---\ndescription: d\nexecution_mode: other\n---\n",
+                0
+            )
+            .is_err()
+        );
     }
 
     #[test]
