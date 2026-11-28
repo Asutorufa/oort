@@ -148,12 +148,15 @@ const GEMINI: &[(&str, Price)] = &[
     ("gemini-2.5-flash", Price::new(0.30, 0.03, 0.30, 2.50)),
 ];
 
+/// Off-peak rates (weekday peak hours are billed at twice these). The older names are served,
+/// and billed, as the current Flash model.
+const DEEPSEEK_FLASH: Price = Price::new(0.15, 0.003, 0.15, 0.60);
 const DEEPSEEK: &[(&str, Price)] = &[
-    ("deepseek-v4-pro", Price::new(0.435, 0.003625, 0.435, 0.87)),
-    ("deepseek-v4-flash", Price::new(0.14, 0.0028, 0.14, 0.28)),
-    ("deepseek-flash", Price::new(0.14, 0.0028, 0.14, 0.28)),
-    ("deepseek-chat", Price::new(0.14, 0.0028, 0.14, 0.28)),
-    ("deepseek-reasoner", Price::new(0.14, 0.0028, 0.14, 0.28)),
+    ("deepseek-v4-pro", Price::new(0.66, 0.022, 0.66, 1.98)),
+    ("deepseek-v4-flash", DEEPSEEK_FLASH),
+    ("deepseek-flash", DEEPSEEK_FLASH),
+    ("deepseek-chat", DEEPSEEK_FLASH),
+    ("deepseek-reasoner", DEEPSEEK_FLASH),
 ];
 
 const QWEN: &[(&str, Price)] = &[("qwen3-max", Price::new(0.78, 0.156, 0.78, 3.90))];
