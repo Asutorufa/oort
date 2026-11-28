@@ -42,8 +42,9 @@ impl Tool for RenderWidget {
         ToolDefinition::new(
             RENDER_WIDGET,
             "Show an interactive UI card in the chat instead of (or next to) plain text. \
+             Call once per card; once it returns `Displayed ...`, the card is already visible to the user (do not re-call for the same chart). \
              `data` depends on `widget_type`:\n\
-             - metrics_chart: {kpis: [{label, value, delta?}] (max 3), series: [{name, points: [{x, y}]}], kind?: \"area\"|\"line\"}\n\
+             - metrics_chart: {\"kpis\": [{\"label\", \"value\", \"delta\"?}] (max 3), \"series\": [{\"name\": \"Price\", \"points\": [{\"x\": \"11-01\", \"y\": 3950}]}], \"kind\"?: \"area\"|\"line\"} — each element of `points` MUST be an object with `x` (string|number) and numeric `y`, never a flat array\n\
              - data_table: {columns: [{key, label}], rows: [object], row_actions?: [{id, label}]}\n\
              - interactive_form: {fields: [{name, label, kind: \"text\"|\"textarea\"|\"number\"|\"select\"|\"checkbox\", options?: [string], required?, default?}], submit_label?}\n\
              - approval_diff: {summary, diff (unified diff), files?: [string]} — the user approves or rejects; the result tells you which\n\
@@ -105,6 +106,22 @@ pub fn validate_widget(args: &Value) -> Result<(&str, &Value), String> {
             }
             let series = arr(data, "series")?;
             each_has(series, "series", &["name", "points"])?;
+            for (si, s) in series.iter().enumerate() {
+                let pts = s
+                    .get("points")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| format!("series[{si}].points must be an array of {{\"x\", \"y\"}} objects"))?;
+                for (pi, p) in pts.iter().enumerate() {
+                    let ok = p.is_object()
+                        && p.get("x").is_some()
+                        && p.get("y").and_then(Value::as_f64).is_some();
+                    if !ok {
+                        return Err(format!(
+                            "series[{si}].points[{pi}] must be an object {{\"x\": <string|number>, \"y\": <number>}}"
+                        ));
+                    }
+                }
+            }
         }
         "data_table" => {
             each_has(arr(data, "columns")?, "columns", &["key", "label"])?;
