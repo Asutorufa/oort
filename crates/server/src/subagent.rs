@@ -370,6 +370,7 @@ pub async fn run_subagent(
         config: serde_json::to_value(&cfg).map_err(|e| ApiError::Internal(e.to_string()))?,
         approval_policy: ApprovalPolicyKind::AutoAll,
         lineage: child_runtime(String::new()).lineage,
+        reasoning_effort: Default::default(),
     };
     let sub_id = parent.store.create_session(meta, &state).await?;
     drop(parent_view);
@@ -380,8 +381,10 @@ pub async fn run_subagent(
         .await?;
     let tools = Arc::new(PinnedToolExecutor::new(&frozen_defs, live));
     let model = registry.session_model(&cfg).await?;
+    let defaults = registry.provider_defaults(&cfg).await;
+    let thinking = Arc::new(std::sync::RwLock::new(defaults.reasoning_effort.thinking()));
     let agent = Agent::builder(model, tools)
-        .context_manager(Arc::new(cfg.context_manager(&sub_id)))
+        .context_manager(Arc::new(cfg.context_manager(&sub_id, &defaults, thinking)))
         .hook(Arc::new(TracingHook))
         .hook(Arc::new(SubagentGuard { can_spawn }))
         .hook(Arc::new(TurnBudget {

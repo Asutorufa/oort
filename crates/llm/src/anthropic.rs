@@ -6,15 +6,16 @@ use reqwest::header::HeaderMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::Error;
 use crate::client::{ChatStream, LlmClient};
 use crate::error::extract_error_message_from_value;
 use crate::http::{apply_headers, bytes_stream, ensure_success, insert_header, normalize_base_url};
 use crate::sse::parse_sse_stream;
 use crate::types::{
-    CacheBreakpoint, CacheTtl, ChatRequest, ChatResponse, ContentPart, DocumentSource, ImageSource, Message,
-    PromptCacheConfig, Role, StopReason, StreamEvent, ToolCall, ToolChoice, ToolDefinition, Usage,
+    CacheBreakpoint, CacheTtl, ChatRequest, ChatResponse, ContentPart, DocumentSource, ImageSource,
+    Message, PromptCacheConfig, Role, StopReason, StreamEvent, ToolCall, ToolChoice,
+    ToolDefinition, Usage,
 };
-use crate::Error;
 
 pub const DEFAULT_ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com";
 pub const DEFAULT_ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -228,18 +229,28 @@ impl AnthropicClient {
         let thinking = request.thinking.as_ref().map(|t| {
             if t.enabled {
                 AnthropicThinkingConfig::Enabled {
-                    budget_tokens: t.budget_tokens.unwrap_or(DEFAULT_THINKING_BUDGET_TOKENS),
+                    budget_tokens: t
+                        .budget_tokens
+                        .or(t.effort.map(anthropic_budget))
+                        .unwrap_or(DEFAULT_THINKING_BUDGET_TOKENS),
                 }
             } else {
                 AnthropicThinkingConfig::Disabled
             }
         });
+        let thinking_on = matches!(thinking, Some(AnthropicThinkingConfig::Enabled { .. }));
 
+        // `max_tokens` must exceed the thinking budget.
         let max_tokens = match (request.max_tokens, &thinking) {
-            (Some(mt), _) => mt,
-            (None, Some(AnthropicThinkingConfig::Enabled { budget_tokens })) => {
-                (*budget_tokens).saturating_add(DEFAULT_MAX_TOKENS).max(16384)
+            (Some(mt), Some(AnthropicThinkingConfig::Enabled { budget_tokens }))
+                if mt <= *budget_tokens =>
+            {
+                budget_tokens.saturating_add(DEFAULT_MAX_TOKENS)
             }
+            (Some(mt), _) => mt,
+            (None, Some(AnthropicThinkingConfig::Enabled { budget_tokens })) => (*budget_tokens)
+                .saturating_add(DEFAULT_MAX_TOKENS)
+                .max(16384),
             (None, _) => DEFAULT_MAX_TOKENS,
         };
 
@@ -256,13 +267,23 @@ impl AnthropicClient {
             messages,
             tools,
             tool_choice,
-            temperature: request.temperature,
-            top_p: request.top_p,
-            top_k: request.top_k,
+            // Extended thinking rejects a custom temperature / top_k (and top_p below 0.95).
+            temperature: request.temperature.filter(|_| !thinking_on),
+            top_p: request.top_p.filter(|p| !thinking_on || *p >= 0.95),
+            top_k: request.top_k.filter(|_| !thinking_on),
             stop_sequences,
             thinking,
             stream: Some(stream),
         })
+    }
+}
+
+/// Thinking budget for an effort level.
+fn anthropic_budget(effort: crate::ReasoningEffort) -> u32 {
+    match effort {
+        crate::ReasoningEffort::Low => 4_096,
+        crate::ReasoningEffort::Medium => 10_240,
+        crate::ReasoningEffort::High => 24_576,
     }
 }
 
@@ -714,10 +735,8 @@ where
                                 .push_back(Ok(StreamEvent::MessageStart { id, model }));
                         }
                         Some("content_block_start") => {
-                            let block_idx = value
-                                .get("index")
-                                .and_then(Value::as_u64)
-                                .unwrap_or(0) as usize;
+                            let block_idx =
+                                value.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
                             if let Some(block) = value.get("content_block") {
                                 match block.get("type").and_then(Value::as_str) {
                                     Some("tool_use") => {
@@ -744,8 +763,9 @@ where
                                         if let Some(t) = block.get("text").and_then(Value::as_str)
                                             && !t.is_empty()
                                         {
-                                            st.queue
-                                                .push_back(Ok(StreamEvent::TextDelta(t.to_string())));
+                                            st.queue.push_back(Ok(StreamEvent::TextDelta(
+                                                t.to_string(),
+                                            )));
                                         }
                                     }
                                     Some("thinking") => {
@@ -763,18 +783,17 @@ where
                             }
                         }
                         Some("content_block_delta") => {
-                            let block_idx = value
-                                .get("index")
-                                .and_then(Value::as_u64)
-                                .unwrap_or(0) as usize;
+                            let block_idx =
+                                value.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
                             if let Some(delta) = value.get("delta") {
                                 match delta.get("type").and_then(Value::as_str) {
                                     Some("text_delta") => {
                                         if let Some(t) = delta.get("text").and_then(Value::as_str)
                                             && !t.is_empty()
                                         {
-                                            st.queue
-                                                .push_back(Ok(StreamEvent::TextDelta(t.to_string())));
+                                            st.queue.push_back(Ok(StreamEvent::TextDelta(
+                                                t.to_string(),
+                                            )));
                                         }
                                     }
                                     Some("thinking_delta") => {
@@ -817,19 +836,16 @@ where
                             }
                         }
                         Some("content_block_stop") => {
-                            let block_idx = value
-                                .get("index")
-                                .and_then(Value::as_u64)
-                                .unwrap_or(0) as usize;
+                            let block_idx =
+                                value.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
                             if let Some(tool_idx) = st.tool_block_indices.remove(&block_idx) {
                                 st.queue
                                     .push_back(Ok(StreamEvent::ToolCallEnd { index: tool_idx }));
                             }
                         }
                         Some("message_delta") => {
-                            if let Some(reason) = value
-                                .pointer("/delta/stop_reason")
-                                .and_then(Value::as_str)
+                            if let Some(reason) =
+                                value.pointer("/delta/stop_reason").and_then(Value::as_str)
                             {
                                 st.stop_reason = Some(map_anthropic_stop_reason(reason));
                             }
@@ -950,8 +966,8 @@ mod tests {
             .create_async()
             .await;
 
-        let client = AnthropicClient::new("sk-ant", "claude-sonnet-4-20250514")
-            .with_base_url(server.url());
+        let client =
+            AnthropicClient::new("sk-ant", "claude-sonnet-4-20250514").with_base_url(server.url());
         let req = ChatRequest::new(vec![Message::user("Weather in Paris?")])
             .with_system("Be concise")
             .with_thinking(crate::ThinkingConfig::with_budget(2048))
@@ -1019,8 +1035,8 @@ mod tests {
             .create_async()
             .await;
 
-        let client = AnthropicClient::new("sk-ant", "claude-sonnet-4-20250514")
-            .with_base_url(server.url());
+        let client =
+            AnthropicClient::new("sk-ant", "claude-sonnet-4-20250514").with_base_url(server.url());
         let stream = client
             .chat_stream(ChatRequest::new(vec![Message::user("list files")]))
             .await
@@ -1082,8 +1098,8 @@ mod tests {
             .create_async()
             .await;
 
-        let client = AnthropicClient::new("sk-ant", "claude-sonnet-4-20250514")
-            .with_base_url(server.url());
+        let client =
+            AnthropicClient::new("sk-ant", "claude-sonnet-4-20250514").with_base_url(server.url());
         let stream = client
             .chat_stream(ChatRequest::new(vec![Message::user("hi")]))
             .await

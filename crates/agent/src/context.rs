@@ -31,7 +31,13 @@ pub struct RequestParams {
     pub thinking: Option<ThinkingConfig>,
     pub tool_choice: Option<ToolChoice>,
     pub prompt_cache: Option<PromptCacheConfig>,
+    /// When set, replaces `thinking` with its current value on every request: the thinking level
+    /// is a request parameter outside the cached prefix, so it may change between turns.
+    pub live_thinking: Option<LiveThinking>,
 }
+
+/// Shared, changeable thinking setting (see [`RequestParams::live_thinking`]).
+pub type LiveThinking = std::sync::Arc<std::sync::RwLock<Option<ThinkingConfig>>>;
 
 /// Default view: `[System, Tools, latest_summary?, messages[up_to_index..]]` with cache
 /// breakpoints at the static prefix, the previous request's tail, and the current tail.
@@ -66,7 +72,10 @@ impl ContextManager for DefaultContextManager {
         req.model = p.model.clone();
         req.max_tokens = p.max_tokens;
         req.temperature = p.temperature;
-        req.thinking = p.thinking.clone();
+        req.thinking = match &p.live_thinking {
+            Some(live) => live.read().unwrap_or_else(|e| e.into_inner()).clone(),
+            None => p.thinking.clone(),
+        };
         req.tool_choice = p.tool_choice.clone();
         req.prompt_cache = p.prompt_cache.clone();
         if p.prompt_cache.as_ref().is_some_and(|c| c.enabled) {

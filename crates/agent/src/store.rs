@@ -163,6 +163,9 @@ pub struct NewSession {
     pub approval_policy: ApprovalPolicyKind,
     #[serde(default)]
     pub lineage: Lineage,
+    /// Mutable later via [`SessionStore::set_reasoning_effort`].
+    #[serde(default)]
+    pub reasoning_effort: crate::ReasoningEffort,
 }
 
 /// Where a session sits in a subagent tree, and its immutable tool environment.
@@ -189,6 +192,8 @@ pub struct SessionMeta {
     pub config: serde_json::Value,
     pub approval_policy: ApprovalPolicyKind,
     pub lineage: Lineage,
+    /// Session override of the provider's thinking level.
+    pub reasoning_effort: crate::ReasoningEffort,
     pub status: SessionStatus,
     pub turn: u32,
     pub message_count: u64,
@@ -313,6 +318,14 @@ pub trait SessionStore: Send + Sync {
         &self,
         id: &str,
         policy: ApprovalPolicyKind,
+    ) -> Result<(), StoreError>;
+
+    /// Request parameters outside the cached prefix (history, system, tools stay byte-identical),
+    /// so the thinking level may change between turns.
+    async fn set_reasoning_effort(
+        &self,
+        id: &str,
+        effort: crate::ReasoningEffort,
     ) -> Result<(), StoreError>;
 
     /// Removes the session and all its logs. The only way history is ever deleted.

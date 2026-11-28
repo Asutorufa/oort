@@ -198,6 +198,20 @@ fn plan(req: &ChatRequest) -> Plan {
     }
 
     let said = last.map(Message::text).unwrap_or_default();
+    if said.trim() == "!params" {
+        // Tests: echo the request parameters that are not part of the prefix.
+        return Plan {
+            thinking: None,
+            text: json!({
+                "thinking": req.thinking,
+                "temperature": req.temperature,
+                "max_tokens": req.max_tokens,
+            })
+            .to_string(),
+            calls: vec![],
+            slow: false,
+        };
+    }
     let lower = said.to_lowercase();
     let has_tool = |n: &str| req.tools.iter().any(|t| t.name == n);
     let mut calls = Vec::new();

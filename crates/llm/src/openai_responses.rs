@@ -6,6 +6,7 @@ use reqwest::header::HeaderMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::Error;
 use crate::client::{ChatStream, LlmClient};
 use crate::error::extract_error_message_from_value;
 use crate::http::{apply_headers, bytes_stream, ensure_success, insert_header, normalize_base_url};
@@ -17,7 +18,6 @@ use crate::types::{
     ChatRequest, ChatResponse, ContentPart, DocumentSource, ImageSource, Message, Role, StopReason,
     StreamEvent, ToolCall, ToolChoice, ToolDefinition, Usage, parse_tool_arguments,
 };
-use crate::Error;
 
 /// HTTP client for the OpenAI Responses API (`/v1/responses`).
 #[derive(Debug, Clone)]
@@ -92,19 +92,23 @@ impl OpenAIResponsesClient {
         };
 
         let tool_choice = if tools.is_some() {
-            request.tool_choice.as_ref().map(encode_responses_tool_choice)
+            request
+                .tool_choice
+                .as_ref()
+                .map(encode_responses_tool_choice)
         } else {
             None
         };
 
-        let reasoning = request
-            .thinking
-            .as_ref()
-            .filter(|t| t.enabled)
-            .map(|t| ResponsesReasoningConfig {
-                effort: t.effort.map(reasoning_effort_str),
-                summary: Some("auto"),
-            });
+        let reasoning =
+            request
+                .thinking
+                .as_ref()
+                .filter(|t| t.enabled)
+                .map(|t| ResponsesReasoningConfig {
+                    effort: t.effort.map(reasoning_effort_str),
+                    summary: Some("auto"),
+                });
 
         let (prompt_cache_key, prompt_cache_retention) =
             extract_openai_cache_fields(request.prompt_cache.as_ref());
@@ -116,8 +120,9 @@ impl OpenAIResponsesClient {
             tools,
             tool_choice,
             max_output_tokens: request.max_tokens,
-            temperature: request.temperature,
-            top_p: request.top_p,
+            // Reasoning models reject sampling parameters.
+            temperature: request.temperature.filter(|_| reasoning.is_none()),
+            top_p: request.top_p.filter(|_| reasoning.is_none()),
             reasoning,
             prompt_cache_key,
             prompt_cache_retention,
@@ -160,7 +165,13 @@ impl LlmClient for OpenAIResponsesClient {
     }
 
     async fn list_models(&self) -> Result<Vec<String>, Error> {
-        fetch_openai_models(&self.http, &self.base_url, &self.api_key, &self.extra_headers).await
+        fetch_openai_models(
+            &self.http,
+            &self.base_url,
+            &self.api_key,
+            &self.extra_headers,
+        )
+        .await
     }
 }
 

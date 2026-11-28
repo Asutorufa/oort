@@ -39,6 +39,9 @@ pub struct CreateSessionRequest {
     pub max_context_tokens: Option<u64>,
     #[serde(default)]
     pub max_tokens: Option<u32>,
+    /// Thinking level (`default`: the preset's, then the provider's).
+    #[serde(default)]
+    pub reasoning_effort: Option<oort_agent::ReasoningEffort>,
     /// Skill ids (DB ids or `file:<name>`) whose index is frozen into the session.
     #[serde(default)]
     pub skill_ids: Option<Vec<String>>,
@@ -64,6 +67,9 @@ pub struct PatchSessionRequest {
     pub title: Option<String>,
     #[serde(default)]
     pub approval_policy: Option<ApprovalPolicyKind>,
+    /// Changes the thinking level from the next request on (history is untouched).
+    #[serde(default)]
+    pub reasoning_effort: Option<oort_agent::ReasoningEffort>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -185,6 +191,8 @@ pub struct SessionDetail {
     /// Why the loop last stopped with an error (an LLM 429, a network failure, …). Cleared when
     /// the loop starts again; while it is set the session is not resumed automatically.
     pub last_error: Option<LoopError>,
+    /// The thinking level requests use: the session's, or the provider's when it is `default`.
+    pub effective_reasoning_effort: oort_agent::ReasoningEffort,
     pub settings: SessionConfig,
     pub phase: Phase,
     pub system_prompt: String,
@@ -284,6 +292,7 @@ impl SessionDetail {
         Self {
             active,
             last_error: None,
+            effective_reasoning_effort: Default::default(),
             phase: state.phase.clone(),
             system_prompt: state.system_prompt().to_string(),
             tools: state.tool_snapshot().map(<[_]>::to_vec).unwrap_or_default(),
@@ -361,6 +370,7 @@ pub enum Envelope {
         seq: u64,
         title: String,
         approval_policy: ApprovalPolicyKind,
+        reasoning_effort: oort_agent::ReasoningEffort,
     },
     /// The session was deleted; the stream ends.
     Deleted {

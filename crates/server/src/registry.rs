@@ -54,6 +54,16 @@ enum Built {
     Mock,
 }
 
+/// Connect timeout plus the provider's per-read timeout (a long stream is fine while bytes
+/// keep arriving).
+fn http_client(timeout_secs: u32) -> Result<reqwest::Client, ApiError> {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(15))
+        .read_timeout(Duration::from_secs(u64::from(timeout_secs.max(1))))
+        .build()
+        .map_err(|e| ApiError::Internal(format!("http client: {e}")))
+}
+
 fn llm(p: impl Into<Provider>) -> Built {
     Built::Llm(Box::new(p.into()))
 }
@@ -216,9 +226,10 @@ impl Registry {
             .map(str::trim)
             .filter(|b| !b.is_empty());
         let header_err = |e: oort_llm::Error| ApiError::BadRequest(format!("extra header: {e}"));
+        let http = http_client(rec.defaults.timeout_secs)?;
         macro_rules! configure {
             ($client:expr) => {{
-                let mut c = $client;
+                let mut c = $client.with_http_client(http.clone());
                 if let Some(b) = base {
                     c = c.with_base_url(b);
                 }
@@ -257,6 +268,39 @@ impl Registry {
                 3,
                 Duration::from_millis(500),
             )),
+        }
+    }
+
+    /// Generation defaults of a session's provider (built-in defaults when unknown).
+    pub async fn provider_defaults(&self, cfg: &SessionConfig) -> oort_agent::ProviderDefaults {
+        match &cfg.provider_id {
+            Some(id) => self
+                .config
+                .get_provider(id)
+                .await
+                .map(|p| p.defaults)
+                .unwrap_or_default(),
+            None => Default::default(),
+        }
+    }
+
+    /// Model ids the provider offers, sorted (`mock` for the offline provider).
+    pub async fn list_models(&self, rec: &ProviderRecord) -> Result<Vec<String>, ApiError> {
+        let model = rec.default_model.trim();
+        match Self::build(rec, model)? {
+            Built::Mock => Ok(vec!["mock".into()]),
+            Built::Llm(p) => {
+                let mut models: Vec<String> = p
+                    .list_models()
+                    .await
+                    .map_err(|e| ApiError::BadGateway(format!("list models: {e}")))?
+                    .into_iter()
+                    .map(|m| m.strip_prefix("models/").map(str::to_string).unwrap_or(m))
+                    .collect();
+                models.sort();
+                models.dedup();
+                Ok(models)
+            }
         }
     }
 
@@ -491,8 +535,10 @@ impl Registry {
         approval: Arc<ApprovalHandle>,
         events: mpsc::Sender<AgentEvent>,
         cancel: CancellationToken,
+        thinking: oort_agent::LiveThinking,
     ) -> Result<Agent, ApiError> {
         let model = self.session_model(cfg).await?;
+        let defaults = self.provider_defaults(cfg).await;
         let bindings = if cfg.is_legacy() {
             self.legacy_bindings(state).await
         } else {
@@ -528,7 +574,9 @@ impl Registry {
             tracing::warn!(session = %session_id, ?missing, "frozen tools not offered by any live server");
         }
         let mut b = Agent::builder(model.clone(), pinned)
-            .context_manager(Arc::new(cfg.context_manager(session_id)))
+            .context_manager(Arc::new(
+                cfg.context_manager(session_id, &defaults, thinking),
+            ))
             .hook(Arc::new(TracingHook))
             .hook(Arc::new(DynamicApproval(approval)))
             .events(events)

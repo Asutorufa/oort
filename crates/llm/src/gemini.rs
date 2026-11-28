@@ -6,6 +6,7 @@ use reqwest::header::HeaderMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::Error;
 use crate::client::{ChatStream, LlmClient};
 use crate::error::extract_error_message_from_value;
 use crate::http::{apply_headers, bytes_stream, ensure_success, insert_header, normalize_base_url};
@@ -14,7 +15,6 @@ use crate::types::{
     ChatRequest, ChatResponse, ContentPart, DocumentSource, ImageSource, Message, ReasoningEffort,
     Role, StopReason, StreamEvent, ToolCall, ToolChoice, ToolDefinition, Usage,
 };
-use crate::Error;
 
 pub const DEFAULT_GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 
@@ -201,21 +201,10 @@ impl GeminiClient {
             None
         };
 
-        let thinking_config = request.thinking.as_ref().map(|t| {
-            if t.enabled {
-                GeminiThinkingConfig {
-                    include_thoughts: Some(true),
-                    thinking_budget: t.budget_tokens,
-                    thinking_level: t.effort.map(map_gemini_thinking_level),
-                }
-            } else {
-                GeminiThinkingConfig {
-                    include_thoughts: Some(false),
-                    thinking_budget: Some(0),
-                    thinking_level: None,
-                }
-            }
-        });
+        let thinking_config = request
+            .thinking
+            .as_ref()
+            .and_then(|t| gemini_thinking(&model, t));
 
         let generation_config = build_generation_config(request, thinking_config);
 
@@ -520,6 +509,52 @@ struct GeminiListModel {
 }
 
 // --- Encoding & Decoding helpers ---
+
+/// Gemini 2.x models take a token budget (`thinkingBudget`), Gemini 3 and later a level
+/// (`thinkingLevel`). Pro models cannot turn thinking off: "off" becomes their lowest setting.
+fn gemini_thinking(model: &str, t: &crate::ThinkingConfig) -> Option<GeminiThinkingConfig> {
+    let m = model.trim_start_matches("models/").to_ascii_lowercase();
+    let budget_based = m.starts_with("gemini-2") || m.starts_with("gemini-1");
+    let pro = m.contains("-pro");
+    if !t.enabled {
+        return match (budget_based, pro) {
+            (true, false) => Some(GeminiThinkingConfig {
+                include_thoughts: Some(false),
+                thinking_budget: Some(0),
+                thinking_level: None,
+            }),
+            (true, true) => Some(GeminiThinkingConfig {
+                include_thoughts: Some(false),
+                thinking_budget: Some(128),
+                thinking_level: None,
+            }),
+            (false, _) => Some(GeminiThinkingConfig {
+                include_thoughts: Some(false),
+                thinking_budget: None,
+                thinking_level: Some(if pro { "LOW" } else { "MINIMAL" }),
+            }),
+        };
+    }
+    let (budget, level) = match (t.budget_tokens, t.effort) {
+        (Some(b), _) => (Some(b), None),
+        (None, Some(e)) if budget_based => (Some(gemini_budget(e)), None),
+        (None, Some(e)) => (None, Some(map_gemini_thinking_level(e))),
+        (None, None) => (None, None),
+    };
+    Some(GeminiThinkingConfig {
+        include_thoughts: Some(true),
+        thinking_budget: budget,
+        thinking_level: level,
+    })
+}
+
+fn gemini_budget(effort: ReasoningEffort) -> u32 {
+    match effort {
+        ReasoningEffort::Low => 1_024,
+        ReasoningEffort::Medium => 8_192,
+        ReasoningEffort::High => 24_576,
+    }
+}
 
 fn map_gemini_thinking_level(effort: ReasoningEffort) -> &'static str {
     match effort {
@@ -920,7 +955,8 @@ where
                                         index: idx,
                                         arguments_delta: args_str,
                                     }));
-                                    st.queue.push_back(Ok(StreamEvent::ToolCallEnd { index: idx }));
+                                    st.queue
+                                        .push_back(Ok(StreamEvent::ToolCallEnd { index: idx }));
                                 }
                             }
                         }
@@ -1001,8 +1037,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client =
-            GeminiClient::new("gem-key", "gemini-2.5-flash").with_base_url(server.url());
+        let client = GeminiClient::new("gem-key", "gemini-2.5-flash").with_base_url(server.url());
         let req = ChatRequest::new(vec![Message::user("Weather in Seoul?")])
             .with_system("You are helpful.")
             .with_tools(vec![ToolDefinition::new(
@@ -1093,22 +1128,27 @@ mod tests {
         let mut server = Server::new_async().await;
         let body = "data: {\"error\":{\"code\":429,\"message\":\"Resource exhausted\",\"status\":\"RESOURCE_EXHAUSTED\"}}\n\n";
         let mock = server
-            .mock("POST", "/models/gemini-2.5-flash:streamGenerateContent?alt=sse")
+            .mock(
+                "POST",
+                "/models/gemini-2.5-flash:streamGenerateContent?alt=sse",
+            )
             .with_status(200)
             .with_header("content-type", "text/event-stream")
             .with_body(body)
             .create_async()
             .await;
 
-        let client =
-            GeminiClient::new("gem-key", "gemini-2.5-flash").with_base_url(server.url());
+        let client = GeminiClient::new("gem-key", "gemini-2.5-flash").with_base_url(server.url());
         let stream = client
             .chat_stream(ChatRequest::new(vec![Message::user("hi")]))
             .await
             .unwrap();
         let err = collect_stream(stream).await.unwrap_err();
         mock.assert_async().await;
-        assert!(err.to_string().contains("RESOURCE_EXHAUSTED: Resource exhausted"));
+        assert!(
+            err.to_string()
+                .contains("RESOURCE_EXHAUSTED: Resource exhausted")
+        );
 
         let empty_model = GeminiClient::new("gem-key", "");
         let cfg_err = empty_model

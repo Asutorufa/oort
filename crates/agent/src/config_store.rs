@@ -59,10 +59,92 @@ pub struct ProviderRecord {
     /// Retry a session loop that failed with a transient error (429, 5xx, network).
     #[serde(default)]
     pub auto_retry: AutoRetry,
+    /// Generation defaults for sessions created with this provider.
+    #[serde(default)]
+    pub defaults: ProviderDefaults,
     /// Unix milliseconds.
     pub created_at: i64,
     pub updated_at: i64,
 }
+
+/// Provider-neutral thinking level. Each adapter maps it onto its own parameter
+/// (`reasoning_effort`, Anthropic `thinking`, Gemini `thinkingConfig`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningEffort {
+    /// Send nothing: the provider's / model's own default.
+    #[default]
+    Default,
+    Off,
+    Low,
+    Medium,
+    High,
+}
+
+impl ReasoningEffort {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Off => "off",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+
+    pub fn parse(s: &str) -> Result<Self, StoreError> {
+        serde_json::from_value(serde_json::Value::String(s.to_string()))
+            .map_err(|_| StoreError::Corrupt(format!("unknown reasoning effort {s:?}")))
+    }
+
+    /// `self` unless it is `Default`, then `fallback`.
+    pub fn or(self, fallback: Self) -> Self {
+        if self == Self::Default {
+            fallback
+        } else {
+            self
+        }
+    }
+
+    /// The request-level setting (`None` = leave it to the provider).
+    pub fn thinking(self) -> Option<oort_llm::ThinkingConfig> {
+        use oort_llm::{ReasoningEffort as E, ThinkingConfig};
+        match self {
+            Self::Default => None,
+            Self::Off => Some(ThinkingConfig::default()),
+            Self::Low => Some(ThinkingConfig::with_effort(E::Low)),
+            Self::Medium => Some(ThinkingConfig::with_effort(E::Medium)),
+            Self::High => Some(ThinkingConfig::with_effort(E::High)),
+        }
+    }
+}
+
+/// What sessions of a provider use unless they say otherwise.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ProviderDefaults {
+    pub reasoning_effort: ReasoningEffort,
+    /// `None`: the provider's default.
+    pub temperature: Option<f32>,
+    pub max_output_tokens: Option<u32>,
+    /// Context window used for compaction thresholds of new sessions.
+    pub context_window: Option<u64>,
+    /// Per request; long streams count as long as bytes keep arriving.
+    pub timeout_secs: u32,
+}
+
+impl Default for ProviderDefaults {
+    fn default() -> Self {
+        Self {
+            reasoning_effort: ReasoningEffort::Default,
+            temperature: None,
+            max_output_tokens: None,
+            context_window: None,
+            timeout_secs: 120,
+        }
+    }
+}
+
+impl Eq for ProviderDefaults {}
 
 /// Automatic retry of failed loops for one provider. Off by default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -187,6 +269,9 @@ pub struct PresetRecord {
     /// Workspace root for the `workspace` group.
     #[serde(default)]
     pub workspace_root: Option<String>,
+    /// Thinking level of new sessions (`default`: the provider's default).
+    #[serde(default)]
+    pub reasoning_effort: ReasoningEffort,
     pub created_at: i64,
     pub updated_at: i64,
 }

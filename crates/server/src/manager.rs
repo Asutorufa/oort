@@ -42,6 +42,8 @@ struct ActiveSession {
     inbox: mpsc::Sender<LoopInput>,
     cancel: CancellationToken,
     approval: Arc<ApprovalHandle>,
+    /// Read by the context manager on every request.
+    thinking: oort_agent::LiveThinking,
     /// Cancelled when the loop task has fully exited.
     finished: CancellationToken,
     generation: u64,
@@ -148,6 +150,10 @@ impl SessionManager {
             .approval_policy
             .or(preset.as_ref().map(|p| p.approval_policy))
             .unwrap_or_default();
+        let reasoning_effort = req.reasoning_effort.unwrap_or_default().or(preset
+            .as_ref()
+            .map(|p| p.reasoning_effort)
+            .unwrap_or_default());
 
         // Fail fast on unusable keys and unreachable servers, before anything is stored.
         let widgets = req.widgets.unwrap_or(true);
@@ -216,7 +222,10 @@ impl SessionManager {
             provider: provider.kind.as_str().into(),
             provider_id: Some(provider.id.clone()),
             model: model.clone(),
-            max_context_tokens: req.max_context_tokens.unwrap_or(200_000),
+            max_context_tokens: req
+                .max_context_tokens
+                .or(provider.defaults.context_window)
+                .unwrap_or(200_000),
             max_tokens: req.max_tokens,
             builtin_tools: builtin,
             mcp_servers: bindings,
@@ -265,6 +274,7 @@ impl SessionManager {
                 builtin_groups: groups.iter().map(|g| g.as_str().to_string()).collect(),
                 ..Default::default()
             },
+            reasoning_effort,
         };
         let id = self.store.create_session(meta, &state).await?;
         self.ensure_active(&id).await?;
@@ -294,6 +304,11 @@ impl SessionManager {
         let cfg = settings(&stored.meta.config)?;
         let active = self.active.lock().await.contains_key(id);
         let root = stored.meta.lineage.workspace_root.clone();
+        let effective = stored.meta.reasoning_effort.or(self
+            .registry
+            .provider_defaults(&cfg)
+            .await
+            .reasoning_effort);
         let mut detail = SessionDetail::build(
             stored.meta,
             active,
@@ -303,6 +318,7 @@ impl SessionManager {
             &calls,
         );
         detail.last_error = self.errors.lock().await.get(id).cloned();
+        detail.effective_reasoning_effort = effective;
         // What each approval card shows: a diff, the command, the settings, …
         let ctx = self.registry.builtin_context(root.map(Into::into), None);
         for p in &mut detail.pending_approvals {
@@ -371,11 +387,21 @@ impl SessionManager {
                 a.approval.set(policy);
             }
         }
+        if let Some(effort) = req.reasoning_effort {
+            self.store.set_reasoning_effort(id, effort).await?;
+            let cfg = settings(&self.store.load_state(id).await?.meta.config)?;
+            let fallback = self.registry.provider_defaults(&cfg).await.reasoning_effort;
+            if let Some(a) = self.active.lock().await.get(id) {
+                *a.thinking.write().unwrap_or_else(|e| e.into_inner()) =
+                    effort.or(fallback).thinking();
+            }
+        }
         let meta = self.store.load_state(id).await?.meta;
         self.hub(id).await.publish(|seq| Envelope::SessionUpdated {
             seq,
             title: meta.title,
             approval_policy: meta.approval_policy,
+            reasoning_effort: meta.reasoning_effort,
         });
         Ok(())
     }
@@ -578,6 +604,13 @@ impl SessionManager {
         let hub = self.hub(id).await;
         let cancel = CancellationToken::new();
         let approval = ApprovalHandle::new(stored.meta.approval_policy);
+        let effort = stored.meta.reasoning_effort.or(self
+            .registry
+            .provider_defaults(&cfg)
+            .await
+            .reasoning_effort);
+        let thinking: oort_agent::LiveThinking =
+            Arc::new(std::sync::RwLock::new(effort.thinking()));
         let (ev_tx, mut ev_rx) = mpsc::channel(1024);
         let agent = self
             .registry
@@ -590,6 +623,7 @@ impl SessionManager {
                 approval.clone(),
                 ev_tx,
                 cancel.clone(),
+                Arc::clone(&thinking),
             )
             .await?;
         let (in_tx, in_rx) = mpsc::channel(64);
@@ -696,6 +730,7 @@ impl SessionManager {
                 inbox: in_tx.clone(),
                 cancel,
                 approval,
+                thinking,
                 finished,
                 generation,
             },

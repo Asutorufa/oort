@@ -476,6 +476,13 @@ fn provider(id: &str, name: &str) -> ProviderRecord {
         extra_headers: [("x-org".to_string(), "acme".to_string())].into(),
         is_enabled: true,
         auto_retry: Default::default(),
+        defaults: oort_agent::ProviderDefaults {
+            reasoning_effort: oort_agent::ReasoningEffort::Low,
+            temperature: Some(0.5),
+            max_output_tokens: Some(8192),
+            context_window: Some(1_000_000),
+            timeout_secs: 300,
+        },
         created_at: 1,
         updated_at: 1,
     }
@@ -534,6 +541,7 @@ async fn config_crud_and_reference_checks() {
         skill_ids: vec!["file:review".into()],
         builtin_groups: vec!["memory".into()],
         workspace_root: None,
+        reasoning_effort: oort_agent::ReasoningEffort::High,
         created_at: 1,
         updated_at: 1,
     };
