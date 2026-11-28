@@ -51,6 +51,10 @@ pub struct ToolCall {
     pub id: String,
     pub name: String,
     pub arguments: Value,
+    /// Opaque reasoning signature the provider attached to this call (Gemini 3 puts it on the
+    /// first function call of a step and requires it back on that same part).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
 }
 
 impl ToolCall {
@@ -59,7 +63,13 @@ impl ToolCall {
             id: id.into(),
             name: name.into(),
             arguments,
+            signature: None,
         }
+    }
+
+    pub fn with_signature(mut self, signature: Option<String>) -> Self {
+        self.signature = signature.filter(|s| !s.is_empty());
+        self
     }
 
     /// Serializes `arguments` to a JSON string (used by APIs like OpenAI that pass arguments as strings).
@@ -696,6 +706,8 @@ pub enum StreamEvent {
     },
     /// Marks completion of the tool call at `index`.
     ToolCallEnd { index: usize },
+    /// Reasoning signature attached to the tool call at `index` (Gemini).
+    ToolCallSignature { index: usize, signature: String },
     /// Token usage update.
     Usage(Usage),
     /// Stream completion marker with optional stop reason.
@@ -709,6 +721,7 @@ pub enum StreamEvent {
 struct PendingToolCall {
     id: String,
     name: String,
+    signature: Option<String>,
     arguments_buf: String,
 }
 
@@ -772,6 +785,11 @@ impl StreamCollector {
                 entry.arguments_buf.push_str(arguments_delta);
             }
             StreamEvent::ToolCallEnd { .. } => {}
+            StreamEvent::ToolCallSignature { index, signature } => {
+                if !signature.is_empty() {
+                    self.tool_calls.entry(*index).or_default().signature = Some(signature.clone());
+                }
+            }
             StreamEvent::Usage(usage) => {
                 self.usage = Some(usage.clone());
             }
@@ -792,6 +810,7 @@ impl StreamCollector {
                 id: pending.id,
                 name: pending.name,
                 arguments,
+                signature: pending.signature,
             });
         }
 

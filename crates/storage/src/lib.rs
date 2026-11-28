@@ -11,8 +11,8 @@ use async_trait::async_trait;
 use oort_agent::store::{assemble_state, canonical_tools_json};
 use oort_agent::{
     AgentState, ApprovalPolicyKind, CompactionCheckpoint, Lineage, LlmCallStats, NewSession,
-    SessionId, SessionMeta, SessionSnapshot, SessionStatus, SessionStore, StepDelta, StoreError,
-    StoredSession,
+    ReasoningEffort, SessionId, SessionMeta, SessionSnapshot, SessionStatus, SessionStore,
+    StepDelta, StoreError, StoredSession,
 };
 use oort_llm::{ContentPart, Message, Role, Usage};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow};
@@ -92,8 +92,8 @@ impl SessionStore for SqliteSessionStore {
             "INSERT INTO sessions (id, title, provider, model, config_json, approval_policy, system_prompt, \
              frozen_tools, status, halt_reason, pending_calls, pending_steers, compaction_requested, \
              turn, usage_json, created_at, updated_at, parent_session_id, parent_tool_call_id, depth, \
-             workspace_root, enabled_builtin_groups_json, loaded_skills_json) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             workspace_root, enabled_builtin_groups_json, loaded_skills_json, reasoning_effort) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(&meta.title)
@@ -118,6 +118,7 @@ impl SessionStore for SqliteSessionStore {
         .bind(&meta.lineage.workspace_root)
         .bind(to_json(&meta.lineage.builtin_groups))
         .bind(to_json(&snap.loaded_skills))
+        .bind(meta.reasoning_effort.as_str())
         .execute(&mut *tx)
         .await
         .map_err(classify)?;
@@ -271,7 +272,7 @@ impl SessionStore for SqliteSessionStore {
 
     async fn list_llm_calls(&self, id: &str) -> Result<Vec<LlmCallStats>, StoreError> {
         let rows = sqlx::query(
-            "SELECT seq, turn, ttft_ms, latency_ms, usage_json, request_json FROM llm_calls \
+            "SELECT seq, turn, ttft_ms, latency_ms, thinking_ms, usage_json, request_json FROM llm_calls \
              WHERE session_id = ? ORDER BY seq",
         )
         .bind(id)
@@ -285,6 +286,7 @@ impl SessionStore for SqliteSessionStore {
                     seq: r.get::<i64, _>("seq") as usize,
                     ttft_ms: r.get::<Option<i64>, _>("ttft_ms").map(|v| v as u64),
                     latency_ms: r.get::<i64, _>("latency_ms") as u64,
+                    thinking_ms: r.get::<Option<i64>, _>("thinking_ms").map(|v| v as u64),
                     usage: from_json_opt(r.get("usage_json"), "llm_calls.usage_json")?,
                     request: from_json(r.get("request_json"), "llm_calls.request_json")?,
                 })
@@ -311,6 +313,33 @@ impl SessionStore for SqliteSessionStore {
         let done =
             sqlx::query("UPDATE sessions SET approval_policy = ?, updated_at = ? WHERE id = ?")
                 .bind(policy.as_str())
+                .bind(now_ms())
+                .bind(id)
+                .execute(&self.pool)
+                .await
+                .map_err(classify)?;
+        found(done.rows_affected(), id)
+    }
+
+    async fn set_model(&self, id: &str, model: &str) -> Result<(), StoreError> {
+        let done = sqlx::query("UPDATE sessions SET model = ?, updated_at = ? WHERE id = ?")
+            .bind(model)
+            .bind(now_ms())
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(classify)?;
+        found(done.rows_affected(), id)
+    }
+
+    async fn set_reasoning_effort(
+        &self,
+        id: &str,
+        effort: ReasoningEffort,
+    ) -> Result<(), StoreError> {
+        let done =
+            sqlx::query("UPDATE sessions SET reasoning_effort = ?, updated_at = ? WHERE id = ?")
+                .bind(effort.as_str())
                 .bind(now_ms())
                 .bind(id)
                 .execute(&self.pool)
@@ -383,8 +412,8 @@ async fn insert_llm_call(
     stats: &LlmCallStats,
 ) -> Result<(), StoreError> {
     sqlx::query(
-        "INSERT INTO llm_calls (session_id, seq, turn, ttft_ms, latency_ms, usage_json, request_json, created_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO llm_calls (session_id, seq, turn, ttft_ms, latency_ms, usage_json, request_json, created_at, thinking_ms) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(id)
     .bind(stats.seq as i64)
@@ -394,6 +423,7 @@ async fn insert_llm_call(
     .bind(stats.usage.as_ref().map(to_json))
     .bind(to_json(&stats.request))
     .bind(now_ms())
+    .bind(stats.thinking_ms.map(|v| v as i64))
     .execute(conn)
     .await
     .map_err(classify)?;
@@ -507,6 +537,7 @@ fn meta_from_row(row: &SqliteRow) -> Result<SessionMeta, StoreError> {
         model: row.get("model"),
         config: from_json(row.get("config_json"), "config_json")?,
         approval_policy: ApprovalPolicyKind::parse(row.get("approval_policy"))?,
+        reasoning_effort: ReasoningEffort::parse(row.get("reasoning_effort"))?,
         lineage: Lineage {
             parent_session_id: row.get("parent_session_id"),
             parent_tool_call_id: row.get("parent_tool_call_id"),

@@ -3,9 +3,9 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from "
 export type ThemeName = "iris" | "lunar";
 export type Mode = "light" | "dark";
 
-export const THEMES: { id: ThemeName; label: string; swatch: string }[] = [
-  { id: "iris", label: "星雲暮紫", swatch: "#765AD8" },
-  { id: "lunar", label: "月光極簡", swatch: "#18181B" },
+export const THEMES: { id: ThemeName; label: "theme.iris" | "theme.lunar"; swatch: string }[] = [
+  { id: "iris", label: "theme.iris", swatch: "#5B5BD6" },
+  { id: "lunar", label: "theme.lunar", swatch: "#52525B" },
 ];
 
 const THEME_KEY = "oort.theme";

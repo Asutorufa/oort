@@ -1,8 +1,10 @@
 import { useState } from "react";
 import type { ApprovalPreview, PendingApproval, ToolCall, ToolResult } from "../../api/types";
 import { DiffView } from "../../widgets/ApprovalDiff";
+import { DecisionFooter } from "./Decision";
 import { JsonView } from "../common";
 import { Markdown } from "./LazyMarkdown";
+import { useT, type Key, type T } from "../../i18n";
 
 // ----- ask_user ------------------------------------------------------------------------------
 
@@ -25,6 +27,7 @@ export function AskUserCard({
   result?: ToolResult;
   onAnswer: (content: string) => Promise<void>;
 }) {
+  const t = useT();
   const q = (call.arguments ?? {}) as Question;
   const options = q.options ?? [];
   const kind = q.kind ?? (options.length ? "single" : "text");
@@ -48,13 +51,13 @@ export function AskUserCard({
       <header className="widget-head">
         <h4>{q.question}</h4>
         <span className="spacer" />
-        {answered ? <span className="pill ok">✓ 回答済み</span> : pending ? <span className="pill warn">回答待ち</span> : null}
+        {answered ? <span className="pill ok">{t("ask.answered")}</span> : pending ? <span className="pill warn">{t("ask.waiting")}</span> : null}
       </header>
       <div className="widget-body">
         {answered ? (
           <div className="answer">{answered}</div>
         ) : result?.is_error ? (
-          <div className="muted">回答されませんでした（{result.content}）</div>
+          <div className="muted">{t("ask.notAnswered", { reason: result.content })}</div>
         ) : (
           <>
             {kind !== "text" && (
@@ -85,13 +88,13 @@ export function AskUserCard({
                     className="reason"
                     value={text}
                     disabled={!pending || sending}
-                    placeholder={q.placeholder ?? "回答を入力"}
+                    placeholder={q.placeholder ?? t("ask.placeholder")}
                     onChange={(e) => setText(e.target.value)}
                     onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && send(value)}
                   />
                 )}
                 <button className="btn primary" disabled={!pending || sending || !value} onClick={() => send(value)}>
-                  回答する
+                  {t("ask.submit")}
                 </button>
               </div>
             )}
@@ -104,39 +107,44 @@ export function AskUserCard({
 
 // ----- approvals -----------------------------------------------------------------------------
 
-const TITLE: Record<string, string> = {
-  write_file: "ファイルを書き換えます",
-  run_command: "コマンドを実行します",
-  save_skill: "Skill を保存します",
-  configure_mcp_server: "MCP サーバーを登録します",
+const TITLE: Record<string, Key> = {
+  write_file: "approval.title.write_file",
+  run_command: "approval.title.run_command",
+  save_skill: "approval.title.save_skill",
+  configure_mcp_server: "approval.title.configure_mcp_server",
 };
 
+/** `/home/me/projects/x` → `~/…/projects/x` style: the last two segments are what matter. */
+function shortPath(t: T, p: string | null | undefined): string {
+  if (!p) return t("approval.cwd");
+  const parts = p.split("/").filter(Boolean);
+  return parts.length <= 2 ? p : `…/${parts.slice(-2).join("/")}`;
+}
+
 function Preview({ p }: { p: ApprovalPreview }) {
+  const t = useT();
   switch (p.kind) {
     case "diff":
       return (
         <>
           <div className="diff-meta">
             <code className="chip">{p.path}</code>
-            {p.created && <span className="pill accent">新規作成</span>}
+            {p.created && <span className="pill">{t("approval.newFile")}</span>}
           </div>
-          <DiffView diff={p.diff || "（変更なし）"} />
+          <DiffView diff={p.diff || t("approval.noChanges")} />
         </>
       );
     case "command":
       return (
-        <div className="terminal">
-          <div className="term-bar">
-            <span className="term-dot" />
-            <span className="term-dot" />
-            <span className="term-dot" />
-            <span className="term-cwd">{p.cwd ?? ""}</span>
-            <span className="term-timeout">最長 {p.timeout_secs}s</span>
+        <div className="cmd-block">
+          <div className="cmd-meta">
+            <span className="cmd-cwd" title={p.cwd ?? ""}>
+              {shortPath(t, p.cwd)}
+            </span>
+            <span>·</span>
+            <span>{t("approval.maxTime", { secs: p.timeout_secs })}</span>
           </div>
-          <pre>
-            <span className="term-prompt">$ </span>
-            {p.command}
-          </pre>
+          <pre>{p.command}</pre>
         </div>
       );
     case "skill":
@@ -144,8 +152,8 @@ function Preview({ p }: { p: ApprovalPreview }) {
         <div className="skill-preview compact">
           <div className="row">
             <b className="mono">/{p.name}</b>
-            {p.update && <span className="pill warn">上書き</span>}
-            {p.execution_mode === "subagent" && <span className="pill accent">Subagent</span>}
+            {p.update && <span className="pill warn">{t("approval.overwrite")}</span>}
+            {p.execution_mode === "subagent" && <span className="pill">Subagent</span>}
             {p.argument_hint && <code className="chip">{p.argument_hint}</code>}
           </div>
           <p className="lead">{p.description}</p>
@@ -156,19 +164,33 @@ function Preview({ p }: { p: ApprovalPreview }) {
       return (
         <div className="kv-preview">
           <div>
-            <span className="muted">名前</span> <b className="mono">{p.name}</b>
+            <span className="muted">{t("approval.name")}</span> <b className="mono">{p.name}</b>
           </div>
           <div>
-            <span className="muted">接続</span> {p.transport === "stdio" ? <code>{[p.command, ...p.args].join(" ")}</code> : <code>{p.url}</code>}
+            <span className="muted">{t("approval.connection")}</span> {p.transport === "stdio" ? <code>{[p.command, ...p.args].join(" ")}</code> : <code>{p.url}</code>}
           </div>
           {Object.keys(p.headers).length > 0 && <JsonView value={p.headers} />}
           {Object.keys(p.env).length > 0 && <JsonView value={p.env} />}
-          <div className="note">登録しても、この会話のツールは変わりません。新しい会話から使えます。</div>
+          <div className="note">{t("approval.mcpNote")}</div>
         </div>
       );
     case "error":
       return <div className="error-text">{p.error}</div>;
   }
+}
+
+/** Natural-language subtitle for a pending approval (the server's reason is for logs). */
+export function approvalSubtitle(t: T, name: string, reason: string): string {
+  const byTool: Record<string, Key> = {
+    run_command: "approval.reason.run_command",
+    write_file: "approval.reason.write_file",
+    save_skill: "approval.reason.save_skill",
+    configure_mcp_server: "approval.reason.configure_mcp_server",
+  };
+  if (byTool[name]) return t(byTool[name]);
+  if (/always_ask/.test(reason)) return t("approval.reason.alwaysAsk");
+  if (/side effects/.test(reason)) return t("approval.reason.sideEffects");
+  return t("approval.reason.other");
 }
 
 /** Approval for a side-effecting call, with a tool-specific preview. */
@@ -181,37 +203,22 @@ export function ApprovalCard({
   onApprove: () => Promise<void>;
   onDeny: (reason: string) => Promise<void>;
 }) {
-  const [reason, setReason] = useState("");
-  const [busy, setBusy] = useState(false);
   const { call, preview } = pending;
-  const act = async (f: () => Promise<void>) => {
-    setBusy(true);
-    try {
-      await f();
-    } finally {
-      setBusy(false);
-    }
-  };
+  const t = useT();
   return (
     <section className="widget widget-approval">
       <header className="widget-head">
-        <h4>{TITLE[call.name] ?? <><span className="tool-name">{call.name.replace("__", " · ")}</span> を実行してよいですか？</>}</h4>
+        <div className="widget-titles">
+          <h4>{TITLE[call.name] ? t(TITLE[call.name]) : t("approval.title.other", { tool: call.name.replace("__", " · ") })}</h4>
+          <p className="widget-sub">{approvalSubtitle(t, call.name, pending.reason)}</p>
+        </div>
         <span className="spacer" />
-        <span className="pill warn">承認待ち</span>
+        <span className="pill warn">{t("approval.pending")}</span>
       </header>
       <div className="widget-body">
-        <p className="muted">{pending.reason}</p>
         {preview ? <Preview p={preview} /> : <JsonView value={call.arguments} />}
-        <div className="wactions">
-          <button className="btn primary" disabled={busy || preview?.kind === "error"} onClick={() => act(onApprove)}>
-            承認して実行
-          </button>
-          <input className="reason" placeholder="キャンセルの理由（任意）" value={reason} onChange={(e) => setReason(e.target.value)} />
-          <button className="btn" disabled={busy} onClick={() => act(() => onDeny(reason || "ユーザーがキャンセルしました"))}>
-            キャンセル
-          </button>
-        </div>
       </div>
+      <DecisionFooter canApprove={preview?.kind !== "error"} onApprove={onApprove} onDeny={onDeny} />
     </section>
   );
 }
@@ -228,6 +235,7 @@ interface McpConfigured {
 
 /** Completed registration: offers to start a new chat with the server (this one stays as is). */
 export function McpConfiguredCard({ result, onStart }: { result: ToolResult; onStart: (serverId: string) => Promise<void> }) {
+  const t = useT();
   let data: McpConfigured = {};
   try {
     data = JSON.parse(result.content);
@@ -240,10 +248,10 @@ export function McpConfiguredCard({ result, onStart }: { result: ToolResult; onS
     <section className="widget mcp-done">
       <header className="widget-head">
         <h4>
-          MCP サーバー <span className="mono">{data.name}</span> を登録しました
+          {t("mcpDone.title", { name: data.name ?? "" })}
         </h4>
         <span className="spacer" />
-        {data.test ? data.test.ok ? <span className="pill ok">接続 OK</span> : <span className="pill danger">接続失敗</span> : null}
+        {data.test ? data.test.ok ? <span className="pill ok">{t("mcpDone.ok")}</span> : <span className="pill danger">{t("mcpDone.failed")}</span> : null}
       </header>
       <div className="widget-body">
         {tools.length > 0 && (
@@ -258,9 +266,9 @@ export function McpConfiguredCard({ result, onStart }: { result: ToolResult; onS
         {data.test?.error && <div className="error-text">{data.test.error}</div>}
         <div className="wactions">
           <button className="btn primary" onClick={() => onStart(data.mcp_server_id!)}>
-            この MCP を使って新しい会話を始める
+            {t("mcpDone.start")}
           </button>
-          <span className="muted">この会話のツールは変わりません</span>
+          <span className="muted">{t("mcpDone.note")}</span>
         </div>
       </div>
     </section>

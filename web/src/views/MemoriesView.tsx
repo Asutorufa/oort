@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { errorText, memories } from "../api";
 import type { Memory } from "../api/types";
-import { Empty, ErrorBar, fmtTime, Modal } from "../components/common";
+import { Empty, ErrorBar, Modal } from "../components/common";
+import { useI18n } from "../i18n";
 import { Field } from "../components/forms";
 import { navigate } from "../hooks/useHashRoute";
 import { useResource } from "../hooks/useResource";
@@ -24,6 +25,7 @@ const tagsOf = (s: string) =>
 /** What the agent (or you) saved across conversations: full-text search, edit, delete. */
 export function MemoriesView({ selected }: { selected: string | null }) {
   const [query, setQuery] = useState("");
+  const { t, fmt } = useI18n();
   const [debounced, setDebounced] = useState("");
   useEffect(() => {
     const t = window.setTimeout(() => setDebounced(query), 220);
@@ -72,13 +74,13 @@ export function MemoriesView({ selected }: { selected: string | null }) {
     <div className="master-detail">
       <aside className="pane left">
         <div className="pane-head">
-          <h3>メモリ</h3>
+          <h3>{t("mem.title")}</h3>
           <span className="spacer" />
           <button className="btn primary small" onClick={() => navigate("memories", "new")}>
-            ＋ 追加
+            ＋ {t("common.add")}
           </button>
         </div>
-        <input className="filter" placeholder="全文検索（日本語・中国語・英語）" value={query} onChange={(e) => setQuery(e.target.value)} />
+        <input className="filter" placeholder={t("mem.search")} value={query} onChange={(e) => setQuery(e.target.value)} />
         <ErrorBar error={list.error} />
         <ul className="item-list">
           {(list.data ?? []).map((m) => (
@@ -100,55 +102,55 @@ export function MemoriesView({ selected }: { selected: string | null }) {
               )}
             </li>
           ))}
-          {list.data?.length === 0 && <li className="muted">{debounced ? "見つかりません" : "まだ何も覚えていません"}</li>}
+          {list.data?.length === 0 && <li className="muted">{debounced ? t("mem.notFound") : t("mem.empty")}</li>}
         </ul>
       </aside>
       <main className="pane detail">
         <ErrorBar error={error} onDismiss={() => setError(null)} />
         {current || isNew ? (
           <div className="form">
-            <h2>{isNew ? "メモリを追加" : current?.title}</h2>
-            {current && <div className="muted">更新 {fmtTime(current.updated_at)}</div>}
-            <Field label="タイトル">
+            <h2>{isNew ? t("mem.new") : current?.title}</h2>
+            {current && <div className="muted">{t("mem.updated", { when: fmt.date(current.updated_at) })}</div>}
+            <Field label={t("mem.fieldTitle")}>
               <input value={form.title} onChange={(e) => set("title", e.target.value)} />
             </Field>
-            <Field label="内容">
+            <Field label={t("mem.content")}>
               <textarea rows={8} value={form.content} onChange={(e) => set("content", e.target.value)} />
             </Field>
             <div className="grid2">
-              <Field label="タグ" hint="カンマ区切り">
+              <Field label={t("mem.tags")} hint={t("mem.tagsHint")}>
                 <input value={form.tags} onChange={(e) => set("tags", e.target.value)} />
               </Field>
-              <Field label="スコープ" hint="global またはプロジェクト名">
+              <Field label={t("mem.scope")} hint={t("mem.scopeHint")}>
                 <input value={form.scope} onChange={(e) => set("scope", e.target.value)} />
               </Field>
             </div>
             <div className="row actions">
               <button className="btn primary" onClick={save}>
-                {current ? "保存" : "追加"}
+                {current ? t("mem.save") : t("common.add")}
               </button>
               <span className="spacer" />
               {current && (
                 <button className="btn danger-outline" onClick={() => setConfirm(true)}>
-                  削除
+                  {t("common.delete")}
                 </button>
               )}
             </div>
           </div>
         ) : (
-          <Empty>会話をまたいで覚えておくこと（好み・環境の決まりごと・プロジェクトの前提）です。エージェントは必要なときにだけ検索します。</Empty>
+          <Empty>{t("mem.intro")}</Empty>
         )}
       </main>
       {confirm && current && (
-        <Modal title="メモリを削除しますか？" onClose={() => setConfirm(false)}>
-          <p>「{current.title}」を削除します。</p>
+        <Modal title={t("mem.deleteTitle")} onClose={() => setConfirm(false)}>
+          <p>{t("mem.deleteBody", { title: current.title })}</p>
           <div className="row">
             <span className="spacer" />
             <button className="btn" onClick={() => setConfirm(false)}>
-              やめる
+              {t("common.keep")}
             </button>
             <button className="btn danger" onClick={remove}>
-              削除する
+              {t("common.deleteConfirm")}
             </button>
           </div>
         </Modal>

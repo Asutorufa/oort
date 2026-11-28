@@ -127,6 +127,8 @@ pub async fn run(m: &SessionManager, req: RunCommand) -> Result<CommandResult, A
                 PatchSessionRequest {
                     title: None,
                     approval_policy: Some(policy),
+                    reasoning_effort: None,
+                    model: None,
                 },
             )
             .await?;

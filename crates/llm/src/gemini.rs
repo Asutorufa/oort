@@ -6,6 +6,7 @@ use reqwest::header::HeaderMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::Error;
 use crate::client::{ChatStream, LlmClient};
 use crate::error::extract_error_message_from_value;
 use crate::http::{apply_headers, bytes_stream, ensure_success, insert_header, normalize_base_url};
@@ -14,7 +15,6 @@ use crate::types::{
     ChatRequest, ChatResponse, ContentPart, DocumentSource, ImageSource, Message, ReasoningEffort,
     Role, StopReason, StreamEvent, ToolCall, ToolChoice, ToolDefinition, Usage,
 };
-use crate::Error;
 
 pub const DEFAULT_GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 
@@ -154,7 +154,10 @@ impl GeminiClient {
 
         let mut contents: Vec<GeminiContent> = Vec::new();
         for msg in non_system {
-            let (role, parts) = encode_gemini_message(msg, &call_names);
+            let (role, mut parts) = encode_gemini_message(msg, &call_names);
+            if role == "model" {
+                ensure_call_signature(&model, &mut parts);
+            }
             if parts.is_empty() {
                 continue;
             }
@@ -201,21 +204,10 @@ impl GeminiClient {
             None
         };
 
-        let thinking_config = request.thinking.as_ref().map(|t| {
-            if t.enabled {
-                GeminiThinkingConfig {
-                    include_thoughts: Some(true),
-                    thinking_budget: t.budget_tokens,
-                    thinking_level: t.effort.map(map_gemini_thinking_level),
-                }
-            } else {
-                GeminiThinkingConfig {
-                    include_thoughts: Some(false),
-                    thinking_budget: Some(0),
-                    thinking_level: None,
-                }
-            }
-        });
+        let thinking_config = request
+            .thinking
+            .as_ref()
+            .and_then(|t| gemini_thinking(&model, t));
 
         let generation_config = build_generation_config(request, thinking_config);
 
@@ -521,6 +513,52 @@ struct GeminiListModel {
 
 // --- Encoding & Decoding helpers ---
 
+/// Gemini 2.x models take a token budget (`thinkingBudget`), Gemini 3 and later a level
+/// (`thinkingLevel`). Pro models cannot turn thinking off: "off" becomes their lowest setting.
+fn gemini_thinking(model: &str, t: &crate::ThinkingConfig) -> Option<GeminiThinkingConfig> {
+    let m = model.trim_start_matches("models/").to_ascii_lowercase();
+    let budget_based = m.starts_with("gemini-2") || m.starts_with("gemini-1");
+    let pro = m.contains("-pro");
+    if !t.enabled {
+        return match (budget_based, pro) {
+            (true, false) => Some(GeminiThinkingConfig {
+                include_thoughts: Some(false),
+                thinking_budget: Some(0),
+                thinking_level: None,
+            }),
+            (true, true) => Some(GeminiThinkingConfig {
+                include_thoughts: Some(false),
+                thinking_budget: Some(128),
+                thinking_level: None,
+            }),
+            (false, _) => Some(GeminiThinkingConfig {
+                include_thoughts: Some(false),
+                thinking_budget: None,
+                thinking_level: Some(if pro { "LOW" } else { "MINIMAL" }),
+            }),
+        };
+    }
+    let (budget, level) = match (t.budget_tokens, t.effort) {
+        (Some(b), _) => (Some(b), None),
+        (None, Some(e)) if budget_based => (Some(gemini_budget(e)), None),
+        (None, Some(e)) => (None, Some(map_gemini_thinking_level(e))),
+        (None, None) => (None, None),
+    };
+    Some(GeminiThinkingConfig {
+        include_thoughts: Some(true),
+        thinking_budget: budget,
+        thinking_level: level,
+    })
+}
+
+fn gemini_budget(effort: ReasoningEffort) -> u32 {
+    match effort {
+        ReasoningEffort::Low => 1_024,
+        ReasoningEffort::Medium => 8_192,
+        ReasoningEffort::High => 24_576,
+    }
+}
+
 fn map_gemini_thinking_level(effort: ReasoningEffort) -> &'static str {
     match effort {
         ReasoningEffort::Low => "LOW",
@@ -589,6 +627,24 @@ fn build_generation_config(
         top_k: request.top_k,
         thinking_config,
     })
+}
+
+/// Documented placeholder for history without a signature (older turns, other models).
+const SKIP_SIGNATURE: &str = "skip_thought_signature_validator";
+
+/// Gemini 3+ rejects a model turn whose first function call has no `thoughtSignature`. Turns
+/// recorded before signatures were kept per call, or produced by another model, get the
+/// documented placeholder so the conversation can continue.
+fn ensure_call_signature(model: &str, parts: &mut [GeminiPart]) {
+    let m = model.trim_start_matches("models/").to_ascii_lowercase();
+    if m.starts_with("gemini-1") || m.starts_with("gemini-2") {
+        return;
+    }
+    if let Some(first) = parts.iter_mut().find(|p| p.function_call.is_some())
+        && first.thought_signature.as_deref().is_none_or(str::is_empty)
+    {
+        first.thought_signature = Some(SKIP_SIGNATURE.to_string());
+    }
 }
 
 fn encode_gemini_message(
@@ -682,6 +738,7 @@ fn encode_gemini_message(
                     other => json!({ "input": other }),
                 };
                 parts.push(GeminiPart {
+                    thought_signature: call.signature.clone(),
                     function_call: Some(GeminiFunctionCall {
                         id: if call.id.is_empty() {
                             None
@@ -764,12 +821,13 @@ fn parse_gemini_response(resp: GeminiGenerateContentResponse) -> Result<ChatResp
 
     if let Some(cand_content) = candidate.content {
         for part in cand_content.parts {
-            if let Some(sig) = part.thought_signature
-                && !sig.is_empty()
+            // A signature on a function call belongs to that call; others to the thinking.
+            // Gemini signatures are whole values per part: never concatenate them.
+            let sig = part.thought_signature.filter(|s| !s.is_empty());
+            if part.function_call.is_none()
+                && let Some(sig) = &sig
             {
-                thinking_signature
-                    .get_or_insert_with(String::new)
-                    .push_str(&sig);
+                thinking_signature = Some(sig.clone());
             }
             if let Some(text) = part.text {
                 if part.thought.unwrap_or(false) {
@@ -787,6 +845,7 @@ fn parse_gemini_response(resp: GeminiGenerateContentResponse) -> Result<ChatResp
                     id,
                     name: fc.name,
                     arguments: fc.args,
+                    signature: sig.clone(),
                 });
             }
         }
@@ -890,11 +949,13 @@ where
                     if let Some(candidate) = chunk.candidates.into_iter().next() {
                         if let Some(cand_content) = candidate.content {
                             for part in cand_content.parts {
-                                if let Some(sig) = part.thought_signature
-                                    && !sig.is_empty()
+                                let sig = part.thought_signature.filter(|s| !s.is_empty());
+                                if part.function_call.is_none()
+                                    && let Some(sig) = &sig
                                 {
-                                    st.queue
-                                        .push_back(Ok(StreamEvent::ThinkingSignatureDelta(sig)));
+                                    st.queue.push_back(Ok(StreamEvent::ThinkingSignatureDelta(
+                                        sig.clone(),
+                                    )));
                                 }
                                 if let Some(text) = part.text
                                     && !text.is_empty()
@@ -920,7 +981,14 @@ where
                                         index: idx,
                                         arguments_delta: args_str,
                                     }));
-                                    st.queue.push_back(Ok(StreamEvent::ToolCallEnd { index: idx }));
+                                    if let Some(signature) = sig {
+                                        st.queue.push_back(Ok(StreamEvent::ToolCallSignature {
+                                            index: idx,
+                                            signature,
+                                        }));
+                                    }
+                                    st.queue
+                                        .push_back(Ok(StreamEvent::ToolCallEnd { index: idx }));
                                 }
                             }
                         }
@@ -1001,8 +1069,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client =
-            GeminiClient::new("gem-key", "gemini-2.5-flash").with_base_url(server.url());
+        let client = GeminiClient::new("gem-key", "gemini-2.5-flash").with_base_url(server.url());
         let req = ChatRequest::new(vec![Message::user("Weather in Seoul?")])
             .with_system("You are helpful.")
             .with_tools(vec![ToolDefinition::new(
@@ -1093,22 +1160,27 @@ mod tests {
         let mut server = Server::new_async().await;
         let body = "data: {\"error\":{\"code\":429,\"message\":\"Resource exhausted\",\"status\":\"RESOURCE_EXHAUSTED\"}}\n\n";
         let mock = server
-            .mock("POST", "/models/gemini-2.5-flash:streamGenerateContent?alt=sse")
+            .mock(
+                "POST",
+                "/models/gemini-2.5-flash:streamGenerateContent?alt=sse",
+            )
             .with_status(200)
             .with_header("content-type", "text/event-stream")
             .with_body(body)
             .create_async()
             .await;
 
-        let client =
-            GeminiClient::new("gem-key", "gemini-2.5-flash").with_base_url(server.url());
+        let client = GeminiClient::new("gem-key", "gemini-2.5-flash").with_base_url(server.url());
         let stream = client
             .chat_stream(ChatRequest::new(vec![Message::user("hi")]))
             .await
             .unwrap();
         let err = collect_stream(stream).await.unwrap_err();
         mock.assert_async().await;
-        assert!(err.to_string().contains("RESOURCE_EXHAUSTED: Resource exhausted"));
+        assert!(
+            err.to_string()
+                .contains("RESOURCE_EXHAUSTED: Resource exhausted")
+        );
 
         let empty_model = GeminiClient::new("gem-key", "");
         let cfg_err = empty_model
@@ -1116,5 +1188,91 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(cfg_err, Error::InvalidConfig(_)));
+    }
+}
+
+#[cfg(test)]
+mod signature_tests {
+    //! Gemini 3 thought signatures on function calls: recorded per call, sent back on the same
+    //! part, and a placeholder for history that has none.
+    use super::*;
+    use crate::{ContentPart, Message, Role};
+
+    fn response(parts: Value) -> GeminiGenerateContentResponse {
+        serde_json::from_value(json!({ "candidates": [{ "content": { "role": "model", "parts": parts }, "finishReason": "STOP" }] }))
+            .unwrap()
+    }
+
+    #[test]
+    fn signatures_on_function_calls_stay_with_their_call() {
+        let r = parse_gemini_response(response(json!([
+            { "text": "Let me check", "thought": true, "thoughtSignature": "t-sig" },
+            { "functionCall": { "name": "render_widget", "args": {} }, "thoughtSignature": "fc-sig" },
+            { "functionCall": { "name": "read_file", "args": { "path": "a" } } },
+        ])))
+        .unwrap();
+        assert_eq!(r.tool_calls[0].signature.as_deref(), Some("fc-sig"));
+        assert_eq!(r.tool_calls[1].signature, None);
+        // Not concatenated with the call's signature.
+        assert_eq!(r.thinking_signature.as_deref(), Some("t-sig"));
+    }
+
+    fn history(sig: Option<&str>) -> ChatRequest {
+        let call =
+            ToolCall::new("c1", "render_widget", json!({})).with_signature(sig.map(str::to_string));
+        let call2 = ToolCall::new("c2", "read_file", json!({}));
+        ChatRequest::new(vec![
+            Message::user("hi"),
+            Message {
+                role: Role::Assistant,
+                content: vec![
+                    ContentPart::Text { text: "ok".into() },
+                    ContentPart::ToolCall(call),
+                    ContentPart::ToolCall(call2),
+                ],
+            },
+        ])
+    }
+
+    fn call_sigs(model: &str, req: &ChatRequest) -> Vec<Option<String>> {
+        let (_, body) = GeminiClient::new("k", model)
+            .build_request_body(req)
+            .unwrap();
+        let v = serde_json::to_value(body).unwrap();
+        v["contents"][1]["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|p| p.get("functionCall").is_some())
+            .map(|p| {
+                p.get("thoughtSignature")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_signature_goes_back_on_its_function_call() {
+        assert_eq!(
+            call_sigs("gemini-3-pro-preview", &history(Some("fc-sig"))),
+            vec![Some("fc-sig".into()), None]
+        );
+    }
+
+    #[test]
+    fn history_without_signatures_gets_the_placeholder_on_gemini_3_only() {
+        assert_eq!(
+            call_sigs("gemini-3-flash", &history(None)),
+            vec![Some(SKIP_SIGNATURE.into()), None]
+        );
+        assert_eq!(
+            call_sigs("gemma-4-31b", &history(None)),
+            vec![Some(SKIP_SIGNATURE.into()), None]
+        );
+        assert_eq!(
+            call_sigs("gemini-2.5-flash", &history(None)),
+            vec![None, None]
+        );
     }
 }
