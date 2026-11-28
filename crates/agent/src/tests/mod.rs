@@ -937,7 +937,7 @@ async fn user_input_pauses_persists_and_the_answer_becomes_the_result() {
         MockTurn::tools(&[("c1", "ask", r#"{"question":"which?"}"#)], 10),
         MockTurn::text("thanks", 10),
     ]);
-    let agent = build(model.clone(), &[ask.clone()])
+    let agent = build(model.clone(), std::slice::from_ref(&ask))
         .hook(Arc::new(AskHook))
         .build()
         .unwrap();

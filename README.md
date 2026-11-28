@@ -31,6 +31,7 @@ A Rust LLM agent workspace.
   - Frozen, name-sorted catalogs with deterministic schemas; `readOnlyHint` → concurrent execution
   - `CompositeToolExecutor` (in `oort-agent`) combines servers and local tools with `{server}__{tool}` namespaces
 - [`crates/skills`](crates/skills) (`oort-skills`): `SKILL.md` parsing and a `SkillRegistry` over skill directories and the database
+- [`crates/tools`](crates/tools) (`oort-tools`): builtin tool groups (self-config, plan/ask, memory, utilities, local workspace)
 - [`crates/server`](crates/server) (`oort-server`) + [`web/`](web): Oort app (axum + SSE backend, React/Vite frontend)
 
 ## Oort app
@@ -76,6 +77,7 @@ cd web && npm run build && cd .. && OORT_WEB_DIST=web/dist cargo run -p oort-ser
 | `OORT_WEB_DIST` | — | Serve the built frontend from this directory |
 | `OORT_PUBLIC_URL` | `http://{OORT_ADDR}` | Base URL browsers use to reach the server; the MCP OAuth redirect URI is `{OORT_PUBLIC_URL}/api/mcp/oauth/callback` |
 | `OORT_SKILLS_DIRS` | `~/.oort/skills:{workspace}/skills` | Directories scanned for `<skill>/SKILL.md` |
+| `OORT_WEB_FETCH_ALLOW_PRIVATE` | — | `1` lets `web_fetch` reach loopback / private addresses (refused by default) |
 
 Try MCP with the bundled mock server: `cargo build -p oort-mcp`, then add a `stdio` server with command `target/debug/oort-mcp-mock` and press *Test & Discover*.
 
@@ -97,6 +99,27 @@ A skill is a `SKILL.md` with YAML frontmatter (`name`, `description`, optional `
 
 New sessions get a read-only `render_widget` tool. Its arguments *are* the widget (`metrics_chart`, `data_table`, `interactive_form`, `approval_diff`, `action_chips`), so widgets are stored in the append-only history like any tool call. Interactions come back as ordinary user messages (`[widget_response id=<call id> …]` + JSON); `approval_diff` always waits for the approval buttons, whatever the approval policy.
 
+### Builtin tools
+
+Sessions (and presets) choose builtin tool groups at creation; their tools are frozen with the session's catalog like MCP tools. Domain tools stay in MCP.
+
+| Group | Tools | Notes |
+|---|---|---|
+| `self_config` | `save_skill`, `configure_mcp_server` | always ask, even under *auto all*; new MCP servers apply to new sessions only |
+| `core_ux` | `update_plan`, `ask_user` (+ `render_widget`) | `ask_user` pauses like an approval and its answer becomes the result (survives restarts) |
+| `memory` | `memory_save`, `memory_search` | SQLite FTS5 with trigram tokens (works for Japanese/Chinese); searched on demand, never injected into prompts |
+| `utilities` | `current_time`, `web_fetch` | `web_fetch` converts HTML to Markdown, trims, follows redirects and refuses private addresses |
+| `subagent` | `spawn_subagent` | see below |
+| `workspace` | `read_file`, `write_file`, `run_command` | only with a `workspace_root`; paths cannot escape it (`..`, symlinks); writes show a diff; `run_command` always asks, has a timeout and is killed with its process group on interrupt |
+
+### Subagents
+
+`spawn_subagent` runs an isolated child session (stored with `parent_session_id`, hidden from the session list, listed by `GET /api/sessions/:id/children`) and returns only its final report. Children are read-only: they get read-only tools, writes are refused with a message asking them to report proposed changes, they cannot ask the user, and they cannot spawn beyond `max_depth` (default 1). Several subagents in one turn run in parallel; interrupting or stopping the parent cancels them. A turn budget makes them summarize instead of failing, and a timeout returns partial findings. Profiles: `explorer`, `researcher`, `reviewer`, or `preset:<name>`. `context_mode: "fork"` copies the parent's history prefix and tool catalog byte for byte so the provider can reuse the parent's cached prefix. Child events are relayed to the parent's stream as `subagent` events.
+
+### Commands and explicit skills
+
+`/compact`, `/approval <auto|readonly|ask>`, `/stop`, `/export` and `/new [preset]` run without the model (`POST /api/commands/run`); `GET /api/commands` lists them together with user-invocable skills. Invoking a skill (`/name args` or `invoked_skills` on input) appends `<active_skill name="…">` with `$ARGUMENTS` substituted to that user message only; a skill already loaded in the current epoch is replaced by `<skill_already_loaded name="…" />` (the set is persisted and cleared by compaction). Skills with `execution_mode: subagent` run in a subagent and their report is sent back as a message.
+
 ### API
 
 | Endpoint | Purpose |
@@ -110,15 +133,18 @@ New sessions get a read-only `render_widget` tool. Its arguments *are* the widge
 | `POST /api/mcp-servers/:id/oauth/start` | Discovery + client registration + PKCE → `{authorization_url, state}` (open it in a popup) |
 | `GET /api/mcp/oauth/callback` | Authorization redirect target: validates `state`, exchanges the code, posts `{type: "oort-oauth", server_id, ok}` to the opener |
 | `GET /api/mcp-servers/:id/oauth`, `POST /api/mcp-servers/:id/oauth/disconnect` | Connection status (no secrets) / forget the tokens |
-| `GET / POST /api/skills`, `GET / PUT / DELETE /api/skills/:id`, `POST /api/skills/reload` | Skills (file skills `file:<name>` are read-only) and directory rescan |
-| `POST /api/sessions` | Create from `preset_id` and/or `provider_id`, `model`, `mcp_server_ids`, `skill_ids`, `widgets`, `builtin_tools`, `system_prompt`, `approval_policy` (`auto_all` / `auto_readonly` / `always_ask`), `max_context_tokens`, `max_tokens`, `title`, `message` |
+| `GET / POST /api/skills`, `GET / PUT / DELETE /api/skills/:id`, `POST /api/skills/reload` | Skills (file skills `file:<name>` are read-only) and directory rescan; `user_invocable`, `argument_hint`, `execution_mode`, `subagent_profile` |
+| `GET /api/memories?q=&tag=&scope=`, `POST /api/memories`, `GET / PUT / DELETE /api/memories/:id` | Memories (full-text search) |
+| `GET /api/commands`, `POST /api/commands/run` | Slash commands (`{session_id?, name, arguments?}` → `{message, effect: {navigate_session?, download?}}`) |
+| `GET /api/sessions/:id/children` | Subagent sessions of a session |
+| `POST /api/sessions` | Create from `preset_id` and/or `provider_id`, `model`, `mcp_server_ids`, `skill_ids`, `builtin_groups`, `workspace_root`, `widgets`, `builtin_tools`, `system_prompt`, `approval_policy` (`auto_all` / `auto_readonly` / `always_ask`), `max_context_tokens`, `max_tokens`, `title`, `message` |
 | `GET /api/sessions` | List sessions |
 | `GET /api/sessions/:id` | Snapshot: raw history, active view, checkpoints, pending approvals, usage with per-call `ttft_ms`, `latency_ms` and a request summary (sizes and prefix hashes) |
 | `PATCH /api/sessions/:id` | `{title?, approval_policy?}` (applies to a running loop immediately) |
 | `DELETE /api/sessions/:id` | Stop the loop and delete the session with its history |
 | `GET /api/sessions/:id/export` | Debug JSON: metadata, settings, frozen prompt and tools, raw history, compactions, LLM call metrics (no secrets) |
 | `GET /api/sessions/:id/events` | SSE: `hello` (status + in-progress turn), then `agent` / `widget` / `loop_exited` / `session_updated` / `deleted` / `lagged`. Ids are `{boot}:{seq}`; reconnecting with `Last-Event-ID` replays missed events (`hello.resumed`), otherwise the client refetches the snapshot |
-| `POST /api/sessions/:id/input` | `{"type":"steer"\|"interrupt","text"}`, `{"type":"approval","call_id","decision":"approve"\|"deny","reason"?}`, `{"type":"compact"}` |
+| `POST /api/sessions/:id/input` | `{"type":"steer"\|"interrupt","text","invoked_skills"?:[{name,arguments?}]}`, `{"type":"approval","call_id","decision":"approve"\|"deny"\|"answer","reason"?,"content"?}`, `{"type":"compact"}` |
 | `POST /api/sessions/:id/cancel` | Stop the background loop (state is kept and can be resumed) |
 
 ## Testing

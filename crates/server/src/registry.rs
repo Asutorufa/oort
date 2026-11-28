@@ -29,6 +29,24 @@ use crate::mock_model::MockModel;
 use crate::oauth::OAuthFlows;
 use crate::pool::McpPool;
 use crate::session_tools;
+use crate::subagent::{SpawnSubagent, SubagentLimits, SubagentRuntime};
+use oort_agent::{Lineage, MemoryStore};
+use oort_tools::builtin::utilities::WebFetchOptions;
+use oort_tools::{BuiltinContext, Group, PlanSink};
+
+/// Group names → groups (unknown names are an error).
+pub fn parse_groups(names: &[String]) -> Result<Vec<Group>, ApiError> {
+    let mut out = Vec::new();
+    for n in names {
+        let g = Group::parse(n)
+            .ok_or_else(|| ApiError::BadRequest(format!("unknown builtin tool group `{n}`")))?;
+        if !out.contains(&g) {
+            out.push(g);
+        }
+    }
+    out.sort();
+    Ok(out)
+}
 
 /// A provider client: a real HTTP client or the offline mock.
 enum Built {
@@ -57,13 +75,25 @@ pub struct Registry {
     pub pool: McpPool,
     pub skills: Arc<SkillRegistry>,
     pub oauth: OAuthFlows,
+    pub memories: Arc<dyn MemoryStore>,
+    pub subagents: SubagentLimits,
     builtin: Arc<dyn ToolExecutor>,
     mock_word_delay: Duration,
+    web: WebFetchOptions,
 }
 
 /// Everything the registry stores (one SQLite database in practice).
-pub trait Stores: ConfigStore + OAuthTokenStore + SkillStore + 'static {}
-impl<T: ConfigStore + OAuthTokenStore + SkillStore + 'static> Stores for T {}
+pub trait Stores: ConfigStore + OAuthTokenStore + SkillStore + MemoryStore + 'static {}
+impl<T: ConfigStore + OAuthTokenStore + SkillStore + MemoryStore + 'static> Stores for T {}
+
+/// Sends `update_plan` steps into the session's event stream.
+struct EventPlanSink(mpsc::Sender<AgentEvent>);
+
+impl PlanSink for EventPlanSink {
+    fn publish(&self, steps: Vec<oort_agent::PlanStep>) {
+        let _ = self.0.try_send(AgentEvent::PlanUpdated { steps });
+    }
+}
 
 /// What a session's tools are made of (fixed at creation, in its config).
 pub struct ToolSelection<'a> {
@@ -72,6 +102,13 @@ pub struct ToolSelection<'a> {
     /// Skill names (for `load_skill`).
     pub skills: Vec<String>,
     pub mcp: &'a [McpBinding],
+    /// Builtin tool groups (see `oort_tools`).
+    pub groups: Vec<Group>,
+    pub workspace_root: Option<std::path::PathBuf>,
+    /// The running session (absent while only freezing a catalog).
+    pub runtime: Option<SubagentRuntime>,
+    /// Subagent depth of the session the tools are for.
+    pub depth: u32,
 }
 
 fn secret_err(e: SecretError) -> ApiError {
@@ -90,12 +127,43 @@ impl Registry {
     pub fn new<S: Stores>(store: Arc<S>, builtin: Arc<dyn ToolExecutor>) -> Self {
         let tokens: Arc<dyn OAuthTokenStore> = store.clone();
         Self {
+            memories: store.clone(),
+            subagents: SubagentLimits::default(),
+            web: WebFetchOptions::default(),
             config: store.clone(),
             pool: McpPool::new(ClientOptions::default(), Some(tokens.clone())),
             skills: Arc::new(SkillRegistry::new(vec![], store)),
             oauth: OAuthFlows::new(tokens, "http://127.0.0.1:3000"),
             builtin,
             mock_word_delay: Duration::from_millis(30),
+        }
+    }
+
+    /// `web_fetch` limits (tests allow private addresses to reach a local server).
+    pub fn with_web_fetch(mut self, web: WebFetchOptions) -> Self {
+        self.web = web;
+        self
+    }
+
+    pub fn with_subagent_limits(mut self, limits: SubagentLimits) -> Self {
+        self.subagents = limits;
+        self
+    }
+
+    /// Context for the builtin tools of one session.
+    pub fn builtin_context(
+        &self,
+        workspace_root: Option<std::path::PathBuf>,
+        events: Option<mpsc::Sender<AgentEvent>>,
+    ) -> BuiltinContext {
+        BuiltinContext {
+            config: Some(self.config.clone()),
+            skills: Some(self.skills.store().clone()),
+            memories: Some(self.memories.clone()),
+            plan: events.map(|e| Arc::new(EventPlanSink(e)) as Arc<dyn PlanSink>),
+            workspace_root,
+            web: self.web.clone(),
+            commands: Default::default(),
         }
     }
 
@@ -311,23 +379,45 @@ impl Registry {
     /// The live executor for a session's tools. `strict` (creation) fails on any unavailable
     /// server; otherwise (resume) such servers are skipped and their tools answer with errors.
     pub async fn live_executor(
-        &self,
+        self: &Arc<Self>,
         sel: &ToolSelection<'_>,
         strict: bool,
     ) -> Result<Arc<dyn ToolExecutor>, ApiError> {
         let mut b = CompositeToolExecutor::builder();
-        if sel.builtin {
+        // The legacy local tools (read_file, …) predate the builtin groups and share names
+        // with them: a session uses one or the other.
+        if sel.builtin && sel.groups.is_empty() {
             b = b.add(Namespace::None, self.builtin.clone());
         }
-        if sel.widgets || !sel.skills.is_empty() {
+        let widgets = sel.widgets || sel.groups.contains(&Group::CoreUx);
+        if widgets || !sel.skills.is_empty() {
             b = b.add(
                 Namespace::None,
                 Arc::new(session_tools::executor(
-                    sel.widgets,
+                    widgets,
                     sel.skills.clone(),
                     self.skills.clone(),
                 )),
             );
+        }
+        if !sel.groups.is_empty() {
+            let ctx = self.builtin_context(
+                sel.workspace_root.clone(),
+                sel.runtime.as_ref().map(|r| r.events.clone()),
+            );
+            let tools = oort_tools::executor(&sel.groups, &ctx).map_err(ApiError::BadRequest)?;
+            b = b.add(Namespace::None, Arc::new(tools));
+            if sel.groups.contains(&Group::Subagent) && sel.depth < self.subagents.max_depth {
+                b = b.add(
+                    Namespace::None,
+                    Arc::new(oort_agent::LocalToolExecutor::new().with_tool(Arc::new(
+                        SpawnSubagent {
+                            registry: Arc::downgrade(self),
+                            runtime: sel.runtime.clone(),
+                        },
+                    ))),
+                );
+            }
         }
         for binding in sel.mcp {
             let rec = match self.config.get_mcp_server(&binding.id).await {
@@ -379,8 +469,9 @@ impl Registry {
     /// what is live now ([`PinnedToolExecutor`]).
     #[allow(clippy::too_many_arguments)]
     pub async fn build_agent(
-        &self,
+        self: &Arc<Self>,
         cfg: &SessionConfig,
+        lineage: &Lineage,
         session_id: &str,
         state: &AgentState,
         store: Arc<dyn SessionStore>,
@@ -401,6 +492,16 @@ impl Registry {
                     widgets: cfg.widgets,
                     skills: cfg.skills.iter().map(|s| s.name.clone()).collect(),
                     mcp: &bindings,
+                    groups: parse_groups(&lineage.builtin_groups)?,
+                    workspace_root: lineage.workspace_root.as_ref().map(Into::into),
+                    runtime: Some(SubagentRuntime {
+                        session_id: session_id.to_string(),
+                        cfg: cfg.clone(),
+                        lineage: lineage.clone(),
+                        store: store.clone(),
+                        events: events.clone(),
+                    }),
+                    depth: lineage.depth,
                 },
                 false,
             )

@@ -829,7 +829,7 @@ async fn subagent_sessions_form_a_tree_hidden_from_the_list() {
         .into_iter()
         .map(|m| m.id)
         .collect();
-    assert_eq!(top, [parent.clone()], "children are not top-level sessions");
+    assert_eq!(top, std::slice::from_ref(&parent), "children are not top-level sessions");
     let kids = h.store.list_children(&parent).await.unwrap();
     assert_eq!(kids.len(), 1);
     assert_eq!(kids[0].lineage.depth, 1);

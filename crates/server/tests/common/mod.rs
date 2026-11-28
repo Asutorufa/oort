@@ -35,15 +35,25 @@ impl Server {
         workspace: &Path,
         skill_dirs: Vec<PathBuf>,
     ) -> Self {
+        Self::start_with(store, workspace, skill_dirs, |r| r).await
+    }
+
+    /// Like [`Server::start`], with extra registry settings.
+    pub async fn start_with(
+        store: Arc<SqliteSessionStore>,
+        workspace: &Path,
+        skill_dirs: Vec<PathBuf>,
+        configure: impl FnOnce(Registry) -> Registry,
+    ) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
         let builtin = Arc::new(oort_server::tools::builtin_executor(workspace));
-        let registry = Arc::new(
+        let registry = Arc::new(configure(
             Registry::new(store.clone(), builtin)
                 .with_mock_word_delay(Duration::from_millis(2))
                 .with_skill_dirs(skill_dirs)
                 .with_public_url(&origin),
-        );
+        ));
         let manager = SessionManager::new(store.clone(), registry);
         let app = router(manager.clone(), None);
         let task = tokio::spawn(async move {

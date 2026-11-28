@@ -1315,6 +1315,7 @@ dependencies = [
  "oort-mcp",
  "oort-skills",
  "oort-storage",
+ "oort-tools",
  "reqwest",
  "serde",
  "serde_json",

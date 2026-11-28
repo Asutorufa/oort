@@ -11,8 +11,8 @@
 //! loaded from the store, and removed from the active map when their loop exits.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use oort_agent::{
@@ -23,6 +23,7 @@ use oort_llm::{ContentPart, Message};
 use tokio::sync::{Mutex, broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 
+use crate::api::InvokedSkill;
 use crate::api::{
     ApiError, CheckpointView, CreateSessionRequest, Envelope, InputRequest, PatchSessionRequest,
     ProviderSummary, RawMessage, SessionDetail, SessionExport, SessionSummary,
@@ -30,8 +31,11 @@ use crate::api::{
 use crate::approval::ApprovalHandle;
 use crate::config::{SessionConfig, SkillBinding};
 use crate::hub::Hub;
-use crate::registry::{Registry, ToolSelection};
+use crate::registry::{Registry, ToolSelection, parse_groups};
 use crate::session_tools::RENDER_WIDGET;
+use crate::subagent::{ContextMode, EventFn, SubagentRuntime, SubagentTask, run_subagent};
+use oort_agent::{Lineage, SkillExecutionMode};
+use oort_tools::Group;
 
 /// Handles to a running loop.
 struct ActiveSession {
@@ -61,11 +65,14 @@ pub struct SessionManager {
     /// Cancelled by [`SessionManager::shutdown`]; ends open SSE streams so the HTTP server
     /// can finish its graceful shutdown.
     closing: CancellationToken,
+    /// Skill subagents running for a session (cancelled by stop / delete / shutdown).
+    skill_runs: Mutex<BTreeMap<String, Vec<CancellationToken>>>,
+    me: Weak<SessionManager>,
 }
 
 impl SessionManager {
     pub fn new(store: Arc<dyn SessionStore>, registry: Arc<Registry>) -> Arc<Self> {
-        Arc::new(Self {
+        Arc::new_cyclic(|me| Self {
             store,
             registry,
             active: Arc::default(),
@@ -73,6 +80,8 @@ impl SessionManager {
             generation: AtomicU64::new(0),
             boot: crate::new_id(),
             closing: CancellationToken::new(),
+            skill_runs: Mutex::default(),
+            me: me.clone(),
         })
     }
 
@@ -153,6 +162,28 @@ impl SessionManager {
                 other => other.into(),
             })?;
 
+        let group_names = req
+            .builtin_groups
+            .clone()
+            .or_else(|| preset.as_ref().map(|p| p.builtin_groups.clone()))
+            .unwrap_or_default();
+        let groups = parse_groups(&group_names)?;
+        let workspace_root = match (
+            groups.contains(&Group::Workspace),
+            req.workspace_root
+                .clone()
+                .or_else(|| preset.as_ref().and_then(|p| p.workspace_root.clone()))
+                .filter(|r| !r.trim().is_empty()),
+        ) {
+            (true, Some(root)) => Some(canonical_workspace(&root)?),
+            (true, None) => {
+                return Err(ApiError::BadRequest(
+                    "the workspace tool group needs a workspace_root".into(),
+                ));
+            }
+            (false, _) => None,
+        };
+
         Registry::check_provider(&provider, &model)?;
         let bindings = self.registry.bind_servers(&server_ids).await?;
         let live = self
@@ -163,6 +194,10 @@ impl SessionManager {
                     widgets,
                     skills: skills.iter().map(|s| s.name.clone()).collect(),
                     mcp: &bindings,
+                    groups: groups.clone(),
+                    workspace_root: workspace_root.as_ref().map(Into::into),
+                    runtime: None,
+                    depth: 0,
                 },
                 true,
             )
@@ -219,6 +254,11 @@ impl SessionManager {
             model,
             config: serde_json::to_value(&cfg).map_err(|e| ApiError::Internal(e.to_string()))?,
             approval_policy,
+            lineage: Lineage {
+                workspace_root,
+                builtin_groups: groups.iter().map(|g| g.as_str().to_string()).collect(),
+                ..Default::default()
+            },
         };
         let id = self.store.create_session(meta, &state).await?;
         self.ensure_active(&id).await?;
@@ -245,25 +285,56 @@ impl SessionManager {
         let calls = self.store.list_llm_calls(id).await?;
         let cfg = settings(&stored.meta.config)?;
         let active = self.active.lock().await.contains_key(id);
-        Ok(SessionDetail::build(
+        let root = stored.meta.lineage.workspace_root.clone();
+        let mut detail = SessionDetail::build(
             stored.meta,
             active,
             cfg,
             &stored.state,
             &stored.message_usage,
             &calls,
-        ))
+        );
+        // What each approval card shows: a diff, the command, the settings, …
+        let ctx = self.registry.builtin_context(root.map(Into::into), None);
+        for p in &mut detail.pending_approvals {
+            p.preview = oort_tools::preview(&p.call.name, &p.call.arguments, &ctx).await;
+        }
+        Ok(detail)
+    }
+
+    /// Subagent sessions spawned by `id`.
+    pub async fn children(&self, id: &str) -> Result<Vec<SessionSummary>, ApiError> {
+        self.store.load_state(id).await?;
+        let active = self.active.lock().await;
+        Ok(self
+            .store
+            .list_children(id)
+            .await?
+            .into_iter()
+            .map(|meta| SessionSummary {
+                active: active.contains_key(&meta.id),
+                meta,
+            })
+            .collect())
     }
 
     pub async fn input(&self, id: &str, input: InputRequest) -> Result<(), ApiError> {
         let input = match input {
-            InputRequest::Steer { text } => match self.expand_command(&text).await? {
+            InputRequest::Steer {
+                text,
+                invoked_skills,
+            } => match self.prepare_user_input(id, &text, invoked_skills).await? {
                 Expanded::Compact => LoopInput::Compact,
                 Expanded::Text(t) => LoopInput::Steer(Message::user(t)),
+                Expanded::Deferred => return Ok(()),
             },
-            InputRequest::Interrupt { text } => match self.expand_command(&text).await? {
+            InputRequest::Interrupt {
+                text,
+                invoked_skills,
+            } => match self.prepare_user_input(id, &text, invoked_skills).await? {
                 Expanded::Compact => LoopInput::Compact,
                 Expanded::Text(t) => LoopInput::Interrupt(Message::user(t)),
+                Expanded::Deferred => return Ok(()),
             },
             InputRequest::Approval { call_id, decision } => {
                 LoopInput::Approval { call_id, decision }
@@ -377,6 +448,9 @@ impl SessionManager {
     }
 
     pub async fn cancel(&self, id: &str) -> Result<bool, ApiError> {
+        for t in self.skill_runs.lock().await.remove(id).unwrap_or_default() {
+            t.cancel();
+        }
         Ok(match self.active.lock().await.get(id) {
             Some(a) => {
                 a.cancel.cancel();
@@ -420,6 +494,12 @@ impl SessionManager {
     /// Cancels every loop (their state is already persisted) and closes MCP connections.
     pub async fn shutdown(&self) {
         self.closing.cancel();
+        for t in std::mem::take(&mut *self.skill_runs.lock().await)
+            .into_values()
+            .flatten()
+        {
+            t.cancel();
+        }
         for a in self.active.lock().await.values() {
             a.cancel.cancel();
         }
@@ -459,6 +539,7 @@ impl SessionManager {
             .registry
             .build_agent(
                 &cfg,
+                &stored.meta.lineage,
                 id,
                 &stored.state,
                 Arc::clone(&self.store),
@@ -540,43 +621,207 @@ impl SessionManager {
     }
 }
 
-/// Result of interpreting a leading `/command` in user input.
+/// Result of interpreting user input with explicit skills / a leading `/command`.
 enum Expanded {
     Compact,
     Text(String),
+    /// Handed to a skill subagent; its report is sent to the session when it finishes.
+    Deferred,
 }
 
 impl SessionManager {
-    /// `/compact` → compaction; `/<skill> rest` → the skill's body followed by `rest`, appended at
-    /// the tail like any user message (the frozen prefix is untouched). Other text is unchanged.
-    async fn expand_command(&self, text: &str) -> Result<Expanded, ApiError> {
+    /// Explicit skills (`invoked_skills`, or a leading `/name args`) are appended to *this*
+    /// user message as `<active_skill>` blocks — never to the system prompt or older
+    /// messages; the engine replaces repeats within an epoch by a short marker. Skills in
+    /// `subagent` mode run in an isolated subagent whose report is sent back later.
+    /// `/compact` is a command. Other text is unchanged.
+    async fn prepare_user_input(
+        &self,
+        id: &str,
+        text: &str,
+        mut invoked: Vec<InvokedSkill>,
+    ) -> Result<Expanded, ApiError> {
+        let mut rest = text.to_string();
         let trimmed = text.trim_start();
-        let Some(cmd) = trimmed.strip_prefix('/') else {
-            return Ok(Expanded::Text(text.to_string()));
-        };
-        let (name, rest) = cmd
-            .split_once(char::is_whitespace)
-            .map(|(n, r)| (n, r.trim()))
-            .unwrap_or((cmd, ""));
-        if name == "compact" {
-            return Ok(Expanded::Compact);
+        if let Some(cmd) = trimmed.strip_prefix('/') {
+            let (name, args) = cmd
+                .split_once(char::is_whitespace)
+                .map(|(n, r)| (n, r.trim()))
+                .unwrap_or((cmd, ""));
+            if name == "compact" {
+                return Ok(Expanded::Compact);
+            }
+            if oort_skills::valid_name(name) {
+                invoked.insert(
+                    0,
+                    InvokedSkill {
+                        name: name.to_string(),
+                        arguments: Some(args.to_string()).filter(|a| !a.is_empty()),
+                    },
+                );
+                rest = String::new();
+            }
         }
-        if !oort_skills::valid_name(name) {
+        if invoked.is_empty() {
             return Ok(Expanded::Text(text.to_string()));
         }
-        let skill = self
-            .registry
-            .skills
-            .by_name(name)
-            .await?
-            .ok_or_else(|| ApiError::BadRequest(format!("unknown command or skill /{name}")))?;
+        let mut blocks = Vec::new();
+        let mut delegated = Vec::new();
+        for inv in &invoked {
+            let skill = self
+                .registry
+                .skills
+                .by_name(&inv.name)
+                .await?
+                .ok_or_else(|| {
+                    ApiError::BadRequest(format!("unknown command or skill /{}", inv.name))
+                })?;
+            if !skill.invocation.user_invocable {
+                return Err(ApiError::BadRequest(format!(
+                    "/{} cannot be invoked directly",
+                    skill.name
+                )));
+            }
+            match skill.invocation.execution_mode {
+                SkillExecutionMode::Inline => {
+                    blocks.push(skill.invocation_block(inv.arguments.as_deref()))
+                }
+                SkillExecutionMode::Subagent => delegated.push((skill, inv.arguments.clone())),
+            }
+        }
+        let rest = rest.trim().to_string();
+        if !delegated.is_empty() {
+            self.delegate_skills(id, delegated, blocks, rest).await?;
+            return Ok(Expanded::Deferred);
+        }
         let ask = if rest.is_empty() {
-            "Follow this skill.".to_string()
+            "Follow the skill above.".to_string()
         } else {
-            rest.to_string()
+            rest
         };
-        Ok(Expanded::Text(format!("{}\n\n{ask}", skill.render_body())))
+        blocks.push(ask);
+        Ok(Expanded::Text(blocks.join("\n\n")))
     }
+
+    /// Runs `subagent`-mode skills in isolated children (progress is relayed to this session's
+    /// stream), then sends their reports — plus any inline skills and the user's text — to the
+    /// session as one ordinary user message.
+    async fn delegate_skills(
+        &self,
+        id: &str,
+        skills: Vec<(oort_skills::Skill, Option<String>)>,
+        inline_blocks: Vec<String>,
+        user_text: String,
+    ) -> Result<(), ApiError> {
+        let stored = self.store.load_state(id).await?;
+        let cfg = settings(&stored.meta.config)?;
+        let hub = self.hub(id).await;
+        let cancel = CancellationToken::new();
+        self.skill_runs
+            .lock()
+            .await
+            .entry(id.to_string())
+            .or_default()
+            .push(cancel.clone());
+        let (dummy_tx, _dummy_rx) = mpsc::channel(1);
+        let runtime = SubagentRuntime {
+            session_id: id.to_string(),
+            cfg,
+            lineage: stored.meta.lineage.clone(),
+            store: self.store.clone(),
+            events: dummy_tx,
+        };
+        let registry = self.registry.clone();
+        let me = self.me.clone();
+        let session_id = id.to_string();
+        tokio::spawn(async move {
+            let mut reports = Vec::new();
+            let mut runs = Vec::new();
+            for (skill, args) in skills {
+                let call_id = format!("skill:{}", crate::new_id());
+                let task = SubagentTask {
+                    task: format!(
+                        "{}\n\n{}",
+                        skill.invocation_block(args.as_deref()),
+                        if user_text.is_empty() {
+                            "Follow the skill above."
+                        } else {
+                            &user_text
+                        }
+                    ),
+                    context: None,
+                    profile: skill
+                        .invocation
+                        .subagent_profile
+                        .clone()
+                        .unwrap_or_else(|| "explorer".into()),
+                    mode: ContextMode::Fresh,
+                    tools: None,
+                };
+                let hub = hub.clone();
+                let emit: EventFn =
+                    Arc::new(move |event| hub.publish(|seq| Envelope::Agent { seq, event }));
+                let (registry, runtime, cancel) =
+                    (registry.clone(), runtime.clone(), cancel.clone());
+                runs.push((
+                    skill.name.clone(),
+                    tokio::spawn(async move {
+                        run_subagent(&registry, &runtime, &call_id, task, cancel, emit).await
+                    }),
+                ));
+            }
+            for (name, run) in runs {
+                let report = match run.await {
+                    Ok(Ok(o)) => format!(
+                        "<subagent_result skill=\"{name}\" session=\"{}\" ending=\"{}\">\n{}\n</subagent_result>",
+                        o.sub_session_id, o.ending, o.summary
+                    ),
+                    Ok(Err(e)) => format!(
+                        "<subagent_result skill=\"{name}\" error=\"true\">\n{e}\n</subagent_result>"
+                    ),
+                    Err(e) => format!(
+                        "<subagent_result skill=\"{name}\" error=\"true\">\n{e}\n</subagent_result>"
+                    ),
+                };
+                reports.push(report);
+            }
+            if cancel.is_cancelled() {
+                return;
+            }
+            let mut parts = inline_blocks;
+            parts.extend(reports);
+            if !user_text.is_empty() {
+                parts.push(user_text);
+            }
+            if let Some(me) = me.upgrade()
+                && let Err(e) = me
+                    .input(
+                        &session_id,
+                        InputRequest::Steer {
+                            text: parts.join("\n\n"),
+                            invoked_skills: vec![],
+                        },
+                    )
+                    .await
+            {
+                tracing::warn!(session = %session_id, error = %e, "could not deliver skill subagent report");
+            }
+        });
+        Ok(())
+    }
+}
+
+/// Canonical, existing directory for the workspace tools.
+fn canonical_workspace(root: &str) -> Result<String, ApiError> {
+    let p = std::path::Path::new(root.trim())
+        .canonicalize()
+        .map_err(|e| ApiError::BadRequest(format!("workspace_root {root}: {e}")))?;
+    if !p.is_dir() {
+        return Err(ApiError::BadRequest(format!(
+            "workspace_root {root} is not a directory"
+        )));
+    }
+    Ok(p.to_string_lossy().to_string())
 }
 
 fn settings(raw: &serde_json::Value) -> Result<SessionConfig, ApiError> {

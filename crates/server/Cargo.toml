@@ -19,6 +19,7 @@ oort-llm = { path = "../llm" }
 oort-mcp = { path = "../mcp" }
 oort-storage = { path = "../storage" }
 oort-skills = { path = "../skills" }
+oort-tools = { path = "../tools" }
 async-trait = { workspace = true }
 axum = { workspace = true }
 futures-util = { workspace = true }

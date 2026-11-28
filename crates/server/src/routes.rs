@@ -47,6 +47,14 @@ pub fn router(manager: Arc<SessionManager>, web_dist: Option<&FsPath>) -> Router
         .route("/sessions/{id}/input", post(session_input))
         .route("/sessions/{id}/cancel", post(cancel_session))
         .route("/sessions/{id}/export", get(export_session))
+        .route("/sessions/{id}/children", get(session_children))
+        .route("/commands", get(list_commands))
+        .route("/commands/run", post(run_command))
+        .route("/memories", get(search_memories).post(create_memory))
+        .route(
+            "/memories/{id}",
+            get(get_memory).put(update_memory).delete(delete_memory),
+        )
         .route("/providers", get(list_providers).post(create_provider))
         .route("/providers/test", post(test_new_provider))
         .route(
@@ -628,4 +636,127 @@ async fn reload_skills(State(m): State<AppState>) -> ApiResult<SkillsReload> {
             .map(|d| d.display().to_string())
             .collect(),
     }))
+}
+
+// ----- subagents, commands, memories ---------------------------------------------------------
+
+async fn session_children(
+    State(m): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Vec<SessionSummary>> {
+    Ok(Json(m.children(&id).await?))
+}
+
+async fn list_commands(State(m): State<AppState>) -> ApiResult<Vec<crate::commands::CommandInfo>> {
+    Ok(Json(crate::commands::list(&m).await?))
+}
+
+async fn run_command(
+    State(m): State<AppState>,
+    Json(req): Json<crate::commands::RunCommand>,
+) -> ApiResult<crate::commands::CommandResult> {
+    Ok(Json(crate::commands::run(&m, req).await?))
+}
+
+#[derive(serde::Deserialize, Default)]
+struct MemoryParams {
+    #[serde(default)]
+    q: Option<String>,
+    #[serde(default)]
+    tag: Option<String>,
+    #[serde(default)]
+    scope: Option<String>,
+    #[serde(default)]
+    limit: Option<u32>,
+}
+
+async fn search_memories(
+    State(m): State<AppState>,
+    axum::extract::Query(p): axum::extract::Query<MemoryParams>,
+) -> ApiResult<Vec<oort_agent::MemoryHit>> {
+    let q = oort_agent::MemoryQuery {
+        text: p.q.unwrap_or_default(),
+        tags: p.tag.into_iter().filter(|t| !t.is_empty()).collect(),
+        scope: p.scope.filter(|s| !s.is_empty()),
+        limit: Some(p.limit.unwrap_or(100)),
+    };
+    Ok(Json(m.registry().memories.search_memories(&q).await?))
+}
+
+#[derive(serde::Deserialize, Default)]
+struct MemoryInput {
+    title: Option<String>,
+    content: Option<String>,
+    tags: Option<Vec<String>>,
+    scope: Option<String>,
+}
+
+impl MemoryInput {
+    fn apply(self, cur: oort_agent::MemoryRecord) -> Result<oort_agent::MemoryRecord, ApiError> {
+        let rec = oort_agent::MemoryRecord {
+            title: self
+                .title
+                .map(|t| t.trim().to_string())
+                .unwrap_or(cur.title),
+            content: self.content.unwrap_or(cur.content),
+            tags: self.tags.unwrap_or(cur.tags),
+            scope: self
+                .scope
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or(cur.scope),
+            updated_at: crate::now_ms(),
+            ..cur
+        };
+        if rec.title.is_empty() || rec.content.trim().is_empty() {
+            return Err(ApiError::BadRequest(
+                "`title` and `content` are required".into(),
+            ));
+        }
+        Ok(rec)
+    }
+}
+
+async fn get_memory(
+    State(m): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<oort_agent::MemoryRecord> {
+    Ok(Json(m.registry().memories.get_memory(&id).await?))
+}
+
+async fn create_memory(
+    State(m): State<AppState>,
+    Json(input): Json<MemoryInput>,
+) -> ApiResult<oort_agent::MemoryRecord> {
+    let now = crate::now_ms();
+    let rec = input.apply(oort_agent::MemoryRecord {
+        id: crate::new_id(),
+        title: String::new(),
+        content: String::new(),
+        tags: vec![],
+        scope: "global".into(),
+        created_at: now,
+        updated_at: now,
+    })?;
+    m.registry().memories.create_memory(&rec).await?;
+    Ok(Json(rec))
+}
+
+async fn update_memory(
+    State(m): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<MemoryInput>,
+) -> ApiResult<oort_agent::MemoryRecord> {
+    let store = &m.registry().memories;
+    let rec = input.apply(store.get_memory(&id).await?)?;
+    store.update_memory(&rec).await?;
+    Ok(Json(rec))
+}
+
+async fn delete_memory(
+    State(m): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    m.registry().memories.delete_memory(&id).await?;
+    Ok(StatusCode::NO_CONTENT)
 }

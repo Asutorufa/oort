@@ -88,12 +88,12 @@ pub fn to_markdown(html: &str, base: Option<&url::Url>) -> String {
             .to_ascii_lowercase();
         match (name.as_str(), closing) {
             ("script" | "style" | "noscript" | "svg" | "template" | "head", false) => {
-                if name == "head" {
-                    if let Some(t0) = lower[i..].find("<title>") {
-                        let start = i + t0 + 7;
-                        if let Some(t1) = lower[start..].find("</title>") {
-                            title = decode_entities(html[start..start + t1].trim());
-                        }
+                if name == "head"
+                    && let Some(t0) = lower[i..].find("<title>")
+                {
+                    let start = i + t0 + 7;
+                    if let Some(t1) = lower[start..].find("</title>") {
+                        title = decode_entities(html[start..start + t1].trim());
                     }
                 }
                 let close = format!("</{name}");

@@ -180,9 +180,9 @@ async fn skills_are_disclosed_progressively_without_touching_the_prefix() {
         .await;
     let user = d["raw"][6]["content"][0]["text"].as_str().unwrap();
     assert!(
-        user.starts_with("<skill name=\"zeta-guide\">")
+        user.starts_with("<active_skill name=\"zeta-guide\">")
             && user.contains("ZETA BODY")
-            && user.ends_with("do it now"),
+            && user.contains("Arguments: do it now"),
         "{user}"
     );
     assert_eq!(

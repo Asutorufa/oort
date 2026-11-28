@@ -66,7 +66,7 @@ pub trait PlanSink: Send + Sync {
 }
 
 /// What the builtin tools may touch. Unused handles may be `None` when their group is off.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct BuiltinContext {
     pub config: Option<Arc<dyn ConfigStore>>,
     pub skills: Option<Arc<dyn SkillStore>>,
@@ -76,20 +76,6 @@ pub struct BuiltinContext {
     pub workspace_root: Option<PathBuf>,
     pub web: utilities::WebFetchOptions,
     pub commands: workspace::CommandOptions,
-}
-
-impl Default for BuiltinContext {
-    fn default() -> Self {
-        Self {
-            config: None,
-            skills: None,
-            memories: None,
-            plan: None,
-            workspace_root: None,
-            web: utilities::WebFetchOptions::default(),
-            commands: workspace::CommandOptions::default(),
-        }
-    }
 }
 
 fn missing(what: &str) -> ToolError {

@@ -130,6 +130,55 @@ fn summarize_results(msgs: &[Message]) -> String {
     lines.join("\n\n")
 }
 
+/// Keyword-triggered calls of the offline demo (`time`, `list`, `read <path>`, `note <text>`,
+/// `widget:<type>`, `skill:<name>`, or a tool's exact name).
+fn keyword_calls(
+    said: &str,
+    lower: &str,
+    tools: &[oort_llm::ToolDefinition],
+    calls: &mut Vec<(String, Value)>,
+) {
+    let has_tool = |n: &str| tools.iter().any(|t| t.name == n);
+    if lower.contains("time") && has_tool("get_time") {
+        calls.push(("get_time".to_string(), json!({})));
+    }
+    if lower.contains("list") && has_tool("list_dir") {
+        calls.push(("list_dir".into(), json!({ "path": "." })));
+    }
+    let words: Vec<&str> = said.split_whitespace().collect();
+    if let Some(i) = words.iter().position(|w| w.eq_ignore_ascii_case("read"))
+        && let Some(path) = words.get(i + 1)
+        && has_tool("read_file")
+    {
+        calls.push(("read_file".into(), json!({ "path": path })));
+    }
+    if let Some(i) = lower.find("note ").filter(|_| has_tool("write_note")) {
+        calls.push(("write_note".into(), json!({ "text": said[i + 5..].trim() })));
+    }
+    for w in &words {
+        if let Some(kind) = w.strip_prefix("widget:")
+            && has_tool("render_widget")
+        {
+            calls.push(("render_widget".into(), sample_widget(kind)));
+        }
+        if let Some(name) = w.strip_prefix("skill:")
+            && has_tool("load_skill")
+        {
+            calls.push(("load_skill".into(), json!({ "name": name })));
+        }
+    }
+    for t in tools {
+        let session_tool = t.name == "render_widget" || t.name == "load_skill";
+        if !session_tool && said.contains(&t.name) && !calls.iter().any(|(n, _)| n == &t.name) {
+            calls.push((t.name.clone(), json!({ "text": said })));
+        }
+    }
+}
+
+fn explicit_calls(said: &str) -> bool {
+    said.lines().any(|l| l.trim().starts_with('@'))
+}
+
 fn plan(req: &ChatRequest) -> Plan {
     let last = req.messages.last();
     if last.is_some_and(|m| m.role == Role::Tool) {
@@ -152,40 +201,19 @@ fn plan(req: &ChatRequest) -> Plan {
     let lower = said.to_lowercase();
     let has_tool = |n: &str| req.tools.iter().any(|t| t.name == n);
     let mut calls = Vec::new();
-    if lower.contains("time") && has_tool("get_time") {
-        calls.push(("get_time".to_string(), json!({})));
-    }
-    if lower.contains("list") && has_tool("list_dir") {
-        calls.push(("list_dir".into(), json!({ "path": "." })));
-    }
-    let words: Vec<&str> = said.split_whitespace().collect();
-    if let Some(i) = words.iter().position(|w| w.eq_ignore_ascii_case("read"))
-        && let Some(path) = words.get(i + 1)
-        && has_tool("read_file")
-    {
-        calls.push(("read_file".into(), json!({ "path": path })));
-    }
-    if let Some(i) = lower.find("note ").filter(|_| has_tool("write_note")) {
-        calls.push(("write_note".into(), json!({ "text": said[i + 5..].trim() })));
-    }
-    // `widget:<type>` renders a sample widget; `skill:<name>` loads a skill.
-    for w in &words {
-        if let Some(kind) = w.strip_prefix("widget:")
-            && has_tool("render_widget")
-        {
-            calls.push(("render_widget".into(), sample_widget(kind)));
+    if explicit_calls(&said) {
+        // `@<tool> {json}` lines call exactly those tools (tests and demos).
+        for line in said.lines() {
+            if let Some(rest) = line.trim().strip_prefix('@') {
+                let (name, args) = rest.split_once(char::is_whitespace).unwrap_or((rest, "{}"));
+                if has_tool(name) {
+                    let args = serde_json::from_str(args.trim()).unwrap_or_else(|_| json!({}));
+                    calls.push((name.to_string(), args));
+                }
+            }
         }
-        if let Some(name) = w.strip_prefix("skill:")
-            && has_tool("load_skill")
-        {
-            calls.push(("load_skill".into(), json!({ "name": name })));
-        }
-    }
-    for t in &req.tools {
-        let session_tool = t.name == "render_widget" || t.name == "load_skill";
-        if !session_tool && said.contains(&t.name) && !calls.iter().any(|(n, _)| n == &t.name) {
-            calls.push((t.name.clone(), json!({ "text": said })));
-        }
+    } else {
+        keyword_calls(&said, &lower, &req.tools, &mut calls);
     }
     let slow = lower.contains("slow");
     let text = if calls.is_empty() {
