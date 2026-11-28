@@ -9,6 +9,9 @@ import { fmtMs, JsonView } from "../common";
 import { Markdown } from "./LazyMarkdown";
 import { RowCard, SubagentCard } from "./SubagentCard";
 import { LoopErrorCard } from "./LoopErrorCard";
+import { Collapse } from "../ui";
+import { AnimatePresence, motion } from "motion/react";
+import { enter } from "../../lib/motion";
 import { ApprovalCard, AskUserCard, McpConfiguredCard } from "./ToolCards";
 
 const RENDER_WIDGET = "render_widget";
@@ -177,7 +180,7 @@ function ActivityRow({
           <ChevronDown size={13} />
         </span>
       </button>
-      {open && (
+      <Collapse open={open}>
         <div className="activity-body">
           {thinking.map((t, i) => (
             <div key={i} className="thought">
@@ -189,7 +192,7 @@ function ActivityRow({
             <ToolLine key={c.id} call={c} result={results.get(c.id)} running={running.has(c.id)} ms={toolTimes[c.id]?.ms} />
           ))}
         </div>
-      )}
+      </Collapse>
     </div>
   );
 }
@@ -321,7 +324,9 @@ export function Thread({ detail, live, toolTimes, actions, subagents, children, 
   const tail = (
     <>
       {otherApprovals.map((pa) => (
-        <ApprovalCard key={pa.call.id} pending={pa} onApprove={() => actions.approve(pa.call.id)} onDeny={(reason) => actions.deny(pa.call.id, reason)} />
+        <motion.div key={pa.call.id} variants={enter} initial="hidden" animate="shown">
+          <ApprovalCard pending={pa} onApprove={() => actions.approve(pa.call.id)} onDeny={(reason) => actions.deny(pa.call.id, reason)} />
+        </motion.div>
       ))}
       {skillRuns.map(([id, s]) => (
         <SubagentCard
@@ -333,7 +338,11 @@ export function Thread({ detail, live, toolTimes, actions, subagents, children, 
           onTrace={onTrace}
         />
       ))}
-      {failure && !showLive && <LoopErrorCard error={failure} onRetry={onRetry} onCancelAuto={onCancelAutoRetry} />}
+      {failure && !showLive && (
+        <motion.div variants={enter} initial="hidden" animate="shown">
+          <LoopErrorCard error={failure} onRetry={onRetry} onCancelAuto={onCancelAutoRetry} />
+        </motion.div>
+      )}
       {showLive && (
         <>
           {live.thinking && !live.text && <div className="activity-row ghost">思考中…</div>}
@@ -363,10 +372,11 @@ export function Thread({ detail, live, toolTimes, actions, subagents, children, 
       }}
     >
       <div className="thread-inner">
+        <AnimatePresence initial={false}>
         {groups.map((g, i) => {
           const isLast = i === groups.length - 1;
           return (
-            <div key={i} className="group">
+            <motion.div key={i} className="group" variants={enter} initial="hidden" animate="shown">
               {g.kind === "user" && cutAt.has(g.msg.seq) && <div className="epoch">ここまでの会話は要約されています</div>}
               {g.kind === "user" ? (
                 <UserBubble msg={g.msg} widgetTitles={widgetTitles} />
@@ -376,9 +386,10 @@ export function Thread({ detail, live, toolTimes, actions, subagents, children, 
                   {isLast && tail}
                 </Turn>
               )}
-            </div>
+            </motion.div>
           );
         })}
+        </AnimatePresence>
         {!tailInLast && hasTail && <Turn live={showLive}>{tail}</Turn>}
       </div>
     </div>

@@ -1,7 +1,9 @@
+import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useMemo, useState } from "react";
+import { spring } from "../lib/motion";
 import { commands as commandsApi, errorText, sessions } from "../api";
 import { useToast } from "../components/common/Toast";
-import type { ApprovalPolicy, InputRequest, TurnUsage } from "../api/types";
+import type { ApprovalPolicy, InputRequest, ReasoningEffort, TurnUsage } from "../api/types";
 import { Composer } from "../components/chat/Composer";
 import { Inspector } from "../components/chat/Inspector";
 import { lastPlan, PlanPill } from "../components/chat/PlanTracker";
@@ -91,7 +93,7 @@ function Session({ id, onListChanged }: { id: string; onListChanged: () => void 
     }),
     [id], // eslint-disable-line react-hooks/exhaustive-deps
   );
-  const patch = async (req: { title?: string; approval_policy?: ApprovalPolicy }) => {
+  const patch = async (req: { title?: string; approval_policy?: ApprovalPolicy; reasoning_effort?: ReasoningEffort }) => {
     try {
       await sessions.patch(id, req);
       refresh();
@@ -146,7 +148,7 @@ function Session({ id, onListChanged }: { id: string; onListChanged: () => void 
   const planSteps = plan ?? lastPlan(detail.raw);
 
   return (
-    <div className={`chat ${inspector ? "with-inspector" : ""}`}>
+    <div className="chat">
       <div className="chat-main">
         <header className="chat-top">
           <input
@@ -168,9 +170,6 @@ function Session({ id, onListChanged }: { id: string; onListChanged: () => void 
           )}
           {planSteps && planSteps.length > 0 && <PlanPill steps={planSteps} />}
           <span className="spacer" />
-          <span className="model-chip" title="この会話のモデル">
-            {detail.model}
-          </span>
           {conn !== "open" && <span className="pill warn">{conn === "reconnecting" ? "再接続中…" : "接続中…"}</span>}
           <button className={`btn ghost ${inspector ? "on" : ""}`} onClick={() => setInspector(!inspector)} title="キャッシュ・時間・内部状態">
             透視
@@ -210,13 +209,26 @@ function Session({ id, onListChanged }: { id: string; onListChanged: () => void 
           commands={commandList.data ?? []}
           policy={detail.approval_policy}
           onPolicy={(p) => patch({ approval_policy: p })}
+          reasoning={detail.reasoning_effort ?? "default"}
+          effectiveReasoning={detail.effective_reasoning_effort}
+          onReasoning={(r) => patch({ reasoning_effort: r })}
+          model={detail.model}
           onSend={(text, skills) => send({ type: "steer", text, invoked_skills: skills })}
           onInterrupt={(text, skills) => send({ type: "interrupt", text, invoked_skills: skills })}
           onCommand={runCommand}
           onStop={() => sessions.cancel(id).catch((e) => setError(errorText(e)))}
         />
       </div>
+      <AnimatePresence initial={false}>
       {inspector && (
+        <motion.div
+          key="inspector"
+          className="inspector-wrap"
+          initial={{ width: 0, opacity: 0 }}
+          animate={{ width: 400, opacity: 1 }}
+          exit={{ width: 0, opacity: 0 }}
+          transition={spring}
+        >
         <Inspector
           trace={trace}
           onCloseTrace={() => setTrace(null)}
@@ -230,7 +242,9 @@ function Session({ id, onListChanged }: { id: string; onListChanged: () => void 
             setTrace(null);
           }}
         />
+        </motion.div>
       )}
+      </AnimatePresence>
       {inspect && <TurnInspector turn={inspect} prev={prevTurn} onClose={() => setInspect(null)} />}
     </div>
   );

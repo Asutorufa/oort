@@ -115,6 +115,84 @@ export const ArrowUpIcon = (p: P) => (
   </Svg>
 );
 
+export const EyeIcon = (p: P) => (
+  <Svg {...p}>
+    <path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z" />
+    <circle cx="12" cy="12" r="3" />
+  </Svg>
+);
+export const EyeOffIcon = (p: P) => (
+  <Svg {...p}>
+    <path d="M10.6 5.6A9.6 9.6 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a16 16 0 0 1-2.6 3.4M6.6 6.6C3.9 8.3 2.5 12 2.5 12S6 18.5 12 18.5a9 9 0 0 0 5.4-1.7" />
+    <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2M3.5 3.5l17 17" />
+  </Svg>
+);
+export const TrashIcon = (p: P) => (
+  <Svg {...p}>
+    <path d="M4.5 7h15M10 11v6M14 11v6M6 7l1 12.5a1.5 1.5 0 0 0 1.5 1.5h7a1.5 1.5 0 0 0 1.5-1.5L18 7M9 7V4.5h6V7" />
+  </Svg>
+);
+export const BrainIcon = (p: P) => (
+  <Svg {...p}>
+    <path d="M9 4.5a3 3 0 0 0-3 3v.2A3.2 3.2 0 0 0 4.5 13a3.3 3.3 0 0 0 2 5.5A3 3 0 0 0 12 19.5v-12a3 3 0 0 0-3-3ZM15 4.5a3 3 0 0 1 3 3v.2a3.2 3.2 0 0 1 1.5 5.3 3.3 3.3 0 0 1-2 5.5A3 3 0 0 1 12 19.5" />
+  </Svg>
+);
+export const ShieldIcon = (p: P) => (
+  <Svg {...p}>
+    <path d="M12 3.5 19 6v5.5c0 4.3-3 7.6-7 9-4-1.4-7-4.7-7-9V6Z" />
+    <path d="m9 12 2.2 2.2L15.5 10" />
+  </Svg>
+);
+export const RefreshIcon = (p: P) => (
+  <Svg {...p}>
+    <path d="M19.5 12a7.5 7.5 0 0 1-13 5.1M4.5 12a7.5 7.5 0 0 1 13-5.1" />
+    <path d="M17.5 3.5v3.4h-3.4M6.5 20.5v-3.4h3.4" />
+  </Svg>
+);
+export const CubeIcon = (p: P) => (
+  <Svg {...p}>
+    <path d="m12 3 8 4.5v9L12 21l-8-4.5v-9Z" />
+    <path d="m4 7.5 8 4.5 8-4.5M12 12v9" />
+  </Svg>
+);
+/** Generic marks for provider kinds (not vendor logos). */
+export const KindIcon = ({ kind, size = 18 }: { kind: string; size?: number }) => {
+  switch (kind) {
+    case "openai":
+      return (
+        <Svg size={size}>
+          <circle cx="12" cy="12" r="8" />
+          <path d="M12 4v16M4 12h16" opacity=".55" />
+        </Svg>
+      );
+    case "anthropic":
+      return (
+        <Svg size={size}>
+          <path d="M5 19.5 12 4.5l7 15M8 13.5h8" />
+        </Svg>
+      );
+    case "gemini":
+      return (
+        <Svg size={size}>
+          <path d="M12 3c.8 4.6 4.4 8.2 9 9-4.6.8-8.2 4.4-9 9-.8-4.6-4.4-8.2-9-9 4.6-.8 8.2-4.4 9-9Z" />
+        </Svg>
+      );
+    case "openai_compatible":
+      return (
+        <Svg size={size}>
+          <rect x="3.5" y="5" width="17" height="11" rx="2" />
+          <path d="M8 20h8M12 16v4M7.5 9.5l2 1.5-2 1.5M12 12.5h4" />
+        </Svg>
+      );
+    default:
+      return (
+        <Svg size={size}>
+          <rect x="4" y="4" width="16" height="16" rx="4" strokeDasharray="3 3" />
+        </Svg>
+      );
+  }
+};
+
 /** Indeterminate progress ring. */
 export function Spinner({ size = 14 }: { size?: number }) {
   return (

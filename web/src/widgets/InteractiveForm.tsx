@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Checkbox, Select } from "../components/ui";
 import type { WidgetProps } from "./protocol";
 import { Done, WidgetCard } from "./WidgetCard";
 
@@ -57,7 +58,7 @@ export function InteractiveForm({ id, spec, response, actions, disabled }: Widge
           const v = shown[f.name];
           const set = (nv: unknown) => setValues((s) => ({ ...s, [f.name]: nv }));
           return (
-            <label key={f.name} className={`wfield ${f.kind === "checkbox" ? "inline" : ""}`}>
+            <div key={f.name} className={`wfield ${f.kind === "checkbox" ? "inline" : ""}`}>
               {f.kind !== "checkbox" && (
                 <span className="wlabel">
                   {f.label}
@@ -67,18 +68,15 @@ export function InteractiveForm({ id, spec, response, actions, disabled }: Widge
               {f.kind === "textarea" ? (
                 <textarea rows={3} disabled={locked} value={String(v ?? "")} placeholder={f.placeholder} onChange={(e) => set(e.target.value)} />
               ) : f.kind === "select" ? (
-                <select disabled={locked} value={String(v ?? "")} onChange={(e) => set(e.target.value)}>
-                  {(f.options ?? []).map((o) => (
-                    <option key={o} value={o}>
-                      {o}
-                    </option>
-                  ))}
-                </select>
+                <Select
+                  ariaLabel={f.label}
+                  disabled={locked}
+                  value={v == null || v === "" ? null : String(v)}
+                  onChange={(x) => set(x)}
+                  options={(f.options ?? []).map((o) => ({ value: o, label: o }))}
+                />
               ) : f.kind === "checkbox" ? (
-                <>
-                  <input type="checkbox" disabled={locked} checked={!!v} onChange={(e) => set(e.target.checked)} />
-                  <span>{f.label}</span>
-                </>
+                <Checkbox disabled={locked} checked={!!v} onChange={(x) => set(x)} label={f.label} />
               ) : (
                 <input
                   type={f.kind === "number" ? "number" : "text"}
@@ -88,7 +86,7 @@ export function InteractiveForm({ id, spec, response, actions, disabled }: Widge
                   onChange={(e) => set(e.target.value)}
                 />
               )}
-            </label>
+            </div>
           );
         })}
         {!submitted && (

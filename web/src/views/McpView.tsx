@@ -3,6 +3,7 @@ import { errorText, mcpServers, oauth as oauthApi } from "../api";
 import type { McpServer, McpServerInput, McpTest, McpToolInfo, McpTransport, ToolCallResult } from "../api/types";
 import { Badge, Empty, ErrorBar, fmtMs, JsonView, Modal } from "../components/common";
 import { Field, JsonEditor, KeyValueEditor, LinesEditor, SecretInput, Toggle } from "../components/forms";
+import { SegmentedControl, Select } from "../components/ui";
 import { navigate } from "../hooks/useHashRoute";
 import { useResource } from "../hooks/useResource";
 
@@ -148,27 +149,25 @@ function Playground({ server, tools, tool, onTool }: { server: McpServer; tools:
 
   return (
     <section className="playground">
-      <h3>Tool Playground</h3>
+      <h3>ツールを試す</h3>
       <div className="muted">LLM を通さずに、このサーバーのツールを直接実行します。</div>
       <div className="grid2">
-        <Field label="Tool">
-          <select value={tool ?? ""} onChange={(e) => onTool(e.target.value)}>
-            <option value="" disabled>
-              {tools.length ? "select a tool" : "run Test & Discover first"}
-            </option>
-            {tools.map((t) => (
-              <option key={t.name} value={t.name}>
-                {t.name}
-                {t.read_only ? "" : " (side effects)"}
-              </option>
-            ))}
-          </select>
+        <Field label="ツール">
+          <Select
+            ariaLabel="ツール"
+            placeholder={tools.length ? "ツールを選択" : "先に「接続テスト & ツール検出」を実行してください"}
+            disabled={tools.length === 0}
+            value={tool ?? null}
+            onChange={onTool}
+            menuClassName="mono-menu"
+            options={tools.map((t) => ({ value: t.name, label: t.name, description: t.read_only ? undefined : "副作用があります" }))}
+          />
         </Field>
-        <Field label="Timeout (ms)">
-          <input value={timeout} placeholder="server default" inputMode="numeric" onChange={(e) => setTimeoutMs(e.target.value.replace(/\D/g, ""))} />
+        <Field label="タイムアウト（ms）">
+          <input value={timeout} placeholder="サーバーの既定" inputMode="numeric" onChange={(e) => setTimeoutMs(e.target.value.replace(/\D/g, ""))} />
         </Field>
       </div>
-      <Field label="Arguments (JSON)">
+      <Field label="引数（JSON）">
         <JsonEditor
           value={args}
           rows={8}
@@ -180,33 +179,35 @@ function Playground({ server, tools, tool, onTool }: { server: McpServer; tools:
       </Field>
       <div className="row">
         <button className="primary" disabled={!tool || parsed === undefined || running || !server.is_enabled} onClick={run}>
-          {running ? "実行中…" : "Run Tool"}
+          {running ? "実行中…" : "実行"}
         </button>
-        {!server.is_enabled && <span className="muted">server is disabled</span>}
-        {info && !info.read_only && <Badge tone="warn">this tool may have side effects</Badge>}
+        {!server.is_enabled && <span className="muted">このサーバーは無効です</span>}
+        {info && !info.read_only && <Badge tone="warn">副作用のあるツールです</Badge>}
       </div>
       {result && (
         <div className="tool-output">
           <div className="row">
             <Badge tone={!result.ok ? "error" : result.is_error ? "warn" : "ok"}>
-              {!result.ok ? "call failed" : result.is_error ? "is_error" : "ok"}
+              {!result.ok ? "呼び出し失敗" : result.is_error ? "ツールがエラーを返しました" : "成功"}
             </Badge>
             <span className="muted">{fmtMs(result.latency_ms)}</span>
             <span className="spacer" />
-            <span className="seg">
-              <button className={raw ? "" : "on"} onClick={() => setRaw(false)}>
-                Text
-              </button>
-              <button className={raw ? "on" : ""} onClick={() => setRaw(true)}>
-                Raw JSON
-              </button>
-            </span>
+            <SegmentedControl
+              size="sm"
+              ariaLabel="表示形式"
+              value={raw ? "raw" : "text"}
+              onChange={(v) => setRaw(v === "raw")}
+              options={[
+                { value: "text", label: "テキスト" },
+                { value: "raw", label: "JSON" },
+              ]}
+            />
           </div>
           {result.error && <pre className="error-text">{result.error}</pre>}
           {raw ? (
             <JsonView value={{ content: result.content, structuredContent: result.structured_content, isError: result.is_error }} />
           ) : (
-            result.text != null && <pre>{result.text || "(empty)"}</pre>
+            result.text != null && <pre>{result.text || "（空）"}</pre>
           )}
         </div>
       )}
@@ -389,14 +390,15 @@ export function McpView({ selected }: { selected: string | null }) {
                   <input value={form.name} placeholder="[A-Za-z0-9_-]" onChange={(e) => set("name", e.target.value)} />
                 </Field>
                 <Field label="接続方式">
-                  <span className="seg">
-                    <button className={form.transport === "streamable_http" ? "on" : ""} onClick={() => set("transport", "streamable_http")}>
-                      Streamable HTTP
-                    </button>
-                    <button className={form.transport === "stdio" ? "on" : ""} onClick={() => set("transport", "stdio")}>
-                      stdio
-                    </button>
-                  </span>
+                  <SegmentedControl<McpTransport>
+                    ariaLabel="接続方式"
+                    value={form.transport}
+                    onChange={(v) => set("transport", v)}
+                    options={[
+                      { value: "streamable_http", label: "HTTP", title: "Streamable HTTP" },
+                      { value: "stdio", label: "stdio", title: "ローカルのプロセスを起動" },
+                    ]}
+                  />
                 </Field>
               </div>
               {form.transport === "streamable_http" ? (
@@ -404,16 +406,27 @@ export function McpView({ selected }: { selected: string | null }) {
                   <Field label="URL">
                     <input value={form.url} placeholder="https://example.com/mcp" onChange={(e) => set("url", e.target.value)} />
                   </Field>
-                  <Field label="ヘッダー" hint="値に env:NAME を使えます。認証系の値はマスク表示され、変更しなければ保持されます。">
-                    <KeyValueEditor value={form.headers} onChange={(v) => set("headers", v)} />
-                  </Field>
+                  <KeyValueEditor
+                    title="ヘッダー"
+                    hint="値に env:NAME を使えます。認証系の値はマスク表示され、変更しなければ保持されます"
+                    addLabel="ヘッダーを追加"
+                    emptyText="ヘッダーはありません"
+                    keyPlaceholder="ヘッダー名"
+                    value={form.headers}
+                    onChange={(v) => set("headers", v)}
+                  />
                   <div className="grid2">
                     <Field label="認証">
-                      <select value={form.auth} onChange={(e) => set("auth", e.target.value as Form["auth"])}>
-                        <option value="none">なし</option>
-                        <option value="bearer">Bearer トークン</option>
-                        <option value="oauth">OAuth 2.0</option>
-                      </select>
+                      <Select<Form["auth"]>
+                        ariaLabel="認証"
+                        value={form.auth}
+                        onChange={(v) => set("auth", v)}
+                        options={[
+                          { value: "none", label: "なし" },
+                          { value: "bearer", label: "Bearer トークン", description: "Authorization ヘッダーで送ります" },
+                          { value: "oauth", label: "OAuth 2.0", description: "ブラウザでサインインして接続します" },
+                        ]}
+                      />
                     </Field>
                     {form.auth === "oauth" && (
                       <Field label="スコープ（任意）" hint="空ならサーバーが示すスコープを使います">
@@ -453,9 +466,15 @@ export function McpView({ selected }: { selected: string | null }) {
                   <Field label="引数" hint="1 行に 1 つ">
                     <LinesEditor value={form.args} onChange={(v) => set("args", v)} placeholder={"-y\n@modelcontextprotocol/server-filesystem\n."} />
                   </Field>
-                  <Field label="環境変数" hint="値に env:NAME を使うとサーバーの環境変数から読み込みます">
-                    <KeyValueEditor value={form.env} onChange={(v) => set("env", v)} keyPlaceholder="VAR" />
-                  </Field>
+                  <KeyValueEditor
+                    title="環境変数"
+                    hint="値に env:NAME を使うとサーバーの環境変数から読み込みます"
+                    addLabel="変数を追加"
+                    emptyText="環境変数はありません"
+                    keyPlaceholder="VAR"
+                    value={form.env}
+                    onChange={(v) => set("env", v)}
+                  />
                 </>
               )}
               <Toggle checked={form.is_enabled} onChange={(v) => set("is_enabled", v)} label="有効" />
@@ -463,7 +482,7 @@ export function McpView({ selected }: { selected: string | null }) {
                 <button className="primary" onClick={save}>
                   {current ? "保存" : "作成"}
                 </button>
-                <button onClick={discover} disabled={test === "running"} title="Connects with the form as shown (unsaved changes included)">
+                <button onClick={discover} disabled={test === "running"} title="未保存の変更も含めて接続します">
                   {test === "running" ? "接続中…" : "接続テスト & ツール検出"}
                 </button>
                 <span className="spacer" />

@@ -1,6 +1,9 @@
 import { useMemo, useRef, useState } from "react";
-import { ArrowUpIcon, StopIcon, XIcon } from "../../brand/Icons";
-import { APPROVAL_POLICIES, type ApprovalPolicy, type CommandInfo, type InvokedSkill } from "../../api/types";
+import { AnimatePresence, motion } from "motion/react";
+import { ArrowUpIcon, BrainIcon, CubeIcon, ShieldIcon, StopIcon, XIcon } from "../../brand/Icons";
+import { APPROVAL_POLICIES, REASONING_LEVELS, type ApprovalPolicy, type CommandInfo, type InvokedSkill, type ReasoningEffort } from "../../api/types";
+import { popover, snappy, tap } from "../../lib/motion";
+import { Select } from "../ui";
 
 /** Japanese descriptions for the builtin commands (the server's text is English). */
 const COMMAND_TEXT: Record<string, string> = {
@@ -29,6 +32,10 @@ export function Composer({
   commands,
   policy,
   onPolicy,
+  reasoning,
+  effectiveReasoning,
+  onReasoning,
+  model,
   onSend,
   onInterrupt,
   onCommand,
@@ -41,6 +48,11 @@ export function Composer({
   commands: CommandInfo[];
   policy?: ApprovalPolicy;
   onPolicy?: (p: ApprovalPolicy) => void;
+  /** The session's thinking level and what `default` currently resolves to. */
+  reasoning?: ReasoningEffort;
+  effectiveReasoning?: ReasoningEffort;
+  onReasoning?: (r: ReasoningEffort) => void;
+  model?: string;
   onSend: (text: string, skills: InvokedSkill[]) => Promise<void>;
   onInterrupt?: (text: string, skills: InvokedSkill[]) => Promise<void>;
   onCommand?: (name: string, args: string) => Promise<void>;
@@ -138,8 +150,9 @@ export function Composer({
   return (
     <div className="dock-wrap">
       <div className={`dock ${disabled ? "disabled" : ""}`}>
+        <AnimatePresence>
         {groups && flat.length > 0 && (
-          <div className="slash-menu" role="listbox">
+          <motion.div className="slash-menu" role="listbox" variants={popover("bottom")} initial="hidden" animate="shown" exit="exit" style={{ transformOrigin: "bottom center" }}>
             {groups.skills.length > 0 && (
               <>
                 <div className="slash-group">スキル</div>
@@ -156,8 +169,9 @@ export function Composer({
               <kbd>↑</kbd>
               <kbd>↓</kbd> 選択 <kbd>Enter</kbd> 決定 <kbd>Esc</kbd> 閉じる
             </div>
-          </div>
+          </motion.div>
         )}
+        </AnimatePresence>
         {chips.length > 0 && (
           <div className="attached">
             {chips.map((c) => (
@@ -199,39 +213,82 @@ export function Composer({
           }}
         />
         <div className="dock-bar">
+          {reasoning && onReasoning && (
+            <Select<ReasoningEffort>
+              variant="pill"
+              placement="top"
+              ariaLabel="思考レベル"
+              title="思考レベル（次の応答から反映されます）"
+              icon={<BrainIcon size={13} />}
+              value={reasoning}
+              onChange={onReasoning}
+              renderValue={(o) => {
+                const eff = REASONING_LEVELS.find((l) => l.value === effectiveReasoning);
+                return reasoning === "default" && eff && eff.value !== "default" ? `思考: 既定（${eff.label}）` : `思考: ${o?.label ?? ""}`;
+              }}
+              options={REASONING_LEVELS.map((l) => ({ value: l.value, label: l.label, description: l.description }))}
+            />
+          )}
           {policy && onPolicy && (
-            <select className="policy" value={policy} title="ツール実行の承認ポリシー" onChange={(e) => onPolicy(e.target.value as ApprovalPolicy)}>
-              {APPROVAL_POLICIES.map((p) => (
-                <option key={p.value} value={p.value}>
-                  {p.value === "auto_all" ? "すべて自動実行" : p.value === "auto_readonly" ? "読み取りのみ自動" : "毎回確認"}
-                </option>
-              ))}
-            </select>
+            <Select<ApprovalPolicy>
+              variant="pill"
+              placement="top"
+              ariaLabel="ツール実行の承認ポリシー"
+              icon={<ShieldIcon size={13} />}
+              value={policy}
+              onChange={onPolicy}
+              options={APPROVAL_POLICIES.map((p) => ({ value: p.value, label: p.label, description: p.hint }))}
+            />
+          )}
+          {model && (
+            <span className="dock-model" title="この会話のモデル">
+              <CubeIcon size={13} />
+              <span className="mono">{model}</span>
+            </span>
           )}
           <span className="spacer" />
-          {busy ? (
-            <>
-              {!canSend && onStop && (
-                <button className="btn send stop" title="停止" aria-label="停止" onClick={onStop}>
-                  <StopIcon size={14} />
+          <AnimatePresence mode="popLayout" initial={false}>
+            {busy && canSend ? (
+              <motion.span key="queue" className="dock-actions" initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.96 }} transition={snappy}>
+                <button className="btn ghost" disabled={sending} onClick={() => submit("interrupt")} title="いまの応答を止めて、このメッセージを送ります">
+                  中断して送信
                 </button>
-              )}
-              {canSend && (
-                <>
-                  <button className="btn ghost" disabled={sending} onClick={() => submit("interrupt")} title="いまの応答を止めて、このメッセージを送ります">
-                    中断して送信
-                  </button>
-                  <button className="btn primary" disabled={sending} onClick={() => submit("send")} title="応答の区切りでこのメッセージを追加します">
-                    キューに追記
-                  </button>
-                </>
-              )}
-            </>
-          ) : (
-            <button className="btn send" disabled={!canSend} onClick={() => submit("send")} aria-label="送信">
-              <ArrowUpIcon size={16} stroke={2} />
-            </button>
-          )}
+                <motion.button whileTap={tap} className="btn primary" disabled={sending} onClick={() => submit("send")} title="応答の区切りでこのメッセージを追加します">
+                  キューに追記
+                </motion.button>
+              </motion.span>
+            ) : busy && onStop ? (
+              <motion.button
+                key="stop"
+                whileTap={{ scale: 0.92 }}
+                className="btn send stop"
+                title="停止"
+                aria-label="停止"
+                onClick={onStop}
+                initial={{ opacity: 0, scale: 0.6, rotate: -45 }}
+                animate={{ opacity: 1, scale: 1, rotate: 0 }}
+                exit={{ opacity: 0, scale: 0.6 }}
+                transition={snappy}
+              >
+                <StopIcon size={14} />
+              </motion.button>
+            ) : (
+              <motion.button
+                key="send"
+                whileTap={{ scale: 0.92 }}
+                className="btn send"
+                disabled={!canSend}
+                onClick={() => submit("send")}
+                aria-label="送信"
+                initial={{ opacity: 0, scale: 0.6 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.6 }}
+                transition={snappy}
+              >
+                <ArrowUpIcon size={16} stroke={2} />
+              </motion.button>
+            )}
+          </AnimatePresence>
         </div>
       </div>
     </div>

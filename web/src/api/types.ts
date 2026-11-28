@@ -63,9 +63,9 @@ export type SessionStatus = "idle" | "running" | "needs_approval" | "halted";
 export type ApprovalPolicy = "auto_all" | "auto_readonly" | "always_ask";
 
 export const APPROVAL_POLICIES: { value: ApprovalPolicy; label: string; hint: string }[] = [
-  { value: "auto_all", label: "Auto All", hint: "every tool runs without asking" },
-  { value: "auto_readonly", label: "Auto Read-Only", hint: "read-only tools run; others ask" },
-  { value: "always_ask", label: "Always Ask", hint: "every tool call asks" },
+  { value: "auto_all", label: "すべて自動実行", hint: "どのツールも確認せずに実行します" },
+  { value: "auto_readonly", label: "読み取りのみ自動", hint: "読み取りだけ自動。書き込みや実行は確認します" },
+  { value: "always_ask", label: "毎回確認", hint: "ツールを使うたびに確認します" },
 ];
 
 export interface SessionMeta {
@@ -74,6 +74,8 @@ export interface SessionMeta {
   provider: string;
   model: string;
   approval_policy: ApprovalPolicy;
+  /** Session override of the provider's thinking level. */
+  reasoning_effort?: ReasoningEffort;
   lineage: Lineage;
   status: SessionStatus;
   turn: number;
@@ -105,6 +107,33 @@ export interface LoopError {
   attempt: number;
   max_attempts: number;
 }
+
+/** Provider-neutral thinking level (`default`: leave it to the provider / model). */
+export type ReasoningEffort = "default" | "off" | "low" | "medium" | "high";
+
+export const REASONING_LEVELS: { value: ReasoningEffort; label: string; description: string }[] = [
+  { value: "default", label: "既定", description: "モデル・プロバイダの標準に任せます" },
+  { value: "off", label: "オフ", description: "考えずにすぐ答えます（対応モデルのみ）" },
+  { value: "low", label: "低", description: "軽く考えます。速さ重視" },
+  { value: "medium", label: "標準", description: "多くの作業に向いたバランス" },
+  { value: "high", label: "高", description: "じっくり考えます。難しい問題向け" },
+];
+
+export interface ProviderDefaults {
+  reasoning_effort: ReasoningEffort;
+  temperature: number | null;
+  max_output_tokens: number | null;
+  context_window: number | null;
+  timeout_secs: number;
+}
+
+export const DEFAULT_PROVIDER_DEFAULTS: ProviderDefaults = {
+  reasoning_effort: "default",
+  temperature: null,
+  max_output_tokens: null,
+  context_window: null,
+  timeout_secs: 120,
+};
 
 export interface AutoRetry {
   enabled: boolean;
@@ -163,6 +192,8 @@ export interface Checkpoint {
 export interface SessionDetail extends SessionMeta {
   active: boolean;
   last_error?: LoopError | null;
+  /** What requests use: the session's level, or the provider's when it is `default`. */
+  effective_reasoning_effort?: ReasoningEffort;
   settings: SessionSettings;
   phase: Phase;
   system_prompt: string;
@@ -236,6 +267,7 @@ export type Envelope =
 
 export interface CreateSessionRequest {
   preset_id?: string;
+  reasoning_effort?: ReasoningEffort;
   provider_id?: string;
   model?: string;
   mcp_server_ids?: string[];
@@ -305,6 +337,7 @@ export interface Provider {
   extra_headers: Record<string, string>;
   is_enabled: boolean;
   auto_retry: AutoRetry;
+  defaults: ProviderDefaults;
   created_at: number;
   updated_at: number;
 }
@@ -319,6 +352,7 @@ export interface ProviderInput {
   extra_headers?: Record<string, string>;
   is_enabled?: boolean;
   auto_retry?: AutoRetry;
+  defaults?: ProviderDefaults;
   ping?: boolean;
 }
 
@@ -419,6 +453,7 @@ export interface Preset {
   skill_ids: string[];
   builtin_groups: string[];
   workspace_root: string | null;
+  reasoning_effort: ReasoningEffort;
   created_at: number;
   updated_at: number;
 }

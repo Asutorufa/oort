@@ -5,6 +5,9 @@ import { LayersIcon, MemoryIcon, ModelIcon, MoonIcon, MoreIcon, PlusIcon, Sideba
 import { OortMark } from "../brand/OortMark";
 import { href, navigate, type View } from "../hooks/useHashRoute";
 import { THEMES, useTheme } from "../theme/ThemeProvider";
+import { motion } from "motion/react";
+import { SegmentedControl } from "../components/ui";
+import { spring } from "../lib/motion";
 import { Modal } from "../components/common";
 
 const NAV: { view: View; label: string; icon: ReactNode }[] = [
@@ -97,6 +100,7 @@ export function Sidebar({
             <div key={s.id}>
               {header}
               <div className={`conv ${s.id === selected && view === "chat" ? "active" : ""}`} onClick={() => navigate("chat", s.id)} title={s.title || "無題の会話"}>
+                {s.id === selected && view === "chat" && <motion.span layoutId="sidebar-conv-active" className="nav-highlight" transition={spring} />}
                 {s.failed ? <span className="dot error" title="エラーで停止しました" /> : s.status === "running" ? <span className="pulse" /> : s.status === "needs_approval" ? <span className="dot warn" title="承認待ち" /> : null}
                 {renaming === s.id ? (
                   <input
@@ -164,26 +168,30 @@ export function Sidebar({
       <div className="sb-bottom">
         {NAV.map((n) => (
           <a key={n.view} href={href(n.view)} className={`nav ${view === n.view ? "active" : ""}`} title={n.label}>
+            {view === n.view && <motion.span layoutId="sidebar-nav-active" className="nav-highlight" transition={spring} />}
             <span className="icon">{n.icon}</span>
             <span className="label">{n.label}</span>
           </a>
         ))}
         <div className="util-row">
-          <div className="theme-seg" role="radiogroup" aria-label="テーマ">
-            {THEMES.map((t) => (
-              <button
-                key={t.id}
-                role="radio"
-                aria-checked={theme === t.id}
-                className={theme === t.id ? "on" : ""}
-                title={t.label}
-                onClick={() => setTheme(t.id)}
-              >
-                <span className="swatch" style={{ background: t.swatch }} />
-                <span className="label">{t.label}</span>
-              </button>
-            ))}
-          </div>
+          <SegmentedControl
+            size="sm"
+            full
+            className="theme-seg"
+            ariaLabel="テーマ"
+            value={theme}
+            onChange={setTheme}
+            options={THEMES.map((t) => ({
+              value: t.id,
+              title: t.label,
+              label: (
+                <>
+                  <span className="swatch" style={{ background: t.swatch }} />
+                  <span className="label">{t.label}</span>
+                </>
+              ),
+            }))}
+          />
           <button className="mode-btn" onClick={() => setMode(mode === "light" ? "dark" : "light")} title={mode === "light" ? "ダークモードにする" : "ライトモードにする"} aria-label="表示モードを切り替え">
             {mode === "light" ? <MoonIcon /> : <SunIcon />}
           </button>

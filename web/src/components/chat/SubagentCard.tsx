@@ -3,6 +3,7 @@ import type { ToolResult } from "../../api/types";
 import { AlertIcon, CheckIcon, ChevronDown, Spinner } from "../../brand/Icons";
 import type { SubagentLive } from "../../hooks/useSessionStream";
 import { fmtMs } from "../common";
+import { Collapse } from "../ui";
 import { Markdown } from "./LazyMarkdown";
 
 const PROFILE: Record<string, string> = { explorer: "探索", researcher: "リサーチ", reviewer: "レビュー" };
@@ -67,7 +68,11 @@ export function RowCard({
           </span>
         )}
       </div>
-      {open && expandable && <div className="rowcard-body">{children}</div>}
+      {expandable && (
+        <Collapse open={open}>
+          <div className="rowcard-body">{children}</div>
+        </Collapse>
+      )}
     </section>
   );
 }

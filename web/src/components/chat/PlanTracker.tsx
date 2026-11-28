@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { PlanStep, RawMessage } from "../../api/types";
+import { AnimatePresence, motion } from "motion/react";
 import { CheckIcon, ChevronDown } from "../../brand/Icons";
+import { popover } from "../../lib/motion";
 
 /** The latest `update_plan` steps in the history (the plan survives reloads this way). */
 export function lastPlan(raw: RawMessage[]): PlanStep[] | null {
@@ -55,8 +57,9 @@ export function PlanPill({ steps }: { steps: PlanStep[] }) {
         {!finished && current && <span className="plan-current">· {current.title}</span>}
         <ChevronDown size={13} />
       </button>
+      <AnimatePresence>
       {open && (
-        <div className="plan-pop" role="dialog" aria-label="計画">
+        <motion.div className="plan-pop" role="dialog" aria-label="計画" variants={popover("top")} initial="hidden" animate="shown" exit="exit" style={{ transformOrigin: "top left" }}>
           <div className="plan-pop-head">
             <span>計画</span>
             <span className="plan-bar">
@@ -76,8 +79,9 @@ export function PlanPill({ steps }: { steps: PlanStep[] }) {
               </li>
             ))}
           </ol>
-        </div>
+        </motion.div>
       )}
+      </AnimatePresence>
     </div>
   );
 }

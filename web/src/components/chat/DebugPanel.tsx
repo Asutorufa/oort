@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { Message, SessionDetail, TurnUsage } from "../../api/types";
 import type { LogEntry } from "../../hooks/useSessionStream";
 import { fmtMs, pct } from "../common";
+import { SegmentedControl } from "../ui";
 
 function preview(m: Message): string {
   const p = m.content[0];
@@ -149,14 +150,16 @@ export function DebugPanel({
       <section>
         <h3>
           History{" "}
-          <span className="seg">
-            <button className={view === "raw" ? "on" : ""} onClick={() => setView("raw")}>
-              Raw {detail.raw.length}
-            </button>
-            <button className={view === "active" ? "on" : ""} onClick={() => setView("active")}>
-              Active {detail.active_view.messages.length}
-            </button>
-          </span>
+          <SegmentedControl
+            size="sm"
+            ariaLabel="表示する履歴"
+            value={view}
+            onChange={(v) => setView(v)}
+            options={[
+              { value: "raw", label: `全履歴 ${detail.raw.length}` },
+              { value: "active", label: `送信中 ${detail.active_view.messages.length}` },
+            ]}
+          />
         </h3>
         <ol className="history">
           {view === "raw"

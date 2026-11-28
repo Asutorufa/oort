@@ -1,4 +1,7 @@
+import { AnimatePresence, motion } from "motion/react";
 import { createContext, useCallback, useContext, useState, type ReactNode } from "react";
+import { AlertIcon, CheckIcon } from "../../brand/Icons";
+import { spring } from "../../lib/motion";
 
 interface Toast {
   id: number;
@@ -20,11 +23,22 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     <Ctx.Provider value={push}>
       {children}
       <div className="toasts" role="status" aria-live="polite">
-        {toasts.map((t) => (
-          <div key={t.id} className={`toast ${t.tone}`}>
-            {t.tone === "ok" ? "✓" : "!"} {t.text}
-          </div>
-        ))}
+        <AnimatePresence initial={false}>
+          {toasts.map((t) => (
+            <motion.div
+              key={t.id}
+              layout
+              className={`toast ${t.tone}`}
+              initial={{ opacity: 0, y: 10, scale: 0.96 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 6, scale: 0.98, transition: { duration: 0.14 } }}
+              transition={spring}
+            >
+              {t.tone === "ok" ? <CheckIcon size={13} stroke={2.2} /> : <AlertIcon size={13} />}
+              {t.text}
+            </motion.div>
+          ))}
+        </AnimatePresence>
       </div>
     </Ctx.Provider>
   );

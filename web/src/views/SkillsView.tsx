@@ -4,6 +4,7 @@ import type { Skill, SkillInput, SkillsReload } from "../api/types";
 import { Markdown } from "../components/chat/LazyMarkdown";
 import { Badge, Empty, ErrorBar, Modal } from "../components/common";
 import { Field, Toggle } from "../components/forms";
+import { SegmentedControl } from "../components/ui";
 import { navigate } from "../hooks/useHashRoute";
 import { useResource } from "../hooks/useResource";
 
@@ -157,14 +158,16 @@ export function SkillsView({ selected }: { selected: string | null }) {
             <div className="row">
               <h2>{isNew ? "Skill を作成" : `/${current?.name}`}</h2>
               <span className="spacer" />
-              <span className="seg">
-                <button className={tab === "preview" ? "on" : ""} onClick={() => setTab("preview")}>
-                  プレビュー
-                </button>
-                <button className={tab === "edit" ? "on" : ""} onClick={() => setTab("edit")}>
-                  {editable ? "編集" : "内容"}
-                </button>
-              </span>
+              <SegmentedControl
+                size="sm"
+                ariaLabel="表示"
+                value={tab}
+                onChange={(v) => setTab(v)}
+                options={[
+                  { value: "preview", label: "プレビュー" },
+                  { value: "edit", label: editable ? "編集" : "内容" },
+                ]}
+              />
             </div>
             {current?.source.kind === "file" && (
               <div className="note">
@@ -217,14 +220,16 @@ export function SkillsView({ selected }: { selected: string | null }) {
                 </div>
                 <div className="grid2">
                   <Field label="実行方法" hint="Subagent は隔離された環境で実行し、要約だけを会話に返します">
-                    <span className="seg">
-                      <button className={form.execution_mode === "inline" ? "on" : ""} disabled={!editable} onClick={() => set("execution_mode", "inline")}>
-                        会話に読み込む
-                      </button>
-                      <button className={form.execution_mode === "subagent" ? "on" : ""} disabled={!editable} onClick={() => set("execution_mode", "subagent")}>
-                        Subagent に任せる
-                      </button>
-                    </span>
+                    <SegmentedControl
+                      ariaLabel="実行方法"
+                      disabled={!editable}
+                      value={form.execution_mode}
+                      onChange={(v) => set("execution_mode", v)}
+                      options={[
+                        { value: "inline", label: "インライン", title: "本文を会話に読み込みます" },
+                        { value: "subagent", label: "Subagent", title: "別のエージェントに任せて結果だけ受け取ります" },
+                      ]}
+                    />
                   </Field>
                   {form.execution_mode === "subagent" && (
                     <Field label="Subagent プロファイル" hint="preset:名前 で Preset のモデルとプロンプトも使えます">
