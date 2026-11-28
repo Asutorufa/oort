@@ -224,6 +224,7 @@ export function Combobox({
         aria-expanded={open}
         aria-autocomplete="list"
         onFocus={() => options.length > 0 && setOpen(true)}
+        onClick={() => options.length > 0 && setOpen(true)}
         onChange={(e) => {
           onChange(e.target.value);
           setActive(0);

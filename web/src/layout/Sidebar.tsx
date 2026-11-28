@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { errorText, sessions } from "../api";
 import type { SessionSummary } from "../api/types";
 import { GlobeIcon, LayersIcon, MemoryIcon, ModelIcon, MoonIcon, MoreIcon, PlusIcon, SidebarIcon, SparkIcon, SunIcon, ToolIcon } from "../brand/Icons";
@@ -6,7 +6,7 @@ import { OortMark } from "../brand/OortMark";
 import { href, navigate, type View } from "../hooks/useHashRoute";
 import { THEMES, useTheme } from "../theme/ThemeProvider";
 import { motion } from "motion/react";
-import { SegmentedControl, Select } from "../components/ui";
+import { Popover, SegmentedControl, Select } from "../components/ui";
 import { LOCALES, useI18n, type Key, type Locale } from "../i18n";
 import { spring } from "../lib/motion";
 import { Modal } from "../components/common";
@@ -43,17 +43,16 @@ export function Sidebar({
   const tr = t;
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem("oort.sidebar") === "collapsed");
   const [menu, setMenu] = useState<string | null>(null);
+  const moreRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const menuAnchor = useRef<HTMLButtonElement | null>(null);
+  const menuItem = menu ? items.find((x) => x.id === menu) : undefined;
   const [renaming, setRenaming] = useState<string | null>(null);
   const [title, setTitle] = useState("");
   const [confirm, setConfirm] = useState<SessionSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => localStorage.setItem("oort.sidebar", collapsed ? "collapsed" : "open"), [collapsed]);
-  useEffect(() => {
-    const close = () => setMenu(null);
-    window.addEventListener("click", close);
-    return () => window.removeEventListener("click", close);
-  }, []);
+
 
   const rename = async (id: string, value: string) => {
     if (renaming !== id) return;
@@ -122,40 +121,19 @@ export function Sidebar({
                   <span className="conv-title">{s.title || t("common.untitled")}</span>
                 )}
                 <button
-                  className="conv-more"
+                  ref={(el) => {
+                    moreRefs.current[s.id] = el;
+                  }}
+                  className={`conv-more ${menu === s.id ? "open" : ""}`}
                   aria-label={t("sidebar.menu")}
                   onClick={(e) => {
                     e.stopPropagation();
+                    menuAnchor.current = moreRefs.current[s.id] ?? null;
                     setMenu(menu === s.id ? null : s.id);
                   }}
                 >
                   <MoreIcon />
                 </button>
-                {menu === s.id && (
-                  <div className="menu" onClick={(e) => e.stopPropagation()}>
-                    <button
-                      onClick={() => {
-                        setMenu(null);
-                        setTitle(s.title);
-                        setRenaming(s.id);
-                      }}
-                    >
-                      {t("sidebar.rename")}
-                    </button>
-                    <a href={sessions.exportUrl(s.id)} download={`oort-${s.id}.json`} onClick={() => setMenu(null)}>
-                      {t("sidebar.exportJson")}
-                    </a>
-                    <button
-                      className="danger"
-                      onClick={() => {
-                        setMenu(null);
-                        setConfirm(s);
-                      }}
-                    >
-                      {t("common.delete")}
-                    </button>
-                  </div>
-                )}
               </div>
             </div>
           );
@@ -167,6 +145,38 @@ export function Sidebar({
           </div>
         )}
       </nav>
+
+      {/* Conversation menu in a portal: the scrolling list can't clip it. */}
+      <Popover anchor={menuAnchor} open={!!menuItem} onClose={() => setMenu(null)} align="end" className="menu-pop conv-menu" role="menu">
+        {menuItem && (
+          <div className="menu-list">
+            <button
+              role="menuitem"
+              className="menu-item"
+              onClick={() => {
+                setMenu(null);
+                setTitle(menuItem.title);
+                setRenaming(menuItem.id);
+              }}
+            >
+              {t("sidebar.rename")}
+            </button>
+            <a role="menuitem" className="menu-item" href={sessions.exportUrl(menuItem.id)} download={`oort-${menuItem.id}.json`} onClick={() => setMenu(null)}>
+              {t("sidebar.exportJson")}
+            </a>
+            <button
+              role="menuitem"
+              className="menu-item danger-item"
+              onClick={() => {
+                setMenu(null);
+                setConfirm(menuItem);
+              }}
+            >
+              {t("common.delete")}
+            </button>
+          </div>
+        )}
+      </Popover>
 
       <div className="sb-bottom">
         {NAV.map((n) => (

@@ -143,12 +143,18 @@ input[type="checkbox"] { width: auto; accent-color: var(--primary); }
 .chat.with-inspector { grid-template-columns: 1fr 400px; }
 .chat-main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
 .chat-main > .error-bar { margin: 8px auto 0; width: min(768px, calc(100% - 32px)); }
-.chat-top { position: relative; z-index: 4; display: flex; align-items: center; gap: 8px; padding: 8px 16px; min-height: 52px; border-bottom: 1px solid var(--border-subtle); }
-.chat-title { flex: 0 1 340px; border-color: transparent; background: transparent; font-weight: 600; font-size: 14.5px; padding: 4px 8px; }
+/* Header: left (title + status) shrinks and truncates; right (plan, inspector) never shrinks,
+   so the two groups can't overlap or push controls off screen. */
+.chat-top { position: relative; z-index: 4; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 16px; min-height: 52px; border-bottom: 1px solid var(--border-subtle); min-width: 0; }
+.chat-top-left { flex: 1 1 auto; min-width: 0; overflow: hidden; display: flex; align-items: center; gap: 8px; }
+.chat-top-right { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.chat-title { flex: 0 1 340px; min-width: 60px; border-color: transparent; background: transparent; font-weight: 600; font-size: 14.5px; padding: 4px 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nowrap { white-space: nowrap; flex-shrink: 0; }
+.chat-top-right > .btn, .chat-top-right > .pill { white-space: nowrap; flex-shrink: 0; }
 .chat-title:hover { border-color: var(--border-subtle); }
 .chat-title:focus { box-shadow: none; }
 .model-chip { font-family: var(--mono); font-size: 11.5px; color: var(--text-secondary); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 1px 8px; }
-.status-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); }
+.status-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); white-space: nowrap; flex-shrink: 0; }
 .status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
 .status-chip.running .status-dot { animation: pulse 1.6s ease-in-out infinite; }
 .status-chip.needs_approval .status-dot { background: var(--warn); }
@@ -495,8 +501,9 @@ select:disabled { cursor: default; opacity: .7; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(6px); } }
 
 /* ----- plan: a pill in the header, a dropdown on demand ----- */
-.plan { position: relative; min-width: 0; }
-.plan-pill { gap: 6px; padding: 2px 8px 2px 9px; border-radius: 999px; font-size: 12.5px; color: var(--text-secondary); background: transparent; border-color: var(--border-subtle); max-width: 320px; }
+.plan-pill { gap: 6px; padding: 2px 8px 2px 9px; border-radius: 999px; font-size: 12.5px; color: var(--text-secondary); background: transparent; border-color: var(--border-subtle); min-width: 0; max-width: 220px; flex: 0 1 auto; overflow: hidden; }
+.plan-pill > :not(.plan-current) { flex-shrink: 0; }
+@media (min-width: 640px) { .plan-pill { max-width: 280px; } }
 .plan-pill:hover:not(:disabled), .plan-pill.open { background: var(--bg-hover); color: var(--text-primary); }
 .plan-pill > .icon-svg:last-child { color: var(--text-muted); transition: transform .15s; }
 .plan-pill.open > .icon-svg:last-child { transform: rotate(180deg); }
@@ -504,13 +511,16 @@ select:disabled { cursor: default; opacity: .7; }
 .plan-live { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: none; }
 .plan-title { font-weight: 500; color: var(--text-primary); }
 .plan-count { font-variant-numeric: tabular-nums; color: var(--text-muted); }
-.plan-current { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.plan-pop { position: absolute; top: calc(100% + 10px); left: 0; width: 320px; z-index: 10; background: var(--bg-elevated); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); box-shadow: var(--shadow-pop); padding: 6px; animation: unfold .14s ease-out; }
+.plan-current { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plan-pop { width: 340px; max-width: calc(100vw - 24px); padding: 6px; border-radius: var(--radius-lg); display: flex; flex-direction: column; overflow: hidden !important; }
+@media (min-width: 640px) { .plan-pop { width: 400px; } }
 .plan-pop-head { display: flex; align-items: center; gap: 10px; padding: 6px 8px 8px; font-size: 12.5px; font-weight: 600; }
 .plan-bar { flex: 1; height: 4px; border-radius: 999px; background: var(--bg-selected); overflow: hidden; }
 .plan-bar span { display: block; height: 100%; background: var(--accent); border-radius: 999px; transition: width .3s; }
-.plan-steps { list-style: none; margin: 0; padding: 0 0 2px; display: flex; flex-direction: column; }
-.plan-steps li { display: flex; gap: 10px; align-items: center; font-size: 13px; color: var(--text-secondary); padding: 5px 8px; border-radius: 6px; }
+.plan-steps { list-style: none; margin: 0; padding: 0 0 2px; display: flex; flex-direction: column; max-height: 60vh; overflow-y: auto; }
+.plan-steps li { display: flex; gap: 10px; align-items: flex-start; font-size: 13px; line-height: 1.5; color: var(--text-secondary); padding: 6px 8px; border-radius: 6px; }
+.plan-step-title { flex: 1; min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
+.plan-steps .plan-icon { height: 19.5px; }
 .plan-icon { width: 14px; display: grid; place-items: center; color: var(--text-muted); flex: none; }
 .plan-todo { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--text-muted); }
 .plan-skip { color: var(--text-muted); }
@@ -560,7 +570,7 @@ select:disabled { cursor: default; opacity: .7; }
 
 /* ===== UI primitives (components/ui) ===== */
 /* floating layer: frosted, hairline, the only place besides the dock with a shadow */
-.pop { z-index: 50; background: color-mix(in srgb, var(--bg-elevated) 88%, transparent); backdrop-filter: blur(14px) saturate(1.4); -webkit-backdrop-filter: blur(14px) saturate(1.4); border: 1px solid var(--border-subtle); border-radius: 12px; box-shadow: var(--shadow-pop); overflow: auto; }
+.pop { z-index: 1000; border-radius: 12px; overflow: auto; }
 .menu-pop { padding: 4px; min-width: 180px; max-width: min(420px, calc(100vw - 16px)); }
 .menu-list { outline: none; display: flex; flex-direction: column; gap: 1px; }
 .menu-item { display: flex; align-items: center; gap: 10px; padding: 7px 8px 7px 10px; border-radius: 8px; cursor: pointer; font-size: 13px; color: var(--text-primary); user-select: none; }
@@ -716,7 +726,7 @@ input[type="range"].unset::-webkit-slider-thumb { opacity: .5; }
 .pf-danger b { font-size: 13.5px; font-weight: 600; }
 .pf-danger p { margin: 2px 0 0; font-size: 12px; color: var(--text-muted); }
 
-.pf-footer { position: sticky; bottom: 0; z-index: 3; margin: 8px -32px 0; padding: 0 32px; background: color-mix(in srgb, var(--bg-canvas) 92%, transparent); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border-top: 1px solid var(--border-subtle); }
+.pf-footer { position: sticky; bottom: 0; z-index: 3; margin: 8px -32px 0; padding: 0 32px; background-color: var(--bg-canvas); border-top: 1px solid var(--border-subtle); }
 .pf-actions { display: flex; align-items: center; gap: 12px; padding: 12px 0 14px; }
 .pf-banner { overflow: hidden; }
 .pf-banner-inner { display: flex; align-items: flex-start; gap: 10px; margin-top: 12px; padding: 10px 14px; border-radius: 12px; font-size: 13px; border: 1px solid var(--border-subtle); background: var(--bg-surface); color: var(--text-secondary); }
@@ -769,3 +779,37 @@ input[type="range"].unset::-webkit-slider-thumb { opacity: .5; }
 .util-row .lang-btn { margin-left: auto; }
 .util-row .theme-seg .swatch { display: inline-block; width: 9px; height: 9px; border-radius: 50%; flex: none; box-shadow: 0 0 0 1px var(--border-subtle); }
 .sidebar.collapsed .util-row .theme-seg { flex-direction: column; }
+
+/* ===== floating panels: one opaque surface everywhere =====
+   Popovers, selects, menus, the slash palette, the plan dropdown, the model picker and modals
+   share a solid --bg-elevated, a crisp 1px border and a real shadow. Nothing behind them shows
+   through (no translucency, no backdrop blur). */
+.pop, .menu, .slash-menu, .picker-pop, .modal, .plan-pop {
+  background-color: var(--bg-elevated);
+  background-image: none;
+  border: 1px solid var(--border-default);
+  box-shadow: var(--shadow-pop);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.menu-item.active, .slash-menu li.active, .picker-item.on, .plan-steps li.in_progress { background-color: var(--bg-menu-active); }
+.menu > *:hover, .slash-menu li:hover:not(.active), .picker-item:hover:not(:disabled) { background-color: var(--bg-menu-hover); }
+.menu-item.selected:not(.active) { background-color: transparent; }
+
+/* badges, pills and chips keep their shape in any flex row */
+.badge, .pill, .status-chip, .chip, .mini-chip, .hint-chip, .kbd { flex-shrink: 0; white-space: nowrap; }
+/* menu rows as buttons/links (conversation menu) */
+.menu-pop .menu-item { width: 100%; border: 0; background: transparent; justify-content: flex-start; text-decoration: none; color: var(--text-primary); }
+.menu-pop .menu-item:hover:not(:disabled) { background-color: var(--bg-menu-hover); }
+.menu-pop .menu-item.danger-item { color: var(--danger); }
+.conv-more.open { visibility: visible; background: var(--bg-selected); color: var(--text-primary); }
+.conv-menu { min-width: 180px; }
+
+/* collapsed sidebar: the utility row becomes a tidy centered column of icon buttons */
+.sidebar.collapsed .util-row { flex-direction: column; align-items: center; gap: 6px; padding: 8px 0 2px; }
+.sidebar.collapsed .util-row .theme-seg { flex-direction: column; padding: 2px; gap: 2px; border-radius: 8px; }
+.sidebar.collapsed .util-row .theme-seg button { padding: 6px; border-radius: 6px; }
+.sidebar.collapsed .util-row .theme-seg .segmented-pill { border-radius: 6px; }
+.sidebar.collapsed .lang-btn { margin-left: 0; width: 32px; height: 32px; padding: 0; justify-content: center; }
+.sidebar.collapsed .lang-btn .select-value, .sidebar.collapsed .lang-btn .select-chev { display: none; }
+.sidebar.collapsed .mode-btn { width: 32px; height: 32px; padding: 0; justify-content: center; }

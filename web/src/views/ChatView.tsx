@@ -157,29 +157,33 @@ function Session({ id, onListChanged }: { id: string; onListChanged: () => void 
     <div className="chat">
       <div className="chat-main">
         <header className="chat-top">
-          <input
-            className="chat-title"
-            value={title ?? detail.title}
-            placeholder={t("chat.titlePlaceholder")}
-            onChange={(e) => setTitle(e.target.value)}
-            onBlur={() => {
-              if (title !== null && title !== detail.title) patch({ title });
-              setTitle(null);
-            }}
-            onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
-          />
-          {status && (
-            <span className={`status-chip ${failed ? "failed" : detail.status}`}>
-              <span className="status-dot" />
-              {status}
-            </span>
-          )}
-          {planSteps && planSteps.length > 0 && <PlanPill steps={planSteps} />}
-          <span className="spacer" />
-          {conn !== "open" && <span className="pill warn">{conn === "reconnecting" ? t("status.reconnecting") : t("status.connecting")}</span>}
-          <button className={`btn ghost ${inspector ? "on" : ""}`} onClick={() => setInspector(!inspector)} title={t("chat.inspectorHint")}>
-            {t("chat.inspector")}
-          </button>
+          <div className="chat-top-left">
+            <input
+              className="chat-title"
+              value={title ?? detail.title}
+              placeholder={t("chat.titlePlaceholder")}
+              title={detail.title}
+              onChange={(e) => setTitle(e.target.value)}
+              onBlur={() => {
+                if (title !== null && title !== detail.title) patch({ title });
+                setTitle(null);
+              }}
+              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+            />
+            {status && (
+              <span className={`status-chip ${failed ? "failed" : detail.status}`}>
+                <span className="status-dot" />
+                {status}
+              </span>
+            )}
+          </div>
+          <div className="chat-top-right">
+            {planSteps && planSteps.length > 0 && <PlanPill steps={planSteps} />}
+            {conn !== "open" && <span className="pill warn nowrap">{conn === "reconnecting" ? t("status.reconnecting") : t("status.connecting")}</span>}
+            <button className={`btn ghost nowrap ${inspector ? "on" : ""}`} onClick={() => setInspector(!inspector)} title={t("chat.inspectorHint")}>
+              {t("chat.inspector")}
+            </button>
+          </div>
         </header>
         <ErrorBar error={error} onDismiss={() => setError(null)} />
         <Thread

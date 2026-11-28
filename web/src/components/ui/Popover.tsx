@@ -16,16 +16,18 @@ interface Pos {
 }
 
 const GAP = 6;
-const MARGIN = 8;
+/** Minimum distance from the viewport edges (borders and corners never touch the edge). */
+const MARGIN = 16;
 
 function place(anchor: DOMRect, contentHeight: number, placement: Placement, align: "start" | "end" | "stretch", contentWidth: number): Pos {
+  const vw = document.documentElement.clientWidth || window.innerWidth;
   const below = window.innerHeight - anchor.bottom - GAP - MARGIN;
   const above = anchor.top - GAP - MARGIN;
   const side: "top" | "bottom" = placement === "top" ? "top" : placement === "bottom" ? "bottom" : below >= Math.min(contentHeight, 320) || below >= above ? "bottom" : "top";
   const width = align === "stretch" ? anchor.width : undefined;
   const w = width ?? Math.max(contentWidth, anchor.width);
   let left = align === "end" ? anchor.right - w : anchor.left;
-  left = Math.max(MARGIN, Math.min(left, window.innerWidth - w - MARGIN));
+  left = Math.max(MARGIN, Math.min(left, vw - w - MARGIN));
   return side === "bottom"
     ? { left, top: anchor.bottom + GAP, width, minWidth: anchor.width, side, maxHeight: Math.max(160, below) }
     : { left, bottom: window.innerHeight - anchor.top + GAP, width, minWidth: anchor.width, side, maxHeight: Math.max(160, above) };
@@ -64,7 +66,9 @@ export function Popover({
     if (!a) return;
     const h = box.current?.scrollHeight ?? 240;
     const w = box.current?.offsetWidth ?? a.width;
-    setPos(place(a, h, placement, align, w));
+    const next = place(a, h, placement, align, w);
+    // Skip no-op updates (scroll/resize fire often; equal positions must not re-render).
+    setPos((cur) => (cur && (Object.keys(next) as (keyof Pos)[]).every((k) => cur[k] === next[k]) ? cur : next));
   }, [anchor, placement, align]);
 
   useLayoutEffect(() => {
@@ -114,7 +118,8 @@ export function Popover({
             width: pos?.width,
             minWidth: pos?.minWidth,
             maxHeight: pos?.maxHeight,
-            transformOrigin: pos?.side === "top" ? "bottom left" : "top left",
+            maxWidth: `calc(100vw - ${MARGIN * 2}px)`,
+            transformOrigin: `${pos?.side === "top" ? "bottom" : "top"} ${align === "end" ? "right" : "left"}`,
           }}
         >
           {children}
