@@ -1,13 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { errorText, sessions } from "../api";
 import type { SessionSummary } from "../api/types";
+import { ToolIcon } from "../brand/Icons";
 import { OortMark } from "../brand/OortMark";
 import { href, navigate, type View } from "../hooks/useHashRoute";
 import { THEMES, useTheme } from "../theme/ThemeProvider";
 import { Modal } from "../components/common";
 
-const NAV: { view: View; label: string; icon: string }[] = [
-  { view: "mcp", label: "ツール & MCP", icon: "⚙\uFE0E" },
+const NAV: { view: View; label: string; icon: ReactNode }[] = [
+  { view: "mcp", label: "ツール & MCP", icon: <ToolIcon size={15} /> },
   { view: "skills", label: "Skills", icon: "✦" },
   { view: "models", label: "モデル設定", icon: "◎" },
   { view: "presets", label: "Presets", icon: "❖" },

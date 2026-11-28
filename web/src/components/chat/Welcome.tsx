@@ -1,10 +1,12 @@
 import { useState } from "react";
 import { errorText, mcpServers, presets, providers, sessions, skills } from "../../api";
 import type { CreateSessionRequest } from "../../api/types";
+import { ToolIcon } from "../../brand/Icons";
 import { OortMark } from "../../brand/OortMark";
 import { useResource } from "../../hooks/useResource";
 import { ErrorBar } from "../common";
 import { Composer } from "./Composer";
+import { ModelPicker } from "./ModelPicker";
 
 /** The new-chat screen: pick a preset (or a model, skills and tools) and just start typing. */
 export function Welcome({ onCreated }: { onCreated: (id: string) => void }) {
@@ -56,14 +58,7 @@ export function Welcome({ onCreated }: { onCreated: (id: string) => void }) {
         )}
         {!presetId && (
           <div className="quick-setup">
-            <select value={provider?.id ?? ""} onChange={(e) => setProviderId(e.target.value)} aria-label="モデル">
-              {enabled.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-            <input value={model} placeholder={provider?.default_model || "モデル"} onChange={(e) => setModel(e.target.value)} aria-label="モデル名" />
+            <ModelPicker providers={enabled} provider={provider} model={model} onProvider={setProviderId} onModel={setModel} />
             {(skillList.data ?? []).map((s) => (
               <button key={s.id} className={`toggle-chip ${skillIds.includes(s.id) ? "on" : ""}`} onClick={() => setSkillIds(toggle(skillIds, s.id))} title={s.description}>
                 ✦ {s.name}
@@ -71,7 +66,7 @@ export function Welcome({ onCreated }: { onCreated: (id: string) => void }) {
             ))}
             {(serverList.data ?? []).filter((s) => s.is_enabled).map((s) => (
               <button key={s.id} className={`toggle-chip ${serverIds.includes(s.id) ? "on" : ""}`} onClick={() => setServerIds(toggle(serverIds, s.id))}>
-                {"⚙\uFE0E"} {s.name}
+                <ToolIcon /> {s.name}
               </button>
             ))}
           </div>
