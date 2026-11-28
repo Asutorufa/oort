@@ -194,14 +194,13 @@ impl SessionManager {
             .or_else(|| preset.as_ref().map(|p| p.builtin_groups.clone()))
             .unwrap_or_default();
         let groups = parse_groups(&group_names)?;
-        let workspace_root = match (
-            groups.contains(&Group::Workspace),
-            req.workspace_root
-                .clone()
-                .or_else(|| preset.as_ref().and_then(|p| p.workspace_root.clone()))
-                .filter(|r| !r.trim().is_empty()),
-        ) {
-            (true, Some(root)) => Some(canonical_workspace(&root)?),
+        let requested_root = req
+            .workspace_root
+            .clone()
+            .or_else(|| preset.as_ref().and_then(|p| p.workspace_root.clone()))
+            .filter(|r| !r.trim().is_empty());
+        let workspace_root = match (groups.contains(&Group::Workspace), &requested_root) {
+            (true, Some(root)) => Some(canonical_workspace(root)?),
             (true, None) => {
                 return Err(ApiError::BadRequest(
                     "the workspace tool group needs a workspace_root".into(),
@@ -307,6 +306,11 @@ impl SessionManager {
         {
             self.store.delete_session(&id).await?;
             return Err(e.into());
+        }
+        // The path as the user wrote it (not the canonical one), so that picking a symlinked
+        // folder and chatting in it stay one history entry.
+        if let (true, Some(root)) = (groups.contains(&Group::Workspace), &requested_root) {
+            crate::fs_api::remember(&self.registry.workspaces, root).await;
         }
         self.ensure_active(&id).await?;
         Ok(id)
@@ -1199,7 +1203,7 @@ impl SessionManager {
 
 /// Canonical, existing directory for the workspace tools.
 fn canonical_workspace(root: &str) -> Result<String, ApiError> {
-    let p = std::path::Path::new(root.trim())
+    let p = crate::fs_api::expand_path(root)
         .canonicalize()
         .map_err(|e| ApiError::BadRequest(format!("workspace_root {root}: {e}")))?;
     if !p.is_dir() {

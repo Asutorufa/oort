@@ -1,0 +1,65 @@
+/* Workspace path picker: field, history / completion dropdown and folder browser. */
+
+.wsp { width: 100%; min-width: 0; text-align: left; }
+
+.wsp-field { display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 6px 0 12px; border: 1px solid var(--border-default); border-radius: 12px; background: var(--bg-surface); }
+.wsp-field:focus-within { border-color: var(--border-strong); }
+.wsp-field > .icon-svg { flex: none; color: var(--text-tertiary); }
+.wsp-field input.wsp-input { flex: 1; min-width: 0; width: auto; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; font-family: var(--mono); font-size: 12.5px; color: var(--text-primary); text-overflow: ellipsis; }
+.wsp-field input.wsp-input:focus { outline: none; box-shadow: none; }
+.wsp-end { display: flex; align-items: center; gap: 6px; flex: none; }
+.wsp-status { display: grid; place-items: center; width: 14px; height: 14px; }
+.wsp-status span { width: 6px; height: 6px; border-radius: 50%; background: #10b981; }
+.wsp-status.missing span { background: var(--warn); }
+
+button.wsp-icon-btn { display: flex; align-items: center; justify-content: center; flex: none; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--text-secondary); }
+button.wsp-icon-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
+
+.wsp-git { flex: none; padding: 2px 6px; border-radius: 4px; background: var(--bg-muted); font-family: var(--mono); font-size: 10px; line-height: 1.4; color: var(--text-tertiary); }
+
+/* dropdown (the surface itself is the opaque `.pop`) */
+.wsp-pop { padding: 4px; }
+.wsp-list { display: flex; flex-direction: column; gap: 1px; }
+.wsp-section { padding: 6px 10px 2px; font-size: 11px; font-weight: 500; color: var(--text-tertiary); }
+.wsp-row { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 4px 6px 4px 10px; border-radius: 8px; cursor: pointer; }
+.wsp-row.active { background: var(--bg-menu-hover); }
+.wsp-row > .icon-svg { flex: none; color: var(--text-tertiary); }
+.wsp-row.missing .wsp-row-text { opacity: .5; }
+.wsp-row-text { display: flex; flex-direction: column; flex: 1; min-width: 0; line-height: 1.35; }
+.wsp-row-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12.5px; font-weight: 600; color: var(--text-primary); }
+.wsp-row-path { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-family: var(--mono); font-size: 11px; color: var(--text-tertiary); }
+.wsp-row-actions { display: flex; flex: none; visibility: hidden; }
+.wsp-row:hover .wsp-row-actions, .wsp-row.active .wsp-row-actions { visibility: visible; }
+/* No hover on touch screens. */
+@media (hover: none) { .wsp-row-actions { visibility: visible; } }
+button.wsp-icon-btn.starred { color: var(--warn); }
+
+/* folder browser */
+.wsp-backdrop { z-index: 45; padding: 10vh 16px 16px; align-items: flex-start; }
+.modal.wsp-modal { width: 100%; max-width: 560px; max-height: calc(90vh - 16px); overflow: hidden; border: 1px solid var(--border-default); border-radius: 16px; background: var(--bg-elevated); outline: none; text-align: left; }
+.wsp-modal .modal-head { padding: 10px 12px 10px 16px; }
+.wsp-nav { display: flex; flex-direction: column; gap: 8px; padding: 10px 16px 8px; border-bottom: 1px solid var(--border-subtle); }
+.wsp-chips { display: flex; flex-wrap: wrap; gap: 6px; max-height: 62px; overflow-y: auto; }
+button.wsp-chip { display: inline-flex; align-items: center; gap: 5px; max-width: 200px; padding: 2px 10px; border: 1px solid var(--border-subtle); border-radius: 999px; background: transparent; font-size: 12px; color: var(--text-secondary); }
+button.wsp-chip span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+button.wsp-chip.on { background: var(--bg-selected); color: var(--text-primary); }
+.wsp-crumbs { display: flex; align-items: center; min-height: 26px; overflow-x: auto; white-space: nowrap; scrollbar-width: thin; }
+.wsp-crumb { display: inline-flex; align-items: center; flex: none; }
+.wsp-crumb-sep { padding: 0 2px; color: var(--text-tertiary); }
+.wsp-crumb button { padding: 2px 6px; border: 0; border-radius: 6px; background: transparent; font-family: var(--mono); font-size: 12px; color: var(--text-secondary); }
+.wsp-crumb button[aria-current] { font-weight: 600; color: var(--text-primary); }
+.wsp-dirs { display: flex; flex-direction: column; height: 300px; min-height: 80px; flex-shrink: 1; overflow-y: auto; padding: 6px 8px; }
+button.wsp-dir { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex: none; width: 100%; height: 32px; padding: 0 10px; border: 0; border-radius: 8px; background: transparent; font-size: 12.5px; color: var(--text-primary); cursor: pointer; }
+button.wsp-dir:hover:not(:disabled) { background: var(--bg-hover); }
+.wsp-dir-main { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.wsp-dir-main > .icon-svg, .wsp-dir-side > .icon-svg { flex: none; color: var(--text-tertiary); }
+.wsp-dir-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-family: var(--mono); }
+.wsp-dir.is-hidden .wsp-dir-name { color: var(--text-secondary); }
+.wsp-dir-note { flex: none; font-size: 11.5px; color: var(--text-tertiary); }
+.wsp-dir-side { display: flex; align-items: center; gap: 6px; flex: none; }
+.wsp-note { padding: 14px 10px; text-align: center; font-size: 12px; color: var(--text-tertiary); }
+.wsp-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-top: 1px solid var(--border-subtle); }
+.wsp-footer .switch-row { gap: 8px; }
+.wsp-footer .switch-label { font-size: 12.5px; }
+.wsp-footer .switch-row { flex-direction: row-reverse; }
+.wsp-actions { display: flex; gap: 8px; margin-left: auto; }

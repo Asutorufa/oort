@@ -310,6 +310,23 @@ export const KindIcon = ({ kind, size = 18 }: { kind: string; size?: number }) =
   }
 };
 
+export const FolderIcon = (p: P) => (
+  <Svg {...p}>
+    <path d="M3.5 7a2 2 0 0 1 2-2h4l2 2.5h7a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z" />
+  </Svg>
+);
+export const FolderOpenIcon = (p: P) => (
+  <Svg {...p}>
+    <path d="M3.5 17V7a2 2 0 0 1 2-2h4l2 2.5h6a2 2 0 0 1 2 2V11" />
+    <path d="m3.5 17 2.3-5a2 2 0 0 1 1.8-1h12.1a1.2 1.2 0 0 1 1.1 1.7l-2.2 5a2 2 0 0 1-1.8 1.3h-11.3a2 2 0 0 1-2-2Z" />
+  </Svg>
+);
+export const StarIcon = ({ filled, ...p }: P & { filled?: boolean }) => (
+  <Svg {...p}>
+    <path d="m12 3.8 2.5 5.1 5.6.8-4.1 4 1 5.6-5-2.7-5 2.7 1-5.6-4.1-4 5.6-.8Z" fill={filled ? "currentColor" : "none"} />
+  </Svg>
+);
+
 /** Indeterminate progress ring. */
 export function Spinner({ size = 14 }: { size?: number }) {
   return (
