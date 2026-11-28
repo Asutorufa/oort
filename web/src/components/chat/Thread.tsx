@@ -315,13 +315,17 @@ export function Thread({ detail, live, toolTimes, actions, subagents, children, 
         return <McpConfiguredCard result={results.get(b.call.id)!} onStart={onStartWithMcp} />;
       case "widget": {
         const spec = asWidget(b.call.arguments);
+        const res = results.get(b.call.id);
+        // Failed render_widget calls (validation errors) were never displayed; don't render broken cards.
+        // Exception: `approval_diff` uses `is_error: true` to indicate the user declined the approval.
+        if (res?.is_error && spec?.widget_type !== "approval_diff") return null;
         return spec ? (
           <Widget
             id={b.call.id}
             spec={spec}
             response={responses.get(b.call.id)}
             pendingApproval={pending.has(b.call.id)}
-            result={results.get(b.call.id)}
+            result={res}
             laterUserTexts={userTextsAfter(b.seq)}
             actions={actions}
             disabled={detail.status === "halted"}

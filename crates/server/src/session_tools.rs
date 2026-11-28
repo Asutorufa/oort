@@ -56,7 +56,102 @@ impl Tool for RenderWidget {
                 "properties": {
                     "widget_type": { "type": "string", "enum": WIDGET_TYPES },
                     "title": { "type": "string" },
-                    "data": { "type": "object" }
+                    "data": {
+                        "type": "object",
+                        "properties": {
+                            "kind": { "type": "string", "enum": ["area", "line"] },
+                            "kpis": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "label": { "type": "string" },
+                                        "value": { "type": "string" },
+                                        "delta": { "type": "string" }
+                                    },
+                                    "required": ["label", "value"]
+                                }
+                            },
+                            "series": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "name": { "type": "string" },
+                                        "points": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "x": { "type": "string" },
+                                                    "y": { "type": "number" }
+                                                },
+                                                "required": ["x", "y"]
+                                            }
+                                        }
+                                    },
+                                    "required": ["name", "points"]
+                                }
+                            },
+                            "columns": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "key": { "type": "string" },
+                                        "label": { "type": "string" }
+                                    },
+                                    "required": ["key", "label"]
+                                }
+                            },
+                            "rows": {
+                                "type": "array",
+                                "items": { "type": "object" }
+                            },
+                            "row_actions": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "id": { "type": "string" },
+                                        "label": { "type": "string" }
+                                    },
+                                    "required": ["id", "label"]
+                                }
+                            },
+                            "fields": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "name": { "type": "string" },
+                                        "label": { "type": "string" },
+                                        "kind": { "type": "string", "enum": ["text", "textarea", "number", "select", "checkbox"] },
+                                        "options": { "type": "array", "items": { "type": "string" } },
+                                        "required": { "type": "boolean" },
+                                        "placeholder": { "type": "string" }
+                                    },
+                                    "required": ["name", "label", "kind"]
+                                }
+                            },
+                            "submit_label": { "type": "string" },
+                            "summary": { "type": "string" },
+                            "diff": { "type": "string" },
+                            "files": { "type": "array", "items": { "type": "string" } },
+                            "chips": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "label": { "type": "string" },
+                                        "prompt": { "type": "string" },
+                                        "command": { "type": "string" }
+                                    },
+                                    "required": ["label"]
+                                }
+                            }
+                        }
+                    }
                 },
                 "required": ["widget_type", "data"]
             }),
