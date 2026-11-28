@@ -1,9 +1,12 @@
 import { memo, useState, type ComponentProps } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
+import rehypeKatex from "rehype-katex";
+import remarkMath from "remark-math";
+import "katex/dist/katex.min.css";
 import remarkGfm from "remark-gfm";
 import { copyText } from "../common";
-import { latexSymbolsToUnicode } from "./latexSymbols";
+import { prepareMath } from "./mathPrep";
 
 interface HastNode {
   type: string;
@@ -54,12 +57,19 @@ const components = {
   a: (props: ComponentProps<"a">) => <a {...props} target="_blank" rel="noreferrer noopener" />,
 };
 
-/** GitHub-flavored Markdown with highlighted code blocks. Raw HTML is not rendered. */
+/** GitHub-flavored Markdown with math (KaTeX) and highlighted code blocks. Raw HTML is not rendered. */
 export default memo(function Markdown({ text }: { text: string }) {
   return (
     <div className="markdown">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: false, ignoreMissing: true }]]} components={components}>
-        {latexSymbolsToUnicode(text)}
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm, remarkMath]}
+        rehypePlugins={[
+          [rehypeKatex, { throwOnError: false, strict: "ignore" }],
+          [rehypeHighlight, { detect: false, ignoreMissing: true }],
+        ]}
+        components={components}
+      >
+        {prepareMath(text)}
       </ReactMarkdown>
     </div>
   );
