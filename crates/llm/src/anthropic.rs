@@ -633,6 +633,7 @@ fn parse_anthropic_response(resp: AnthropicMessagesResponse) -> ChatResponse {
                     id,
                     name,
                     arguments: input,
+                    signature: None,
                 });
             }
             _ => {}

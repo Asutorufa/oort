@@ -444,6 +444,7 @@ fn parse_responses_body(resp: ResponsesApiResponse) -> Result<ChatResponse, Erro
                 id,
                 name,
                 arguments,
+                signature: None,
             });
             continue;
         }

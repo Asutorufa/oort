@@ -50,6 +50,7 @@ async fn call_with(
         id: "c".into(),
         name: name.into(),
         arguments: args,
+        signature: None,
     };
     ex.execute(
         &c,

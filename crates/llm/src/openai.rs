@@ -874,6 +874,7 @@ fn parse_chat_response(resp: OpenAIChatResponse) -> Result<ChatResponse, Error> 
             id: tc.id,
             name: tc.function.name,
             arguments,
+            signature: None,
         });
     }
 
