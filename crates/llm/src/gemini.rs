@@ -213,7 +213,11 @@ impl GeminiClient {
         if enable_search {
             tools.push(json!({ "google_search": {} }));
         }
-        if request.server_tools.as_ref().is_some_and(|st| st.url_context) {
+        if request
+            .server_tools
+            .as_ref()
+            .is_some_and(|st| st.url_context)
+        {
             tools.push(json!({ "url_context": {} }));
         }
         if request
@@ -225,7 +229,10 @@ impl GeminiClient {
         }
 
         let has_server_tools = enable_search
-            || request.server_tools.as_ref().is_some_and(|st| st.url_context)
+            || request
+                .server_tools
+                .as_ref()
+                .is_some_and(|st| st.url_context)
             || request
                 .server_tools
                 .as_ref()
@@ -1167,7 +1174,10 @@ fn parse_gemini_response(resp: GeminiGenerateContentResponse) -> Result<ChatResp
             }
             if let Some(res) = part.code_execution_result {
                 saw_server_tool_parts = true;
-                let outcome = res.get("outcome").and_then(Value::as_str).unwrap_or("OUTCOME_OK");
+                let outcome = res
+                    .get("outcome")
+                    .and_then(Value::as_str)
+                    .unwrap_or("OUTCOME_OK");
                 let summary = res
                     .get("output")
                     .and_then(Value::as_str)
@@ -1221,9 +1231,7 @@ fn parse_gemini_response(resp: GeminiGenerateContentResponse) -> Result<ChatResp
             }
         }
     }
-    if !saw_server_tool_parts
-        && let Some(uc) = &candidate.url_context_metadata
-    {
+    if !saw_server_tool_parts && let Some(uc) = &candidate.url_context_metadata {
         server_tool_blocks.extend(parse_gemini_url_context_blocks(uc));
     }
 

@@ -136,7 +136,9 @@ impl ToolResult {
 
 /// Vendor identity, orthogonal to wire protocol (`OpenAIClient`, `OpenAIResponsesClient`,
 /// `AnthropicClient`, `GeminiClient`).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Vendor {
     Openai,
@@ -262,9 +264,10 @@ impl Citation {
 }
 
 pub fn extract_domain(url: &str) -> Option<String> {
-    url::Url::parse(url)
-        .ok()
-        .and_then(|u| u.host_str().map(|h| h.trim_start_matches("www.").to_string()))
+    url::Url::parse(url).ok().and_then(|u| {
+        u.host_str()
+            .map(|h| h.trim_start_matches("www.").to_string())
+    })
 }
 
 /// A typed content block inside a [`Message`].
@@ -481,11 +484,7 @@ pub struct ToolDefinition {
 }
 
 impl ToolDefinition {
-    pub fn new(
-        name: impl Into<String>,
-        description: impl Into<String>,
-        parameters: Value,
-    ) -> Self {
+    pub fn new(name: impl Into<String>, description: impl Into<String>, parameters: Value) -> Self {
         Self {
             name: name.into(),
             description: description.into(),
@@ -765,7 +764,9 @@ impl ChatRequest {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| default_model.trim());
         if model.is_empty() {
-            return Err(Error::InvalidConfig("model name must not be empty".to_string()));
+            return Err(Error::InvalidConfig(
+                "model name must not be empty".to_string(),
+            ));
         }
         Ok(model)
     }
@@ -1001,7 +1002,9 @@ impl StreamCollector {
             }
             StreamEvent::ThinkingDelta(delta) => {
                 if !delta.is_empty() {
-                    self.thinking.get_or_insert_with(String::new).push_str(delta);
+                    self.thinking
+                        .get_or_insert_with(String::new)
+                        .push_str(delta);
                 }
             }
             StreamEvent::ThinkingSignatureDelta(sig) => {

@@ -16,8 +16,8 @@ use crate::openai::{
 use crate::sse::parse_sse_stream;
 use crate::types::{
     ChatRequest, ChatResponse, Citation, ContentPart, DocumentSource, ImageSource, Message, Role,
-    StopReason, StreamEvent, ToolCall, ToolChoice, ToolDefinition, Usage, Vendor, extract_domain,
-    parse_tool_arguments, apply_title_request, title_of,
+    StopReason, StreamEvent, ToolCall, ToolChoice, ToolDefinition, Usage, Vendor,
+    apply_title_request, extract_domain, parse_tool_arguments, title_of,
 };
 
 /// HTTP client for the OpenAI Responses API (`/v1/responses`).
@@ -418,7 +418,11 @@ fn parse_responses_server_tool_item(item: &Value) -> Option<(ContentPart, Option
         .get("action")
         .cloned()
         .or_else(|| item.get("code").cloned().map(|c| json!({ "code": c })))
-        .or_else(|| item.get("queries").cloned().map(|q| json!({ "queries": q })))
+        .or_else(|| {
+            item.get("queries")
+                .cloned()
+                .map(|q| json!({ "queries": q }))
+        })
         .unwrap_or_else(|| json!({}));
     let use_block = ContentPart::ServerToolUse {
         id: id.clone(),
@@ -428,7 +432,11 @@ fn parse_responses_server_tool_item(item: &Value) -> Option<(ContentPart, Option
         raw_provider_payload: Some(item.clone()),
     };
     let status = item.get("status").and_then(Value::as_str).unwrap_or("");
-    let res_block = if status == "completed" || status == "failed" || item.get("results").is_some() || item.get("outputs").is_some() {
+    let res_block = if status == "completed"
+        || status == "failed"
+        || item.get("results").is_some()
+        || item.get("outputs").is_some()
+    {
         let summary = if let Some(results) = item.get("results").and_then(Value::as_array) {
             format!("{} results", results.len())
         } else if let Some(outputs) = item.get("outputs").and_then(Value::as_array) {
@@ -579,7 +587,9 @@ fn encode_responses_input(msg: &Message, include_reasoning: bool, out: &mut Vec<
             let mut server_items = Vec::new();
             for part in &msg.content {
                 match part {
-                    ContentPart::Thinking { thinking, .. } if include_reasoning && !thinking.is_empty() => {
+                    ContentPart::Thinking { thinking, .. }
+                        if include_reasoning && !thinking.is_empty() =>
+                    {
                         reasoning_text.push_str(thinking);
                     }
                     ContentPart::Text { text, .. } if !text.is_empty() => {
@@ -925,9 +935,8 @@ where
                                         .unwrap_or(0)
                                         as usize;
                                     if st.open_tool_calls.remove(&idx) {
-                                        st.queue.push_back(Ok(StreamEvent::ToolCallEnd {
-                                            index: idx,
-                                        }));
+                                        st.queue
+                                            .push_back(Ok(StreamEvent::ToolCallEnd { index: idx }));
                                     }
                                 } else if let Some((use_block, res_block)) =
                                     parse_responses_server_tool_item(item)
@@ -974,7 +983,8 @@ where
                                         {
                                             for ann in anns {
                                                 if let Some(c) = parse_url_citation(ann) {
-                                                    st.queue.push_back(Ok(StreamEvent::Citation(c)));
+                                                    st.queue
+                                                        .push_back(Ok(StreamEvent::Citation(c)));
                                                 }
                                             }
                                         }

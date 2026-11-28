@@ -166,16 +166,24 @@ mod tests {
         let err = Error::from_http_response(reqwest::StatusCode::UNAUTHORIZED, body.to_string());
         assert_eq!(err.status_code(), Some(401));
         assert!(!err.is_retryable());
-        assert!(err.to_string().contains("invalid_request_error: Invalid API key"));
+        assert!(
+            err.to_string()
+                .contains("invalid_request_error: Invalid API key")
+        );
     }
 
     #[test]
     fn test_extract_gemini_error() {
-        let body = r#"{"error":{"code":429,"message":"Quota exceeded","status":"RESOURCE_EXHAUSTED"}}"#;
-        let err = Error::from_http_response(reqwest::StatusCode::TOO_MANY_REQUESTS, body.to_string());
+        let body =
+            r#"{"error":{"code":429,"message":"Quota exceeded","status":"RESOURCE_EXHAUSTED"}}"#;
+        let err =
+            Error::from_http_response(reqwest::StatusCode::TOO_MANY_REQUESTS, body.to_string());
         assert_eq!(err.status_code(), Some(429));
         assert!(err.is_retryable());
-        assert!(err.to_string().contains("RESOURCE_EXHAUSTED: Quota exceeded"));
+        assert!(
+            err.to_string()
+                .contains("RESOURCE_EXHAUSTED: Quota exceeded")
+        );
     }
 
     #[test]

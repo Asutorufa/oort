@@ -3,12 +3,12 @@ use std::pin::Pin;
 
 use futures_util::{Stream, StreamExt};
 
+use crate::Error;
 use crate::anthropic::AnthropicClient;
 use crate::gemini::GeminiClient;
 use crate::openai::OpenAIClient;
 use crate::openai_responses::OpenAIResponsesClient;
 use crate::types::{ChatRequest, ChatResponse, StreamCollector, StreamEvent};
-use crate::Error;
 
 /// Boxed, `Send` stream of incremental [`StreamEvent`]s returned by [`LlmClient::chat_stream`].
 pub type ChatStream = Pin<Box<dyn Stream<Item = Result<StreamEvent, Error>> + Send + 'static>>;

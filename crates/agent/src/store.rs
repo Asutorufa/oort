@@ -84,7 +84,11 @@ impl TitleSource {
             "default" => Self::Default,
             "auto" => Self::Auto,
             "manual" => Self::Manual,
-            other => return Err(StoreError::Corrupt(format!("unknown title source {other:?}"))),
+            other => {
+                return Err(StoreError::Corrupt(format!(
+                    "unknown title source {other:?}"
+                )));
+            }
         })
     }
 }

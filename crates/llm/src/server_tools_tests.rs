@@ -44,7 +44,8 @@ fn openai_responses_and_chat_server_tools_request_bodies() {
             .any(|t| t["type"] == "file_search" && t["vector_store_ids"] == json!(["vs_123"]))
     );
 
-    let chat_client = OpenAIClient::new("sk-test", "gpt-4o-search-preview").with_vendor(Vendor::Openai);
+    let chat_client =
+        OpenAIClient::new("sk-test", "gpt-4o-search-preview").with_vendor(Vendor::Openai);
     let chat_body = chat_client.build_request_json(&req, false).unwrap();
     assert_eq!(
         chat_body["web_search_options"],
@@ -59,11 +60,9 @@ fn anthropic_server_tools_and_replay_preserves_encrypted_fields() {
     let client = AnthropicClient::new("sk-ant", "claude-sonnet-4-5").with_vendor(Vendor::Anthropic);
     let body = client.build_request_json(&req, true).unwrap();
     let tools = body["tools"].as_array().unwrap();
-    assert!(
-        tools
-            .iter()
-            .any(|t| t["type"] == "web_search_20250305" && t["name"] == "web_search" && t["max_uses"] == 5)
-    );
+    assert!(tools.iter().any(|t| t["type"] == "web_search_20250305"
+        && t["name"] == "web_search"
+        && t["max_uses"] == 5));
     assert!(
         tools
             .iter()
@@ -129,13 +128,20 @@ fn anthropic_server_tools_and_replay_preserves_encrypted_fields() {
     let assistant_blocks = replay_body["messages"][1]["content"].as_array().unwrap();
     assert_eq!(assistant_blocks[0], raw_use);
     assert_eq!(assistant_blocks[1], raw_res);
-    assert_eq!(assistant_blocks[2]["citations"][0]["encrypted_index"], "ENC_IDX_1");
+    assert_eq!(
+        assistant_blocks[2]["citations"][0]["encrypted_index"],
+        "ENC_IDX_1"
+    );
 
     // Cross-vendor switch to OpenAI Responses safely omits Anthropic raw blocks without crashing
     let openai_resp = OpenAIResponsesClient::new("sk-test", "gpt-5.1").with_vendor(Vendor::Openai);
     let cross_body = openai_resp.build_request_json(&replay_req, false).unwrap();
     let input = cross_body["input"].as_array().unwrap();
-    assert!(input.iter().all(|item| item["type"] != "web_search_tool_result"));
+    assert!(
+        input
+            .iter()
+            .all(|item| item["type"] != "web_search_tool_result")
+    );
 }
 
 #[test]
@@ -148,20 +154,36 @@ fn deepseek_three_protocols_request_bodies_and_tool_choice_guard() {
         });
 
     // 1. Responses API
-    let ds_resp = OpenAIResponsesClient::new("sk-ds", "deepseek-flash").with_vendor(Vendor::Deepseek);
+    let ds_resp =
+        OpenAIResponsesClient::new("sk-ds", "deepseek-flash").with_vendor(Vendor::Deepseek);
     let b1 = ds_resp.build_request_json(&req, true).unwrap();
     let t1 = b1["tools"].as_array().unwrap();
-    assert!(t1.iter().any(|t| t == &json!({ "type": "deepseek_web_search" })));
-    assert!(t1.iter().any(|t| t == &json!({ "type": "deepseek_read_url" })));
+    assert!(
+        t1.iter()
+            .any(|t| t == &json!({ "type": "deepseek_web_search" }))
+    );
+    assert!(
+        t1.iter()
+            .any(|t| t == &json!({ "type": "deepseek_read_url" }))
+    );
     assert_eq!(b1["reasoning"]["effort"], "high");
-    assert!(b1.get("tool_choice").is_none(), "tool_choice must not target deepseek_web_search");
+    assert!(
+        b1.get("tool_choice").is_none(),
+        "tool_choice must not target deepseek_web_search"
+    );
 
     // 2. Anthropic API (must include `name`)
     let ds_ant = AnthropicClient::new("sk-ds", "deepseek-flash").with_vendor(Vendor::Deepseek);
     let b2 = ds_ant.build_request_json(&req, true).unwrap();
     let t2 = b2["tools"].as_array().unwrap();
-    assert!(t2.iter().any(|t| t == &json!({ "type": "deepseek_web_search", "name": "deepseek_web_search" })));
-    assert!(t2.iter().any(|t| t == &json!({ "type": "deepseek_read_url", "name": "deepseek_read_url" })));
+    assert!(
+        t2.iter()
+            .any(|t| t == &json!({ "type": "deepseek_web_search", "name": "deepseek_web_search" }))
+    );
+    assert!(
+        t2.iter()
+            .any(|t| t == &json!({ "type": "deepseek_read_url", "name": "deepseek_read_url" }))
+    );
     assert_eq!(b2["thinking"], json!({ "type": "enabled" }));
     assert!(b2.get("tool_choice").is_none());
 
@@ -169,16 +191,21 @@ fn deepseek_three_protocols_request_bodies_and_tool_choice_guard() {
     let ds_chat = OpenAIClient::new("sk-ds", "deepseek-flash").with_vendor(Vendor::Deepseek);
     let b3 = ds_chat.build_request_json(&req, true).unwrap();
     let t3 = b3["tools"].as_array().unwrap();
-    assert!(t3.iter().any(|t| t == &json!({ "type": "deepseek_web_search" })));
-    assert!(t3.iter().any(|t| t == &json!({ "type": "deepseek_read_url" })));
+    assert!(
+        t3.iter()
+            .any(|t| t == &json!({ "type": "deepseek_web_search" }))
+    );
+    assert!(
+        t3.iter()
+            .any(|t| t == &json!({ "type": "deepseek_read_url" }))
+    );
     assert_eq!(b3["thinking"], json!({ "type": "enabled" }));
     assert!(b3.get("tool_choice").is_none());
 }
 
 #[test]
 fn gemini_openrouter_qwen_and_custom_extra_body() {
-    let req = ChatRequest::new(vec![Message::user("test")])
-        .with_server_tools(full_server_tools());
+    let req = ChatRequest::new(vec![Message::user("test")]).with_server_tools(full_server_tools());
 
     // Gemini (server tools only -> no toolConfig needed)
     let gem = GeminiClient::new("gk", "gemini-2.5-flash").with_vendor(Vendor::Gemini);
@@ -210,7 +237,11 @@ fn gemini_openrouter_qwen_and_custom_extra_body() {
     );
     let fn_params = &g_body_fn["tools"][0]["functionDeclarations"][0]["parameters"];
     assert!(fn_params.get("additionalProperties").is_none());
-    assert!(fn_params["properties"]["headers"].get("additionalProperties").is_none());
+    assert!(
+        fn_params["properties"]["headers"]
+            .get("additionalProperties")
+            .is_none()
+    );
     assert_eq!(fn_params["properties"]["env"]["type"], "object");
     assert_eq!(fn_params["properties"]["env"]["nullable"], true);
 
@@ -221,7 +252,8 @@ fn gemini_openrouter_qwen_and_custom_extra_body() {
     assert!(or_t1.contains(&json!({ "type": "openrouter:web_search" })));
     assert!(or_t1.contains(&json!({ "type": "openrouter:web_fetch" })));
 
-    let or_resp = OpenAIResponsesClient::new("ork", "openai/gpt-4o").with_vendor(Vendor::Openrouter);
+    let or_resp =
+        OpenAIResponsesClient::new("ork", "openai/gpt-4o").with_vendor(Vendor::Openrouter);
     let or_b2 = or_resp.build_request_json(&req, false).unwrap();
     let or_t2 = or_b2["tools"].as_array().unwrap();
     assert!(or_t2.contains(&json!({ "type": "openrouter:web_search" })));
@@ -261,7 +293,8 @@ async fn parse_citations_and_server_tool_blocks_across_providers() {
         .mock("POST", "/responses")
         .with_status(200)
         .with_header("content-type", "application/json")
-        .with_body(r#"{
+        .with_body(
+            r#"{
             "id": "resp_ws",
             "model": "gpt-5.1",
             "status": "completed",
@@ -285,7 +318,8 @@ async fn parse_citations_and_server_tool_blocks_across_providers() {
                     }]
                 }
             ]
-        }"#)
+        }"#,
+        )
         .create_async()
         .await;
 
@@ -295,10 +329,16 @@ async fn parse_citations_and_server_tool_blocks_across_providers() {
         .await
         .unwrap();
     m1.assert_async().await;
-    assert!(resp.tool_calls.is_empty(), "server tool must not enter local tool_calls");
+    assert!(
+        resp.tool_calls.is_empty(),
+        "server tool must not enter local tool_calls"
+    );
     assert_eq!(resp.server_tool_blocks.len(), 2);
     assert_eq!(resp.citations.len(), 1);
-    assert_eq!(resp.citations[0].domain.as_deref(), Some("blog.rust-lang.org"));
+    assert_eq!(
+        resp.citations[0].domain.as_deref(),
+        Some("blog.rust-lang.org")
+    );
 
     // Gemini with groundingMetadata
     let m2 = server
@@ -329,7 +369,10 @@ async fn parse_citations_and_server_tool_blocks_across_providers() {
     m2.assert_async().await;
     assert!(gresp.tool_calls.is_empty());
     assert_eq!(gresp.citations.len(), 1);
-    assert_eq!(gresp.citations[0].domain.as_deref(), Some("science.nasa.gov"));
+    assert_eq!(
+        gresp.citations[0].domain.as_deref(),
+        Some("science.nasa.gov")
+    );
     assert_eq!(gresp.citations[0].title, "Oort Cloud - NASA");
 }
 
@@ -425,12 +468,16 @@ async fn gemini_strict_per_part_server_tool_replay_preserves_each_signature() {
     let model_parts = body["contents"][1]["parts"].as_array().unwrap();
     assert!(model_parts.iter().any(|p| {
         p.get("toolCall").is_some()
-            && p.get("thoughtSignature").and_then(serde_json::Value::as_str) == Some("U0lHMjo=")
+            && p.get("thoughtSignature")
+                .and_then(serde_json::Value::as_str)
+                == Some("U0lHMjo=")
     }));
     assert!(model_parts.iter().any(|p| p.get("toolResponse").is_some()));
     assert!(model_parts.iter().any(|p| {
         p.get("thought").and_then(serde_json::Value::as_bool) == Some(true)
-            && p.get("thoughtSignature").and_then(serde_json::Value::as_str) == Some("U0lHMzo=")
+            && p.get("thoughtSignature")
+                .and_then(serde_json::Value::as_str)
+                == Some("U0lHMzo=")
     }));
 }
 

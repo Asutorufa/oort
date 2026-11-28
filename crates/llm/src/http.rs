@@ -13,7 +13,9 @@ pub(crate) fn bytes_stream(response: reqwest::Response) -> BytesStream {
 }
 
 /// Checks if the HTTP response succeeded; otherwise reads the body and returns `Error::Api`.
-pub(crate) async fn ensure_success(response: reqwest::Response) -> Result<reqwest::Response, Error> {
+pub(crate) async fn ensure_success(
+    response: reqwest::Response,
+) -> Result<reqwest::Response, Error> {
     let status = response.status();
     if status.is_success() {
         Ok(response)
@@ -34,11 +36,7 @@ pub(crate) fn normalize_base_url<'a>(base_url: &'a str, default: &'a str) -> &'a
 }
 
 /// Inserts a custom HTTP header into a `HeaderMap`, returning `Error::InvalidConfig` on invalid names/values.
-pub(crate) fn insert_header(
-    headers: &mut HeaderMap,
-    name: &str,
-    value: &str,
-) -> Result<(), Error> {
+pub(crate) fn insert_header(headers: &mut HeaderMap, name: &str, value: &str) -> Result<(), Error> {
     let header_name = HeaderName::from_bytes(name.as_bytes())
         .map_err(|e| Error::InvalidConfig(format!("invalid header name '{name}': {e}")))?;
     let header_value = HeaderValue::from_str(value)

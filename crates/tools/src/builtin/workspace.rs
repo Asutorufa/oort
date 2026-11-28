@@ -177,7 +177,10 @@ impl LocalTool for ReadFile {
         if shown_end < total_lines || size > MAX_FILE_INDEX_BYTES {
             let next_offset = shown_end + 1;
             let total_note = if size > MAX_FILE_INDEX_BYTES {
-                format!("{total_lines}+ (first {} MiB indexed)", MAX_FILE_INDEX_BYTES / (1024 * 1024))
+                format!(
+                    "{total_lines}+ (first {} MiB indexed)",
+                    MAX_FILE_INDEX_BYTES / (1024 * 1024)
+                )
             } else {
                 total_lines.to_string()
             };

@@ -534,8 +534,8 @@ async fn read_file_pagination_and_search_in_file_sandbox() {
 
 #[tokio::test]
 async fn spill_to_storage_and_read_tool_output_pagination_search_and_isolation() {
-    use std::collections::HashMap;
     use oort_agent::{StoreError, ToolOutputBlob, ToolOutputBlobStore};
+    use std::collections::HashMap;
 
     #[derive(Default)]
     struct MemBlobs(Mutex<HashMap<String, ToolOutputBlob>>);
@@ -546,7 +546,10 @@ async fn spill_to_storage_and_read_tool_output_pagination_search_and_isolation()
             self.0.lock().unwrap().insert(blob.id.clone(), blob.clone());
             Ok(())
         }
-        async fn get_tool_output_blob(&self, id: &str) -> Result<Option<ToolOutputBlob>, StoreError> {
+        async fn get_tool_output_blob(
+            &self,
+            id: &str,
+        ) -> Result<Option<ToolOutputBlob>, StoreError> {
             Ok(self.0.lock().unwrap().get(id).cloned())
         }
         async fn can_access_blob(
@@ -554,7 +557,8 @@ async fn spill_to_storage_and_read_tool_output_pagination_search_and_isolation()
             session_id: &str,
             blob_session_id: &str,
         ) -> Result<bool, StoreError> {
-            Ok(session_id == blob_session_id || (session_id == "sub_1" && blob_session_id == "sess_a"))
+            Ok(session_id == blob_session_id
+                || (session_id == "sub_1" && blob_session_id == "sess_a"))
         }
     }
 
