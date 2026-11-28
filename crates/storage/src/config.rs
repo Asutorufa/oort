@@ -2,9 +2,9 @@
 
 use async_trait::async_trait;
 use oort_agent::{
-    ApprovalPolicyKind, ConfigStore, McpServerRecord, McpTransportKind, OAuthTokenRecord,
-    OAuthTokenStore, PresetRecord, ProviderKind, ProviderRecord, SkillRecord, SkillStore,
-    StoreError,
+    ApprovalPolicyKind, ConfigStore, McpServerRecord, McpTransportKind, MemoryHit, MemoryQuery,
+    MemoryRecord, MemoryStore, OAuthTokenRecord, OAuthTokenStore, PresetRecord, ProviderKind,
+    ProviderRecord, SkillInvocation, SkillRecord, SkillStore, StoreError,
 };
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
@@ -55,6 +55,8 @@ fn preset_from_row(r: &SqliteRow) -> Result<PresetRecord, StoreError> {
         builtin_tools: r.get("builtin_tools"),
         approval_policy: ApprovalPolicyKind::parse(r.get("approval_policy"))?,
         skill_ids: from_json(r.get("skill_ids_json"), "skill_ids_json")?,
+        builtin_groups: from_json(r.get("builtin_groups_json"), "builtin_groups_json")?,
+        workspace_root: r.get("workspace_root"),
         created_at: r.get("created_at"),
         updated_at: r.get("updated_at"),
     })
@@ -266,8 +268,8 @@ impl ConfigStore for SqliteSessionStore {
     async fn create_preset(&self, p: &PresetRecord) -> Result<(), StoreError> {
         sqlx::query(
             "INSERT INTO presets (id, name, description, provider_id, model, system_prompt, \
-             mcp_server_ids_json, builtin_tools, approval_policy, skill_ids_json, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             mcp_server_ids_json, builtin_tools, approval_policy, skill_ids_json, builtin_groups_json, \
+             workspace_root, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&p.id)
         .bind(&p.name)
@@ -279,6 +281,8 @@ impl ConfigStore for SqliteSessionStore {
         .bind(p.builtin_tools)
         .bind(p.approval_policy.as_str())
         .bind(to_json(&p.skill_ids))
+        .bind(to_json(&p.builtin_groups))
+        .bind(&p.workspace_root)
         .bind(p.created_at)
         .bind(p.updated_at)
         .execute(&self.pool)
@@ -291,7 +295,7 @@ impl ConfigStore for SqliteSessionStore {
         let done = sqlx::query(
             "UPDATE presets SET name = ?, description = ?, provider_id = ?, model = ?, \
              system_prompt = ?, mcp_server_ids_json = ?, builtin_tools = ?, approval_policy = ?, \
-             skill_ids_json = ?, updated_at = ? WHERE id = ?",
+             skill_ids_json = ?, builtin_groups_json = ?, workspace_root = ?, updated_at = ? WHERE id = ?",
         )
         .bind(&p.name)
         .bind(&p.description)
@@ -302,6 +306,8 @@ impl ConfigStore for SqliteSessionStore {
         .bind(p.builtin_tools)
         .bind(p.approval_policy.as_str())
         .bind(to_json(&p.skill_ids))
+        .bind(to_json(&p.builtin_groups))
+        .bind(&p.workspace_root)
         .bind(p.updated_at)
         .bind(&p.id)
         .execute(&self.pool)
@@ -412,6 +418,15 @@ fn skill_from_row(r: &SqliteRow) -> Result<SkillRecord, StoreError> {
         body: r.get("body"),
         allowed_tools: from_json(r.get("allowed_tools_json"), "allowed_tools_json")?,
         tags: from_json(r.get("tags_json"), "tags_json")?,
+        invocation: SkillInvocation {
+            user_invocable: r.get("user_invocable"),
+            argument_hint: r.get("argument_hint"),
+            execution_mode: from_json(
+                format!("\"{}\"", r.get::<String, _>("execution_mode")),
+                "execution_mode",
+            )?,
+            subagent_profile: r.get("subagent_profile"),
+        },
         created_at: r.get("created_at"),
         updated_at: r.get("updated_at"),
     })
@@ -432,7 +447,8 @@ impl SkillStore for SqliteSessionStore {
     async fn create_skill(&self, k: &SkillRecord) -> Result<(), StoreError> {
         sqlx::query(
             "INSERT INTO skills (id, name, description, body, allowed_tools_json, tags_json, \
-             created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+             user_invocable, argument_hint, execution_mode, subagent_profile, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&k.id)
         .bind(&k.name)
@@ -440,6 +456,10 @@ impl SkillStore for SqliteSessionStore {
         .bind(&k.body)
         .bind(to_json(&k.allowed_tools))
         .bind(to_json(&k.tags))
+        .bind(k.invocation.user_invocable)
+        .bind(&k.invocation.argument_hint)
+        .bind(enum_str(&k.invocation.execution_mode))
+        .bind(&k.invocation.subagent_profile)
         .bind(k.created_at)
         .bind(k.updated_at)
         .execute(&self.pool)
@@ -451,13 +471,18 @@ impl SkillStore for SqliteSessionStore {
     async fn update_skill(&self, k: &SkillRecord) -> Result<(), StoreError> {
         let done = sqlx::query(
             "UPDATE skills SET name = ?, description = ?, body = ?, allowed_tools_json = ?, \
-             tags_json = ?, updated_at = ? WHERE id = ?",
+             tags_json = ?, user_invocable = ?, argument_hint = ?, execution_mode = ?, \
+             subagent_profile = ?, updated_at = ? WHERE id = ?",
         )
         .bind(&k.name)
         .bind(&k.description)
         .bind(&k.body)
         .bind(to_json(&k.allowed_tools))
         .bind(to_json(&k.tags))
+        .bind(k.invocation.user_invocable)
+        .bind(&k.invocation.argument_hint)
+        .bind(enum_str(&k.invocation.execution_mode))
+        .bind(&k.invocation.subagent_profile)
         .bind(k.updated_at)
         .bind(&k.id)
         .execute(&self.pool)
@@ -468,5 +493,133 @@ impl SkillStore for SqliteSessionStore {
 
     async fn delete_skill(&self, id: &str) -> Result<(), StoreError> {
         self.delete_row("skills", id).await
+    }
+}
+
+// ----- memories ------------------------------------------------------------------------------
+
+fn memory_from_row(r: &SqliteRow) -> Result<MemoryRecord, StoreError> {
+    Ok(MemoryRecord {
+        id: r.get("id"),
+        title: r.get("title"),
+        content: r.get("content"),
+        tags: from_json(r.get("tags_json"), "tags_json")?,
+        scope: r.get("scope"),
+        created_at: r.get("created_at"),
+        updated_at: r.get("updated_at"),
+    })
+}
+
+/// FTS5 query: every term quoted (so punctuation is literal), all terms required.
+fn fts_query(text: &str) -> String {
+    text.split_whitespace()
+        .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Trigram FTS cannot match terms shorter than 3 characters: those fall back to `LIKE`.
+fn needs_like(text: &str) -> bool {
+    text.split_whitespace().any(|t| t.chars().count() < 3)
+}
+
+#[async_trait]
+impl MemoryStore for SqliteSessionStore {
+    async fn search_memories(&self, q: &MemoryQuery) -> Result<Vec<MemoryHit>, StoreError> {
+        let limit = q.limit.unwrap_or(10).clamp(1, 100) as usize;
+        let text = q.text.trim();
+        let rows = if text.is_empty() {
+            sqlx::query("SELECT *, 0.0 AS score FROM memories ORDER BY updated_at DESC LIMIT 500")
+                .fetch_all(&self.pool)
+                .await
+        } else if needs_like(text) {
+            let mut sql = String::from("SELECT *, 0.0 AS score FROM memories WHERE 1 = 1");
+            let terms: Vec<String> = text.split_whitespace().map(|t| format!("%{}%", t.replace('%', "\\%").replace('_', "\\_"))).collect();
+            for _ in &terms {
+                sql.push_str(" AND (title LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\' OR tags_json LIKE ? ESCAPE '\\')");
+            }
+            sql.push_str(" ORDER BY updated_at DESC LIMIT 500");
+            let mut query = sqlx::query(&sql);
+            for t in &terms {
+                query = query.bind(t).bind(t).bind(t);
+            }
+            query.fetch_all(&self.pool).await
+        } else {
+            // bm25 is lower-is-better; expose a higher-is-better score.
+            sqlx::query(
+                "SELECT m.*, -bm25(memories_fts) AS score FROM memories_fts \
+                 JOIN memories m ON m.rowid = memories_fts.rowid \
+                 WHERE memories_fts MATCH ? ORDER BY bm25(memories_fts) LIMIT 500",
+            )
+            .bind(fts_query(text))
+            .fetch_all(&self.pool)
+            .await
+        }
+        .map_err(backend)?;
+        let mut out = Vec::new();
+        for r in &rows {
+            let memory = memory_from_row(r)?;
+            if q.scope.as_ref().is_some_and(|s| s != &memory.scope) {
+                continue;
+            }
+            if !q
+                .tags
+                .iter()
+                .all(|t| memory.tags.iter().any(|m| m.eq_ignore_ascii_case(t)))
+            {
+                continue;
+            }
+            out.push(MemoryHit {
+                score: r.get("score"),
+                memory,
+            });
+            if out.len() == limit {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    async fn get_memory(&self, id: &str) -> Result<MemoryRecord, StoreError> {
+        self.fetch_one("SELECT * FROM memories WHERE id = ?", id, memory_from_row)
+            .await
+    }
+
+    async fn create_memory(&self, m: &MemoryRecord) -> Result<(), StoreError> {
+        sqlx::query(
+            "INSERT INTO memories (id, title, content, tags_json, scope, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&m.id)
+        .bind(&m.title)
+        .bind(&m.content)
+        .bind(to_json(&m.tags))
+        .bind(&m.scope)
+        .bind(m.created_at)
+        .bind(m.updated_at)
+        .execute(&self.pool)
+        .await
+        .map_err(classify)?;
+        Ok(())
+    }
+
+    async fn update_memory(&self, m: &MemoryRecord) -> Result<(), StoreError> {
+        let done = sqlx::query(
+            "UPDATE memories SET title = ?, content = ?, tags_json = ?, scope = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(&m.title)
+        .bind(&m.content)
+        .bind(to_json(&m.tags))
+        .bind(&m.scope)
+        .bind(m.updated_at)
+        .bind(&m.id)
+        .execute(&self.pool)
+        .await
+        .map_err(classify)?;
+        found(done.rows_affected(), &m.id)
+    }
+
+    async fn delete_memory(&self, id: &str) -> Result<(), StoreError> {
+        self.delete_row("memories", id).await
     }
 }

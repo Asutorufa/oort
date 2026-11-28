@@ -11,7 +11,13 @@ use tokio_util::sync::CancellationToken;
 #[serde(tag = "decision", rename_all = "snake_case")]
 pub enum ApprovalDecision {
     Approve,
-    Deny { reason: String },
+    Deny {
+        reason: String,
+    },
+    /// Answers a call waiting for user input (`ToolDecision::NeedUserInput`).
+    Answer {
+        content: String,
+    },
 }
 
 /// External input delivered to a running loop.
@@ -93,6 +99,18 @@ pub enum AgentEvent {
     Usage {
         usage: Usage,
     },
+    /// An event of a subagent run by this session's tool call `tool_call_id`.
+    Subagent {
+        tool_call_id: String,
+        sub_session_id: String,
+        profile: String,
+        /// The child's event (named `inner`: `event` is this enum's serde tag).
+        inner: Box<AgentEvent>,
+    },
+    /// The agent's task plan changed (`update_plan`).
+    PlanUpdated {
+        steps: Vec<PlanStep>,
+    },
     /// Timing and request summary of a completed LLM call.
     LlmCall {
         stats: Box<LlmCallStats>,
@@ -104,6 +122,23 @@ pub enum AgentEvent {
     Halted {
         reason: String,
     },
+}
+
+/// One step of an agent's task plan.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanStep {
+    pub id: String,
+    pub title: String,
+    pub status: PlanStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanStatus {
+    Pending,
+    InProgress,
+    Done,
+    Skipped,
 }
 
 /// Event sender. Sending never fails the loop: a detached UI must not kill the agent.

@@ -391,14 +391,23 @@ impl Agent {
         turn_cancel: &CancellationToken,
     ) -> Result<StepOutcome, AgentError> {
         for (call_id, decision) in inbox.approvals.drain(..) {
-            if let Some(slot) = decisions.get_mut(&call_id)
-                && matches!(slot, ToolDecision::NeedHumanApproval { .. })
-            {
-                *slot = match decision {
-                    ApprovalDecision::Approve => ToolDecision::Approve,
-                    ApprovalDecision::Deny { reason } => ToolDecision::Deny { reason },
-                };
-            }
+            let Some(slot) = decisions.get_mut(&call_id) else {
+                continue;
+            };
+            *slot = match (&*slot, decision) {
+                (ToolDecision::NeedHumanApproval { .. }, ApprovalDecision::Approve) => {
+                    ToolDecision::Approve
+                }
+                (ToolDecision::NeedUserInput { .. }, ApprovalDecision::Answer { content }) => {
+                    ToolDecision::Answered { content }
+                }
+                (
+                    ToolDecision::NeedHumanApproval { .. } | ToolDecision::NeedUserInput { .. },
+                    ApprovalDecision::Deny { reason },
+                ) => ToolDecision::Deny { reason },
+                // Mismatched decisions (approve an input, answer an approval) are ignored.
+                _ => continue,
+            };
         }
         if !inbox.interrupts.is_empty() {
             return Ok(self
@@ -512,6 +521,9 @@ impl Agent {
                     Some(&call.name),
                     format!("Tool call denied: {reason}"),
                 ));
+            } else if let Some(ToolDecision::Answered { content }) = decisions.get(&call.id) {
+                // The user's answer is the result; the tool itself never runs.
+                results[i] = Some(ToolResult::ok(&call.id, Some(&call.name), content.clone()));
             } else if let Some(raw) = call.arguments.get(INVALID_ARGUMENTS_KEY) {
                 results[i] = Some(ToolResult::error(
                     &call.id,
@@ -737,6 +749,8 @@ impl Agent {
             Some(Err(e)) => return Err(e),
         };
 
+        // Loaded skill bodies may be summarized away: the next invocation loads them again.
+        state.loaded_skills.clear();
         state.push_checkpoint(CompactionCheckpoint {
             up_to_index,
             summary_message,
@@ -760,11 +774,16 @@ impl Agent {
         absorb_controls(state, inbox);
         let interrupts = std::mem::take(&mut inbox.interrupts);
         let had_interrupts = !interrupts.is_empty();
-        for m in interrupts {
+        // Explicitly invoked skills are deduplicated here, when the message enters the
+        // history (queued steers are not history yet): a body already loaded in this epoch
+        // becomes a short marker.
+        for mut m in interrupts {
+            crate::skill_inject::dedupe(&mut m, &mut state.loaded_skills);
             state.push_message(m);
         }
         let steers = state.pending_steers.len();
-        while let Some(m) = state.pending_steers.pop_front() {
+        while let Some(mut m) = state.pending_steers.pop_front() {
+            crate::skill_inject::dedupe(&mut m, &mut state.loaded_skills);
             state.push_message(m);
         }
         if steers > 0 {
@@ -817,12 +836,7 @@ fn absorb_controls(state: &mut AgentState, inbox: &mut Inbox) {
 fn unresolved(calls: &[ToolCall], decisions: &BTreeMap<String, ToolDecision>) -> Vec<ToolCall> {
     calls
         .iter()
-        .filter(|c| {
-            matches!(
-                decisions.get(&c.id),
-                Some(ToolDecision::NeedHumanApproval { .. })
-            )
-        })
+        .filter(|c| decisions.get(&c.id).is_some_and(ToolDecision::is_pending))
         .cloned()
         .collect()
 }

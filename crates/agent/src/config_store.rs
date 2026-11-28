@@ -161,6 +161,12 @@ pub struct PresetRecord {
     /// Skills whose index is frozen into new sessions (DB ids or `file:<name>`).
     #[serde(default)]
     pub skill_ids: Vec<String>,
+    /// Builtin tool groups for new sessions.
+    #[serde(default)]
+    pub builtin_groups: Vec<String>,
+    /// Workspace root for the `workspace` group.
+    #[serde(default)]
+    pub workspace_root: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -255,8 +261,43 @@ pub struct SkillRecord {
     pub body: String,
     pub allowed_tools: Vec<String>,
     pub tags: Vec<String>,
+    #[serde(default)]
+    pub invocation: SkillInvocation,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+/// How a skill can be invoked explicitly (`/name`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillInvocation {
+    /// Offered as `/name` in the composer.
+    pub user_invocable: bool,
+    /// Shown after the command, e.g. `<domain>`.
+    pub argument_hint: Option<String>,
+    pub execution_mode: SkillExecutionMode,
+    /// Subagent profile for `execution_mode = subagent`.
+    pub subagent_profile: Option<String>,
+}
+
+impl Default for SkillInvocation {
+    fn default() -> Self {
+        Self {
+            user_invocable: true,
+            argument_hint: None,
+            execution_mode: SkillExecutionMode::Inline,
+            subagent_profile: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillExecutionMode {
+    /// The body is appended to the user's message.
+    #[default]
+    Inline,
+    /// An isolated subagent follows the skill; only its summary returns.
+    Subagent,
 }
 
 #[async_trait]
@@ -266,4 +307,50 @@ pub trait SkillStore: Send + Sync {
     async fn create_skill(&self, rec: &SkillRecord) -> Result<(), StoreError>;
     async fn update_skill(&self, rec: &SkillRecord) -> Result<(), StoreError>;
     async fn delete_skill(&self, id: &str) -> Result<(), StoreError>;
+}
+
+// ----- memories ------------------------------------------------------------------------------
+
+/// Cross-session memory (preferences, conventions, project facts). Searched on demand; never
+/// injected into prompts automatically.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryRecord {
+    pub id: String,
+    pub title: String,
+    pub content: String,
+    pub tags: Vec<String>,
+    /// `global`, or a workspace / project identifier.
+    pub scope: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryQuery {
+    /// Full-text query (empty: most recent first).
+    pub text: String,
+    /// Every tag must be present.
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub scope: Option<String>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct MemoryHit {
+    #[serde(flatten)]
+    pub memory: MemoryRecord,
+    /// Relevance (higher is better; 0 without a text query).
+    pub score: f64,
+}
+
+#[async_trait]
+pub trait MemoryStore: Send + Sync {
+    async fn search_memories(&self, q: &MemoryQuery) -> Result<Vec<MemoryHit>, StoreError>;
+    async fn get_memory(&self, id: &str) -> Result<MemoryRecord, StoreError>;
+    async fn create_memory(&self, rec: &MemoryRecord) -> Result<(), StoreError>;
+    async fn update_memory(&self, rec: &MemoryRecord) -> Result<(), StoreError>;
+    async fn delete_memory(&self, id: &str) -> Result<(), StoreError>;
 }

@@ -906,3 +906,147 @@ async fn llm_calls_report_timing_and_request_summary() {
         stats[1].request.hash.messages
     );
 }
+
+// ----- user input & explicit skills ----------------------------------------------------------
+
+/// Asks the user for every call to `ask`.
+struct AskHook;
+
+#[async_trait]
+impl LoopHook for AskHook {
+    async fn before_tool(
+        &self,
+        _s: &AgentState,
+        call: &oort_llm::ToolCall,
+        _ro: bool,
+    ) -> ToolDecision {
+        if call.name == "ask" {
+            ToolDecision::NeedUserInput {
+                reason: "question for the user".into(),
+            }
+        } else {
+            ToolDecision::Approve
+        }
+    }
+}
+
+#[tokio::test]
+async fn user_input_pauses_persists_and_the_answer_becomes_the_result() {
+    let ask = MockTool::new("ask", true, Behavior::Ok("never runs".into()));
+    let model = MockModel::new(vec![
+        MockTurn::tools(&[("c1", "ask", r#"{"question":"which?"}"#)], 10),
+        MockTurn::text("thanks", 10),
+    ]);
+    let agent = build(model.clone(), &[ask.clone()])
+        .hook(Arc::new(AskHook))
+        .build()
+        .unwrap();
+    let mut state = agent.new_state(SYSTEM, vec![Message::user("go")]);
+    agent
+        .run_loop(&mut state, &mut Inbox::detached())
+        .await
+        .unwrap();
+    let Phase::AwaitingApproval { decisions, .. } = &state.phase else {
+        panic!("{:?}", state.phase)
+    };
+    assert!(matches!(
+        decisions["c1"],
+        ToolDecision::NeedUserInput { .. }
+    ));
+
+    // Serialize / restore like a restart, then answer. An approval does not resolve an input.
+    let mut state = AgentState::from_parts(state.into_parts()).unwrap();
+    let (tx, mut inbox) = Inbox::channel(8);
+    tx.send(LoopInput::Approval {
+        call_id: "c1".into(),
+        decision: ApprovalDecision::Approve,
+    })
+    .await
+    .unwrap();
+    tx.send(LoopInput::Approval {
+        call_id: "c1".into(),
+        decision: ApprovalDecision::Answer {
+            content: "the blue one".into(),
+        },
+    })
+    .await
+    .unwrap();
+    drop(tx);
+    agent.run_loop(&mut state, &mut inbox).await.unwrap();
+    let r = results(&state.messages()[2])[0];
+    assert_eq!(r.content, "the blue one");
+    assert!(!r.is_error);
+    assert_eq!(
+        ask.runs.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "the tool never runs"
+    );
+    assert_eq!(state.phase, Phase::Idle);
+}
+
+#[tokio::test]
+async fn explicit_skills_are_deduplicated_per_epoch_and_reset_by_compaction() {
+    use crate::skill_inject::active_skill_block;
+    let model = MockModel::new(vec![
+        MockTurn::text("a", 10),
+        MockTurn::text("b", 10),
+        MockTurn::text("c", 10),
+    ]);
+    let (ev_tx, mut ev_rx) = mpsc::channel(1024);
+    let agent = Arc::new(
+        build(model.clone(), &[])
+            .compactor(Arc::new(RuleBasedCompactor {
+                max_chars_per_message: 100,
+            }))
+            .events(ev_tx)
+            .build()
+            .unwrap(),
+    );
+    let with_skill = |t: &str| {
+        Message::user(format!(
+            "{}\n\n{t}",
+            active_skill_block("review", "REVIEW BODY")
+        ))
+    };
+    let state = agent.new_state(SYSTEM, vec![]);
+    let (tx, inbox) = Inbox::channel(8);
+    let handle = spawn_loop(agent.clone(), state, inbox);
+
+    tx.send(LoopInput::Steer(with_skill("one"))).await.unwrap();
+    wait_for(&mut ev_rx, |e| matches!(e, AgentEvent::Completed)).await;
+    tx.send(LoopInput::Steer(with_skill("two"))).await.unwrap();
+    wait_for(&mut ev_rx, |e| matches!(e, AgentEvent::Completed)).await;
+    tx.send(LoopInput::Compact).await.unwrap();
+    wait_for(&mut ev_rx, |e| matches!(e, AgentEvent::Compacted { .. })).await;
+    tx.send(LoopInput::Steer(with_skill("three")))
+        .await
+        .unwrap();
+    wait_for(&mut ev_rx, |e| matches!(e, AgentEvent::Completed)).await;
+    drop(tx);
+    let (state, r) = join(handle).await;
+    r.unwrap();
+
+    let texts: Vec<String> = state.messages().iter().map(Message::text).collect();
+    assert!(
+        texts[0].contains("REVIEW BODY"),
+        "first invocation loads the body"
+    );
+    assert!(
+        texts[2].starts_with("<skill_already_loaded name=\"review\" />"),
+        "{}",
+        texts[2]
+    );
+    assert!(!texts[2].contains("REVIEW BODY"));
+    assert!(
+        texts[4].contains("REVIEW BODY"),
+        "compaction resets the epoch"
+    );
+    assert_eq!(state.loaded_skills.iter().collect::<Vec<_>>(), ["review"]);
+
+    // Earlier requests are a byte-identical prefix of later ones (only the tail grows).
+    let reqs = model.requests();
+    assert_prefix_stable(&reqs[0], &reqs[1]);
+    // And the set survives a persist/restore.
+    let restored = AgentState::from_parts(state.into_parts()).unwrap();
+    assert!(restored.loaded_skills.contains("review"));
+}

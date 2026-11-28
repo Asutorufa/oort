@@ -108,7 +108,7 @@ impl HookChain {
         HookAction::Continue
     }
 
-    /// `Deny` beats `NeedHumanApproval` beats `Approve`.
+    /// `Deny` beats `NeedUserInput` beats `NeedHumanApproval` beats `Approve`.
     pub(crate) async fn before_tool(
         &self,
         state: &AgentState,
@@ -119,8 +119,13 @@ impl HookChain {
         for hook in &self.hooks {
             match hook.before_tool(state, call, read_only).await {
                 d @ ToolDecision::Deny { .. } => return d,
-                d @ ToolDecision::NeedHumanApproval { .. } => result = d,
-                ToolDecision::Approve => {}
+                d @ ToolDecision::NeedUserInput { .. } => result = d,
+                d @ ToolDecision::NeedHumanApproval { .. } => {
+                    if !matches!(result, ToolDecision::NeedUserInput { .. }) {
+                        result = d
+                    }
+                }
+                ToolDecision::Approve | ToolDecision::Answered { .. } => {}
             }
         }
         result

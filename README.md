@@ -37,11 +37,11 @@ A Rust LLM agent workspace.
 
 `web/` (React + Vite) is a consumer-style app:
 
-- **Chat**: a centered thread with Markdown (highlighted, copyable code), Intelligent UI cards (charts, tables, forms, approval diffs, action chips), and one quiet activity line per turn (「思考して 2 件のツールを実行 (0.22s) ⌄」) that expands into thinking and tool details. The floating composer completes `/` skills and commands, switches the approval policy, and while the agent works offers *キューに追記* (Steer) and *中断して送信* (Interrupt). The **透視** drawer holds the internals: prefix-cache hit rate and breakdown, TTFT and total time per call, manual compaction, raw vs active history, and the event log. The event stream resumes after reloads and dropped connections.
-- **Sidebar** (collapsible): new chat, conversations (running / waiting-for-approval indicators, rename, export JSON, delete), navigation, theme dots (星雲暮紫 `iris` / 月光極簡 `lunar`) and light/dark, remembered in `localStorage`.
-- **ツール & MCP**: servers, connection test and tool discovery, the Tool Playground, and OAuth 2.0 (authorize in a popup, scopes and expiry, reconnect / disconnect).
+- **Chat**: a centered thread with Markdown (highlighted, copyable code), Intelligent UI cards (charts, tables, forms, approval diffs, action chips), and one quiet activity line per turn (e.g. "thought and ran 2 tools (0.22s)") that expands into thinking and tool details. The floating composer completes `/` skills and commands, switches the approval policy, and while the agent works offers *queue* (Steer) and *interrupt and send* (Interrupt). The **Inspector** drawer holds the internals: prefix-cache hit rate and breakdown, TTFT and total time per call, manual compaction, raw vs active history, and the event log. The event stream resumes after reloads and dropped connections.
+- **Sidebar** (collapsible): new chat, conversations (running / waiting-for-approval indicators, rename, export JSON, delete), navigation, theme dots (`iris` and `lunar`) and light/dark, remembered in `localStorage`.
+- **Tools & MCP**: servers, connection test and tool discovery, the Tool Playground, and OAuth 2.0 (authorize in a popup, scopes and expiry, reconnect / disconnect).
 - **Skills**: `SKILL.md` files and app-made skills, search, preview and editor, rescan.
-- **モデル設定** (providers) and **Presets** (provider, model, prompt, MCP servers, skills, approval policy).
+- **Model settings** (providers) and **Presets** (provider, model, prompt, MCP servers, skills, approval policy).
 
 ### Development (two terminals)
 
@@ -87,7 +87,7 @@ A session's system prompt and tool catalog are frozen (sorted) when it is create
 
 ### MCP OAuth 2.0
 
-Set a Streamable HTTP server's auth to `oauth` (optionally with `client_id`, `client_secret` and `scopes`) and press *OAuth で認証*. The server follows the MCP Authorization spec: the `401`'s `WWW-Authenticate` points to the protected-resource metadata (RFC 9728), which names the authorization server (RFC 8414); the client is registered dynamically (RFC 7591) or the configured one is used; the code flow uses PKCE `S256` and the `resource` indicator (RFC 8707). Tokens live in `mcp_oauth_tokens`, are never returned by the API, and are refreshed shortly before expiry and after a `401`; if refreshing fails the server shows `auth_required`.
+Set a Streamable HTTP server's auth to `oauth` (optionally with `client_id`, `client_secret` and `scopes`) and press the OAuth connect button. The server follows the MCP Authorization spec: the `401`'s `WWW-Authenticate` points to the protected-resource metadata (RFC 9728), which names the authorization server (RFC 8414); the client is registered dynamically (RFC 7591) or the configured one is used; the code flow uses PKCE `S256` and the `resource` indicator (RFC 8707). Tokens live in `mcp_oauth_tokens`, are never returned by the API, and are refreshed shortly before expiry and after a `401`; if refreshing fails the server shows `auth_required`.
 
 ### Skills
 
