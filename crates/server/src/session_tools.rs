@@ -125,7 +125,14 @@ pub fn validate_widget(args: &Value) -> Result<(&str, &Value), String> {
         }
         "data_table" => {
             each_has(arr(data, "columns")?, "columns", &["key", "label"])?;
-            arr(data, "rows")?;
+            let rows = arr(data, "rows")?;
+            for (i, r) in rows.iter().enumerate() {
+                if !r.is_object() {
+                    return Err(format!(
+                        "rows[{i}] must be an object keyed by column `key` (not an array)"
+                    ));
+                }
+            }
             if let Some(a) = data.get("row_actions").and_then(Value::as_array) {
                 each_has(a, "row_actions", &["id", "label"])?;
             }
@@ -136,12 +143,35 @@ pub fn validate_widget(args: &Value) -> Result<(&str, &Value), String> {
                 return Err("`data.fields` must not be empty".into());
             }
             each_has(fields, "fields", &["name", "label", "kind"])?;
+            for (i, f) in fields.iter().enumerate() {
+                let fkind = f.get("kind").and_then(Value::as_str).unwrap_or("");
+                if !matches!(fkind, "text" | "textarea" | "number" | "select" | "checkbox") {
+                    return Err(format!(
+                        "fields[{i}].kind `{fkind}` must be one of text, textarea, number, select, checkbox"
+                    ));
+                }
+                if fkind == "select" {
+                    let opts = f.get("options").and_then(Value::as_array);
+                    if opts.is_none_or(|o| o.is_empty() || !o.iter().all(Value::is_string)) {
+                        return Err(format!(
+                            "fields[{i}] with kind `select` requires a non-empty string array `options`"
+                        ));
+                    }
+                }
+            }
         }
         "approval_diff" => {
             for k in ["summary", "diff"] {
                 if !data.get(k).is_some_and(Value::is_string) {
                     return Err(format!("`data.{k}` must be a string"));
                 }
+            }
+            if let Some(files) = data.get("files")
+                && !files
+                    .as_array()
+                    .is_some_and(|a| a.iter().all(Value::is_string))
+            {
+                return Err("`data.files` must be an array of strings".into());
             }
         }
         "action_chips" => {
@@ -164,12 +194,20 @@ pub fn validate_widget(args: &Value) -> Result<(&str, &Value), String> {
 #[async_trait]
 impl LocalTool for RenderWidget {
     async fn run(&self, args: Value, ctx: ToolContext) -> Result<ToolOutput, ToolError> {
-        let (kind, _) = validate_widget(&args).map_err(ToolError::InvalidArguments)?;
+        let (kind, data) = validate_widget(&args).map_err(ToolError::InvalidArguments)?;
         let id = &ctx.call_id;
+        let has_row_actions = data
+            .get("row_actions")
+            .and_then(Value::as_array)
+            .is_some_and(|a| !a.is_empty());
         Ok(ToolOutput::ok(match kind {
             // Reached only after the human approved (see `is_approval_widget`).
             "approval_diff" => format!("The user approved the change (widget {id}). Proceed."),
             "metrics_chart" => format!("Displayed metrics_chart widget {id}."),
+            "data_table" if !has_row_actions => format!("Displayed data_table widget {id}."),
+            "action_chips" => format!(
+                "Displayed action_chips widget {id}. Clicking a chip sends its prompt as the next user message."
+            ),
             _ => format!(
                 "Displayed {kind} widget {id}. The user's choice will arrive as a message starting \
                  with `[widget_response id={id}`; end your turn now and wait for it."
@@ -284,6 +322,18 @@ mod tests {
             (
                 json!({"widget_type":"interactive_form","data":{"fields":[]}}),
                 "must not be empty",
+            ),
+            (
+                json!({"widget_type":"metrics_chart","data":{"series":[{"name":"s","points":[11,3950]}]}}),
+                "must be an object",
+            ),
+            (
+                json!({"widget_type":"data_table","data":{"columns":[{"key":"k","label":"K"}],"rows":[["v"]]}}),
+                "must be an object keyed by column",
+            ),
+            (
+                json!({"widget_type":"interactive_form","data":{"fields":[{"name":"n","label":"N","kind":"select"}]}}),
+                "requires a non-empty string array `options`",
             ),
             (
                 json!({"widget_type":"approval_diff","data":{"summary":"s"}}),
