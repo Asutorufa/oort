@@ -695,7 +695,8 @@ input[type="range"].unset::-webkit-slider-thumb { opacity: .5; }
 .kv-editor > .add-btn:last-child { margin-top: 6px; }
 
 /* ===== provider workbench ===== */
-.pf-pane { padding: 28px 32px 0; }
+/* Outranks `.pane.detail`: any bottom padding would lift the sticky footer and show content under it. */
+.pane.pf-pane { padding: 28px 32px 0; }
 .pf { max-width: 700px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; padding-bottom: 0; }
 .pf-footer { box-shadow: 0 -10px 16px -14px rgba(0, 0, 0, .12); }
 .pf-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
@@ -739,7 +740,9 @@ input[type="range"].unset::-webkit-slider-thumb { opacity: .5; }
 .pf-danger p { margin: 2px 0 0; font-size: 12px; color: var(--text-muted); }
 
 .pf-footer { position: sticky; bottom: 0; z-index: 3; margin: 8px -32px 0; padding: 0 32px; background-color: var(--bg-canvas); border-top: 1px solid var(--border-subtle); }
-.pf-actions { display: flex; align-items: center; gap: 12px; padding: 12px 0 14px; }
+.pf-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 12px 0 14px; }
+.pf-actions .spacer { display: none; }
+.pf-actions .btn.ghost { margin-left: auto; }
 .pf-banner { overflow: hidden; }
 .pf-banner-inner { display: flex; align-items: flex-start; gap: 10px; margin-top: 12px; padding: 10px 14px; border-radius: 12px; font-size: 13px; border: 1px solid var(--border-subtle); background: var(--bg-surface); color: var(--text-secondary); }
 .pf-banner.ok .pf-banner-inner { border-color: color-mix(in srgb, var(--ok) 25%, transparent); background: color-mix(in srgb, var(--ok) 6%, var(--bg-canvas)); }
@@ -840,9 +843,18 @@ input[type="range"].unset::-webkit-slider-thumb { opacity: .5; }
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
 }
-@media (max-width: 720px) {
+.kind-tiles.vendor-grid .kind-tile-name, .kind-tiles.vendor-grid .kind-tile-sub { max-width: 100%; overflow-wrap: anywhere; }
+/* Size by the form column, not the viewport: the sidebar and provider list take a variable share of it. */
+.pf-vendor { display: flex; flex-direction: column; gap: 16px; container: pf-vendor / inline-size; }
+@container pf-vendor (max-width: 500px) {
   .kind-tiles.vendor-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+.pf-protocol-bar .pf-label { flex-wrap: wrap; row-gap: 2px; }
+/* The sidebar toggle also uses `.collapse`; undo its right alignment for <Collapse> in this form. */
+.pf .collapse { margin-left: 0; }
+.pf .segmented { flex-wrap: wrap; max-width: 100%; }
+.pf-protocol-bar .segmented button { flex: 1 0 auto; max-width: 100%; white-space: normal; }
+.pf-protocol-bar .segmented-label { white-space: normal; text-align: center; }
 .pf-protocol-bar {
   display: flex;
   flex-direction: column;
