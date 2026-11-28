@@ -504,7 +504,7 @@ async fn multi_step_blocks_stream_live_and_persist_in_order() {
             m.content.iter().map(move |part| {
                 let what = match part {
                     ContentPart::Thinking { thinking, .. } => thinking.clone(),
-                    ContentPart::Text { text } => text.clone(),
+                    ContentPart::Text { text, .. } => text.clone(),
                     ContentPart::ToolCall(c) => format!("call {}", c.id),
                     ContentPart::ToolResult(r) => format!("result {}", r.tool_call_id),
                     _ => "other".into(),
@@ -621,10 +621,13 @@ fn provider(id: &str, name: &str) -> ProviderRecord {
         id: id.into(),
         name: name.into(),
         kind: ProviderKind::Gemini,
+        vendor: oort_agent::Vendor::Gemini,
         base_url: None,
         api_key: Some("env:GEMINI_API_KEY".into()),
         default_model: "gemini-2.5-flash".into(),
         extra_headers: [("x-org".to_string(), "acme".to_string())].into(),
+        default_server_tools: Default::default(),
+        extra_body: None,
         is_enabled: true,
         auto_retry: Default::default(),
         defaults: oort_agent::ProviderDefaults {
@@ -693,6 +696,7 @@ async fn config_crud_and_reference_checks() {
         builtin_groups: vec!["memory".into()],
         workspace_root: None,
         reasoning_effort: oort_agent::ReasoningEffort::High,
+        enabled_server_tools: None,
         created_at: 1,
         updated_at: 1,
     };

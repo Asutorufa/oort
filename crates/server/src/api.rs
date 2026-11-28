@@ -42,6 +42,9 @@ pub struct CreateSessionRequest {
     /// Thinking level (`default`: the preset's, then the provider's).
     #[serde(default)]
     pub reasoning_effort: Option<oort_agent::ReasoningEffort>,
+    /// Optional provider-hosted server tools override.
+    #[serde(default)]
+    pub enabled_server_tools: Option<oort_agent::ServerToolConfig>,
     /// Skill ids (DB ids or `file:<name>`) whose index is frozen into the session.
     #[serde(default)]
     pub skill_ids: Option<Vec<String>>,
@@ -73,6 +76,9 @@ pub struct PatchSessionRequest {
     /// Switches the model (same provider) from the next request on.
     #[serde(default)]
     pub model: Option<String>,
+    /// Updates session-level provider-hosted server tools override from the next request on.
+    #[serde(default)]
+    pub enabled_server_tools: Option<oort_agent::ServerToolConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -199,6 +205,10 @@ pub struct SessionDetail {
     pub last_error: Option<LoopError>,
     /// The thinking level requests use: the session's, or the provider's when it is `default`.
     pub effective_reasoning_effort: oort_agent::ReasoningEffort,
+    /// Vendor of this session's provider (for UI capability detection, e.g. web search toggle).
+    pub provider_vendor: oort_agent::Vendor,
+    /// Effective provider-hosted server tools (session override or provider defaults).
+    pub effective_server_tools: oort_agent::ServerToolConfig,
     pub settings: SessionConfig,
     pub phase: Phase,
     pub system_prompt: String,
@@ -303,6 +313,8 @@ impl SessionDetail {
             active,
             last_error: None,
             effective_reasoning_effort: Default::default(),
+            provider_vendor: Default::default(),
+            effective_server_tools: Default::default(),
             phase: state.phase.clone(),
             system_prompt: state.system_prompt().to_string(),
             tools: state.tool_snapshot().map(<[_]>::to_vec).unwrap_or_default(),

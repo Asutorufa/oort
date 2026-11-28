@@ -4,8 +4,8 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use oort_agent::{
-    CompactionPolicy, DefaultContextManager, LiveModel, LiveThinking, ProviderDefaults,
-    RequestParams, UsageAccounting,
+    CompactionPolicy, DefaultContextManager, LiveModel, LiveServerTools, LiveThinking,
+    ProviderDefaults, RequestParams, UsageAccounting,
 };
 use oort_llm::PromptCacheConfig;
 use serde::{Deserialize, Serialize};
@@ -140,6 +140,18 @@ impl SessionConfig {
         thinking: LiveThinking,
         model: Option<LiveModel>,
     ) -> DefaultContextManager {
+        self.context_manager_with_tools(session_id, defaults, thinking, model, None, None)
+    }
+
+    pub fn context_manager_with_tools(
+        &self,
+        session_id: &str,
+        defaults: &ProviderDefaults,
+        thinking: LiveThinking,
+        model: Option<LiveModel>,
+        server_tools: Option<LiveServerTools>,
+        extra_body: Option<serde_json::Value>,
+    ) -> DefaultContextManager {
         DefaultContextManager::new(RequestParams {
             model: Some(self.model.clone()),
             max_tokens: Some(
@@ -151,6 +163,8 @@ impl SessionConfig {
             prompt_cache: Some(PromptCacheConfig::enabled().with_key(session_id)),
             live_thinking: Some(thinking),
             live_model: model,
+            live_server_tools: server_tools,
+            extra_body,
             ..Default::default()
         })
         .with_compaction(self.policy())

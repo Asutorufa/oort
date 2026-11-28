@@ -629,6 +629,7 @@ fn test_into_assistant_message_agent_loop_roundtrip_preserves_prefix() {
         )],
         stop_reason: Some(StopReason::ToolUse),
         usage: None,
+        ..Default::default()
     };
 
     history.push(resp_t1.into_assistant_message());

@@ -86,6 +86,7 @@ pub struct Registry {
     pub skills: Arc<SkillRegistry>,
     pub oauth: OAuthFlows,
     pub memories: Arc<dyn MemoryStore>,
+    pub output_blobs: Arc<dyn oort_agent::ToolOutputBlobStore>,
     pub subagents: SubagentLimits,
     builtin: Arc<dyn ToolExecutor>,
     mock_word_delay: Duration,
@@ -93,8 +94,20 @@ pub struct Registry {
 }
 
 /// Everything the registry stores (one SQLite database in practice).
-pub trait Stores: ConfigStore + OAuthTokenStore + SkillStore + MemoryStore + 'static {}
-impl<T: ConfigStore + OAuthTokenStore + SkillStore + MemoryStore + 'static> Stores for T {}
+pub trait Stores:
+    ConfigStore + OAuthTokenStore + SkillStore + MemoryStore + oort_agent::ToolOutputBlobStore + 'static
+{
+}
+impl<
+    T: ConfigStore
+        + OAuthTokenStore
+        + SkillStore
+        + MemoryStore
+        + oort_agent::ToolOutputBlobStore
+        + 'static,
+> Stores for T
+{
+}
 
 /// Sends `update_plan` steps into the session's event stream.
 struct EventPlanSink(mpsc::Sender<AgentEvent>);
@@ -138,6 +151,7 @@ impl Registry {
         let tokens: Arc<dyn OAuthTokenStore> = store.clone();
         Self {
             memories: store.clone(),
+            output_blobs: store.clone(),
             subagents: SubagentLimits::default(),
             web: WebFetchOptions::default(),
             config: store.clone(),
@@ -166,11 +180,23 @@ impl Registry {
         workspace_root: Option<std::path::PathBuf>,
         events: Option<mpsc::Sender<AgentEvent>>,
     ) -> BuiltinContext {
+        self.builtin_context_for_session(workspace_root, events, None)
+    }
+
+    /// Context for the builtin tools of a specific session (enables spill-to-storage).
+    pub fn builtin_context_for_session(
+        &self,
+        workspace_root: Option<std::path::PathBuf>,
+        events: Option<mpsc::Sender<AgentEvent>>,
+        session_id: Option<String>,
+    ) -> BuiltinContext {
         BuiltinContext {
             config: Some(self.config.clone()),
             skills: Some(self.skills.store().clone()),
             memories: Some(self.memories.clone()),
             plan: events.map(|e| Arc::new(EventPlanSink(e)) as Arc<dyn PlanSink>),
+            output_blobs: Some(self.output_blobs.clone()),
+            session_id,
             workspace_root,
             web: self.web.clone(),
             commands: Default::default(),
@@ -229,7 +255,10 @@ impl Registry {
         let http = http_client(rec.defaults.timeout_secs)?;
         macro_rules! configure {
             ($client:expr) => {{
-                let mut c = $client.with_http_client(http.clone());
+                let mut c = $client
+                    .with_http_client(http.clone())
+                    .with_vendor(rec.vendor)
+                    .with_extra_body(rec.extra_body.clone());
                 if let Some(b) = base {
                     c = c.with_base_url(b);
                 }
@@ -273,14 +302,17 @@ impl Registry {
 
     /// Generation defaults of a session's provider (built-in defaults when unknown).
     pub async fn provider_defaults(&self, cfg: &SessionConfig) -> oort_agent::ProviderDefaults {
+        self.provider_record(cfg)
+            .await
+            .map(|p| p.defaults)
+            .unwrap_or_default()
+    }
+
+    /// Provider record of a session, if it references a configured provider.
+    pub async fn provider_record(&self, cfg: &SessionConfig) -> Option<ProviderRecord> {
         match &cfg.provider_id {
-            Some(id) => self
-                .config
-                .get_provider(id)
-                .await
-                .map(|p| p.defaults)
-                .unwrap_or_default(),
-            None => Default::default(),
+            Some(id) => self.config.get_provider(id).await.ok(),
+            None => None,
         }
     }
 
@@ -458,9 +490,10 @@ impl Registry {
             );
         }
         if !sel.groups.is_empty() {
-            let ctx = self.builtin_context(
+            let ctx = self.builtin_context_for_session(
                 sel.workspace_root.clone(),
                 sel.runtime.as_ref().map(|r| r.events.clone()),
+                sel.runtime.as_ref().map(|r| r.session_id.clone()),
             );
             let tools = oort_tools::executor(&sel.groups, &ctx).map_err(ApiError::BadRequest)?;
             b = b.add(Namespace::None, Arc::new(tools));
@@ -537,9 +570,12 @@ impl Registry {
         cancel: CancellationToken,
         thinking: oort_agent::LiveThinking,
         model_id: Option<oort_agent::LiveModel>,
+        server_tools: Option<oort_agent::LiveServerTools>,
     ) -> Result<Agent, ApiError> {
         let model = self.session_model(cfg).await?;
-        let defaults = self.provider_defaults(cfg).await;
+        let provider_rec = self.provider_record(cfg).await;
+        let defaults = provider_rec.as_ref().map(|p| p.defaults).unwrap_or_default();
+        let extra_body = provider_rec.and_then(|p| p.extra_body);
         let bindings = if cfg.is_legacy() {
             self.legacy_bindings(state).await
         } else {
@@ -575,9 +611,14 @@ impl Registry {
             tracing::warn!(session = %session_id, ?missing, "frozen tools not offered by any live server");
         }
         let mut b = Agent::builder(model.clone(), pinned)
-            .context_manager(Arc::new(
-                cfg.context_manager(session_id, &defaults, thinking, model_id),
-            ))
+            .context_manager(Arc::new(cfg.context_manager_with_tools(
+                session_id,
+                &defaults,
+                thinking,
+                model_id,
+                server_tools,
+                extra_body,
+            )))
             .hook(Arc::new(TracingHook))
             .hook(Arc::new(DynamicApproval(approval)))
             .events(events)

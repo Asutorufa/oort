@@ -21,10 +21,10 @@ tool_def!(MemorySave, "memory_save", false,
 {
     "type": "object",
     "properties": {
-        "id": { "type": "string", "description": "update this memory instead of creating one" },
-        "title": { "type": "string" },
-        "content": { "type": "string" },
-        "tags": { "type": "array", "items": { "type": "string" } },
+        "id": { "type": "string", "description": "Existing memory ID to update (omit to create a new memory)" },
+        "title": { "type": "string", "description": "Short summary title for the memory" },
+        "content": { "type": "string", "description": "Detailed fact, preference, or convention to remember" },
+        "tags": { "type": "array", "items": { "type": "string" }, "description": "Optional lowercase keywords for filtering" },
         "scope": { "type": "string", "description": "`global` (default) or a project identifier" }
     },
     "required": ["title", "content"]
@@ -72,10 +72,10 @@ tool_def!(MemorySearch, "memory_search", true,
 {
     "type": "object",
     "properties": {
-        "query": { "type": "string" },
-        "tags": { "type": "array", "items": { "type": "string" } },
-        "scope": { "type": "string" },
-        "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
+        "query": { "type": "string", "description": "Search keywords (matches title and content)" },
+        "tags": { "type": "array", "items": { "type": "string" }, "description": "Optional tags filter (must match all specified tags)" },
+        "scope": { "type": "string", "description": "Optional scope filter (e.g. `global` or a project identifier)" },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 50, "description": "Maximum number of results to return (default 10, max 50)" }
     },
     "required": ["query"]
 });

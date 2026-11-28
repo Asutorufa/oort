@@ -42,8 +42,9 @@ impl Tool for RenderWidget {
         ToolDefinition::new(
             RENDER_WIDGET,
             "Show an interactive UI card in the chat instead of (or next to) plain text. \
+             Call once per card; once it returns `Displayed ...`, the card is already visible to the user (do not re-call for the same chart). \
              `data` depends on `widget_type`:\n\
-             - metrics_chart: {kpis: [{label, value, delta?}] (max 3), series: [{name, points: [{x, y}]}], kind?: \"area\"|\"line\"}\n\
+             - metrics_chart: {\"kpis\": [{\"label\", \"value\", \"delta\"?}] (max 3), \"series\": [{\"name\": \"Price\", \"points\": [{\"x\": \"11-01\", \"y\": 3950}]}], \"kind\"?: \"area\"|\"line\"} — each element of `points` MUST be an object with `x` (string|number) and numeric `y`, never a flat array\n\
              - data_table: {columns: [{key, label}], rows: [object], row_actions?: [{id, label}]}\n\
              - interactive_form: {fields: [{name, label, kind: \"text\"|\"textarea\"|\"number\"|\"select\"|\"checkbox\", options?: [string], required?, default?}], submit_label?}\n\
              - approval_diff: {summary, diff (unified diff), files?: [string]} — the user approves or rejects; the result tells you which\n\
@@ -55,7 +56,102 @@ impl Tool for RenderWidget {
                 "properties": {
                     "widget_type": { "type": "string", "enum": WIDGET_TYPES },
                     "title": { "type": "string" },
-                    "data": { "type": "object" }
+                    "data": {
+                        "type": "object",
+                        "properties": {
+                            "kind": { "type": "string", "enum": ["area", "line"] },
+                            "kpis": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "label": { "type": "string" },
+                                        "value": { "type": "string" },
+                                        "delta": { "type": "string" }
+                                    },
+                                    "required": ["label", "value"]
+                                }
+                            },
+                            "series": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "name": { "type": "string" },
+                                        "points": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "x": { "type": "string" },
+                                                    "y": { "type": "number" }
+                                                },
+                                                "required": ["x", "y"]
+                                            }
+                                        }
+                                    },
+                                    "required": ["name", "points"]
+                                }
+                            },
+                            "columns": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "key": { "type": "string" },
+                                        "label": { "type": "string" }
+                                    },
+                                    "required": ["key", "label"]
+                                }
+                            },
+                            "rows": {
+                                "type": "array",
+                                "items": { "type": "object" }
+                            },
+                            "row_actions": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "id": { "type": "string" },
+                                        "label": { "type": "string" }
+                                    },
+                                    "required": ["id", "label"]
+                                }
+                            },
+                            "fields": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "name": { "type": "string" },
+                                        "label": { "type": "string" },
+                                        "kind": { "type": "string", "enum": ["text", "textarea", "number", "select", "checkbox"] },
+                                        "options": { "type": "array", "items": { "type": "string" } },
+                                        "required": { "type": "boolean" },
+                                        "placeholder": { "type": "string" }
+                                    },
+                                    "required": ["name", "label", "kind"]
+                                }
+                            },
+                            "submit_label": { "type": "string" },
+                            "summary": { "type": "string" },
+                            "diff": { "type": "string" },
+                            "files": { "type": "array", "items": { "type": "string" } },
+                            "chips": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "label": { "type": "string" },
+                                        "prompt": { "type": "string" },
+                                        "command": { "type": "string" }
+                                    },
+                                    "required": ["label"]
+                                }
+                            }
+                        }
+                    }
                 },
                 "required": ["widget_type", "data"]
             }),
@@ -105,10 +201,33 @@ pub fn validate_widget(args: &Value) -> Result<(&str, &Value), String> {
             }
             let series = arr(data, "series")?;
             each_has(series, "series", &["name", "points"])?;
+            for (si, s) in series.iter().enumerate() {
+                let pts = s
+                    .get("points")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| format!("series[{si}].points must be an array of {{\"x\", \"y\"}} objects"))?;
+                for (pi, p) in pts.iter().enumerate() {
+                    let ok = p.is_object()
+                        && p.get("x").is_some()
+                        && p.get("y").and_then(Value::as_f64).is_some();
+                    if !ok {
+                        return Err(format!(
+                            "series[{si}].points[{pi}] must be an object {{\"x\": <string|number>, \"y\": <number>}}"
+                        ));
+                    }
+                }
+            }
         }
         "data_table" => {
             each_has(arr(data, "columns")?, "columns", &["key", "label"])?;
-            arr(data, "rows")?;
+            let rows = arr(data, "rows")?;
+            for (i, r) in rows.iter().enumerate() {
+                if !r.is_object() {
+                    return Err(format!(
+                        "rows[{i}] must be an object keyed by column `key` (not an array)"
+                    ));
+                }
+            }
             if let Some(a) = data.get("row_actions").and_then(Value::as_array) {
                 each_has(a, "row_actions", &["id", "label"])?;
             }
@@ -119,12 +238,35 @@ pub fn validate_widget(args: &Value) -> Result<(&str, &Value), String> {
                 return Err("`data.fields` must not be empty".into());
             }
             each_has(fields, "fields", &["name", "label", "kind"])?;
+            for (i, f) in fields.iter().enumerate() {
+                let fkind = f.get("kind").and_then(Value::as_str).unwrap_or("");
+                if !matches!(fkind, "text" | "textarea" | "number" | "select" | "checkbox") {
+                    return Err(format!(
+                        "fields[{i}].kind `{fkind}` must be one of text, textarea, number, select, checkbox"
+                    ));
+                }
+                if fkind == "select" {
+                    let opts = f.get("options").and_then(Value::as_array);
+                    if opts.is_none_or(|o| o.is_empty() || !o.iter().all(Value::is_string)) {
+                        return Err(format!(
+                            "fields[{i}] with kind `select` requires a non-empty string array `options`"
+                        ));
+                    }
+                }
+            }
         }
         "approval_diff" => {
             for k in ["summary", "diff"] {
                 if !data.get(k).is_some_and(Value::is_string) {
                     return Err(format!("`data.{k}` must be a string"));
                 }
+            }
+            if let Some(files) = data.get("files")
+                && !files
+                    .as_array()
+                    .is_some_and(|a| a.iter().all(Value::is_string))
+            {
+                return Err("`data.files` must be an array of strings".into());
             }
         }
         "action_chips" => {
@@ -147,12 +289,20 @@ pub fn validate_widget(args: &Value) -> Result<(&str, &Value), String> {
 #[async_trait]
 impl LocalTool for RenderWidget {
     async fn run(&self, args: Value, ctx: ToolContext) -> Result<ToolOutput, ToolError> {
-        let (kind, _) = validate_widget(&args).map_err(ToolError::InvalidArguments)?;
+        let (kind, data) = validate_widget(&args).map_err(ToolError::InvalidArguments)?;
         let id = &ctx.call_id;
+        let has_row_actions = data
+            .get("row_actions")
+            .and_then(Value::as_array)
+            .is_some_and(|a| !a.is_empty());
         Ok(ToolOutput::ok(match kind {
             // Reached only after the human approved (see `is_approval_widget`).
             "approval_diff" => format!("The user approved the change (widget {id}). Proceed."),
             "metrics_chart" => format!("Displayed metrics_chart widget {id}."),
+            "data_table" if !has_row_actions => format!("Displayed data_table widget {id}."),
+            "action_chips" => format!(
+                "Displayed action_chips widget {id}. Clicking a chip sends its prompt as the next user message."
+            ),
             _ => format!(
                 "Displayed {kind} widget {id}. The user's choice will arrive as a message starting \
                  with `[widget_response id={id}`; end your turn now and wait for it."
@@ -267,6 +417,18 @@ mod tests {
             (
                 json!({"widget_type":"interactive_form","data":{"fields":[]}}),
                 "must not be empty",
+            ),
+            (
+                json!({"widget_type":"metrics_chart","data":{"series":[{"name":"s","points":[11,3950]}]}}),
+                "must be an object",
+            ),
+            (
+                json!({"widget_type":"data_table","data":{"columns":[{"key":"k","label":"K"}],"rows":[["v"]]}}),
+                "must be an object keyed by column",
+            ),
+            (
+                json!({"widget_type":"interactive_form","data":{"fields":[{"name":"n","label":"N","kind":"select"}]}}),
+                "requires a non-empty string array `options`",
             ),
             (
                 json!({"widget_type":"approval_diff","data":{"summary":"s"}}),

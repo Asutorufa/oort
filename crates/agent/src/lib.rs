@@ -44,7 +44,9 @@ pub use config_store::{
     OAuthTokenRecord, OAuthTokenStore, PresetRecord, ProviderDefaults, ProviderKind,
     ProviderRecord, ReasoningEffort, SkillExecutionMode, SkillInvocation, SkillRecord, SkillStore,
 };
-pub use context::{ContextManager, DefaultContextManager, LiveModel, LiveThinking, RequestParams};
+pub use context::{
+    ContextManager, DefaultContextManager, LiveModel, LiveServerTools, LiveThinking, RequestParams,
+};
 pub use engine::{Agent, AgentBuilder, INTERRUPTED_TOOL_RESULT, StepOutcome};
 pub use error::AgentError;
 pub use hook::{
@@ -57,11 +59,15 @@ pub use io::{
 pub use metrics::{LlmCallStats, RequestHashes, RequestSummary};
 pub use model::{ModelClient, RetryingModel};
 /// Unified IR content block (re-exported from `oort-llm`).
-pub use oort_llm::ContentPart as ContentBlock;
+pub use oort_llm::{
+    Citation, ContentPart as ContentBlock, FileSearchToolConfig, ServerToolConfig, Vendor,
+    WebSearchToolConfig,
+};
 pub use state::{AgentState, CompactionCheckpoint, Phase, StateParts, ToolDecision, UsageLedger};
 pub use store::{
     Lineage, NewSession, PendingCalls, PersistenceHook, SessionId, SessionJournal, SessionMeta,
     SessionSnapshot, SessionStatus, SessionStore, StepDelta, StoreError, StoredSession,
+    ToolOutputBlob, ToolOutputBlobStore,
 };
 pub use tool::{
     FrozenToolset, INVALID_ARGUMENTS_KEY, LocalTool, LocalToolExecutor, Tool, ToolContext,

@@ -24,12 +24,15 @@ pub use gemini::GeminiClient;
 pub use openai::{CompletionRequest, OpenAIClient};
 pub use openai_responses::OpenAIResponsesClient;
 pub use types::{
-    CacheBreakpoint, CacheTtl, ChatRequest, ChatResponse, ContentPart, DocumentSource, ImageSource,
-    Message, PromptCacheConfig, ReasoningEffort, Role, StopReason, StreamCollector, StreamEvent,
-    ThinkingConfig, ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
+    CacheBreakpoint, CacheTtl, ChatRequest, ChatResponse, Citation, ContentPart, DocumentSource,
+    FileSearchToolConfig, ImageSource, Message, PromptCacheConfig, ReasoningEffort, Role,
+    ServerToolConfig, StopReason, StreamCollector, StreamEvent, ThinkingConfig, ToolCall,
+    ToolChoice, ToolDefinition, ToolResult, Usage, Vendor, WebSearchToolConfig, extract_domain,
 };
 
 #[cfg(test)]
 mod prefix_cache_tests;
 #[cfg(test)]
 mod reasoning_tests;
+#[cfg(test)]
+mod server_tools_tests;

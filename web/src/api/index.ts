@@ -11,6 +11,7 @@ import type {
   Provider,
   ProviderInput,
   ProviderTest,
+  ServerToolConfig,
   SessionDetail,
   SessionSummary,
   ApprovalPolicy,
@@ -30,8 +31,16 @@ export const sessions = {
   list: () => request<SessionSummary[]>("GET", "/sessions"),
   get: (id: string) => request<SessionDetail>("GET", `/sessions/${id}`),
   create: (req: CreateSessionRequest) => request<SessionDetail>("POST", "/sessions", req),
-  patch: (id: string, req: { title?: string; approval_policy?: ApprovalPolicy; reasoning_effort?: ReasoningEffort; model?: string }) =>
-    request<SessionDetail>("PATCH", `/sessions/${id}`, req),
+  patch: (
+    id: string,
+    req: {
+      title?: string;
+      approval_policy?: ApprovalPolicy;
+      reasoning_effort?: ReasoningEffort;
+      model?: string;
+      enabled_server_tools?: ServerToolConfig;
+    },
+  ) => request<SessionDetail>("PATCH", `/sessions/${id}`, req),
   remove: (id: string) => request<void>("DELETE", `/sessions/${id}`),
   exportUrl: (id: string) => `/api/sessions/${id}/export`,
   input: (id: string, input: InputRequest) => request<void>("POST", `/sessions/${id}/input`, input),

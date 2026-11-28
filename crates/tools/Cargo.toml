@@ -13,6 +13,7 @@ oort-mcp = { path = "../mcp" }
 async-trait = { workspace = true }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 libc = "0.2"
+regex = "1"
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

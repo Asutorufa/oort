@@ -83,9 +83,9 @@ async fn workspace_sandbox_rejects_traversal_and_symlink_escapes() {
     .await
     .unwrap();
     assert!(
-        out.content.contains("2\ttwo")
-            && out.content.contains("3\tthree")
-            && !out.content.contains("four\n     4"),
+        out.content.contains("2 | two")
+            && out.content.contains("3 | three")
+            && !out.content.contains("4 | four"),
         "{}",
         out.content
     );
@@ -466,4 +466,166 @@ async fn current_time_and_plan_updates() {
             .unwrap_err()
             .contains("answered by the user")
     );
+}
+
+#[tokio::test]
+async fn read_file_pagination_and_search_in_file_sandbox() {
+    let root = temp_root("read-search");
+    let big: String = (1..=250)
+        .map(|i| {
+            if i == 180 {
+                format!("line {i}: NEEDLE_TOKEN_42 found here\n")
+            } else {
+                format!("line {i}: ordinary content\n")
+            }
+        })
+        .collect();
+    std::fs::write(root.join("big.txt"), &big).unwrap();
+
+    let ex = executor(&[Group::Workspace], &ctx_with_root(&root)).unwrap();
+
+    // Default pagination (limit 200) includes structured continuation hint
+    let page1 = call(&ex, "read_file", json!({ "path": "big.txt" }))
+        .await
+        .unwrap();
+    assert!(page1.content.contains("   1 | line 1:"));
+    assert!(page1.content.contains(" 200 | line 200:"));
+    assert!(!page1.content.contains(" 201 | line 201:"));
+    assert!(page1.content.contains("offset=201"));
+    assert!(page1.content.contains("search_in_file"));
+
+    // Continue from offset=201
+    let page2 = call(
+        &ex,
+        "read_file",
+        json!({ "path": "big.txt", "offset": 201, "limit": 200 }),
+    )
+    .await
+    .unwrap();
+    assert!(page2.content.contains(" 201 | line 201:"));
+    assert!(page2.content.contains(" 250 | line 250:"));
+    assert!(!page2.content.contains("offset=251"));
+
+    // search_in_file locates needle with context lines
+    let found = call(
+        &ex,
+        "search_in_file",
+        json!({ "path": "big.txt", "pattern": "NEEDLE_TOKEN_\\d+", "context_lines": 1 }),
+    )
+    .await
+    .unwrap();
+    assert!(found.content.contains("> 180 | line 180: NEEDLE_TOKEN_42"));
+    assert!(found.content.contains("  179 | line 179:"));
+    assert!(found.content.contains("  181 | line 181:"));
+
+    // Sandbox rejects path traversal
+    let esc = call(
+        &ex,
+        "search_in_file",
+        json!({ "path": "../outside.txt", "pattern": "x" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        esc.contains("outside") || esc.contains("No such file"),
+        "unexpected error: {esc}"
+    );
+}
+
+#[tokio::test]
+async fn spill_to_storage_and_read_tool_output_pagination_search_and_isolation() {
+    use std::collections::HashMap;
+    use oort_agent::{StoreError, ToolOutputBlob, ToolOutputBlobStore};
+
+    #[derive(Default)]
+    struct MemBlobs(Mutex<HashMap<String, ToolOutputBlob>>);
+
+    #[async_trait::async_trait]
+    impl ToolOutputBlobStore for MemBlobs {
+        async fn save_tool_output_blob(&self, blob: &ToolOutputBlob) -> Result<(), StoreError> {
+            self.0.lock().unwrap().insert(blob.id.clone(), blob.clone());
+            Ok(())
+        }
+        async fn get_tool_output_blob(&self, id: &str) -> Result<Option<ToolOutputBlob>, StoreError> {
+            Ok(self.0.lock().unwrap().get(id).cloned())
+        }
+        async fn can_access_blob(
+            &self,
+            session_id: &str,
+            blob_session_id: &str,
+        ) -> Result<bool, StoreError> {
+            Ok(session_id == blob_session_id || (session_id == "sub_1" && blob_session_id == "sess_a"))
+        }
+    }
+
+    let blobs = Arc::new(MemBlobs::default());
+    let root = temp_root("spill");
+    let mut ctx = ctx_with_root(&root);
+    ctx.output_blobs = Some(blobs.clone());
+    ctx.session_id = Some("sess_a".into());
+
+    let ex = executor(&[Group::Utilities, Group::Workspace], &ctx).unwrap();
+
+    // 1. run_command producing > 12,000 chars spills to storage and preserves head + tail
+    let cmd_out = call(
+        &ex,
+        "run_command",
+        json!({ "command": "python3 -c 'print(\"HEAD_MARKER\"); [print(f\"row_{i}: \" + \"x\"*80) for i in range(250)]; print(\"MIDDLE_SECRET_999\"); [print(f\"row2_{i}: \" + \"y\"*80) for i in range(100)]; print(\"TAIL_ERROR_MARKER\")'" }),
+    )
+    .await
+    .unwrap();
+    assert!(cmd_out.content.contains("HEAD_MARKER"));
+    assert!(cmd_out.content.contains("TAIL_ERROR_MARKER"));
+    assert!(cmd_out.content.contains("output_id=\"out_"));
+
+    let id_start = cmd_out.content.find("output_id=\"").unwrap() + "output_id=\"".len();
+    let id_end = cmd_out.content[id_start..].find('"').unwrap() + id_start;
+    let output_id = cmd_out.content[id_start..id_end].to_string();
+
+    // 2. read_tool_output keyword search finds MIDDLE_SECRET_999
+    let searched = call(
+        &ex,
+        "read_tool_output",
+        json!({ "output_id": output_id, "query": "MIDDLE_SECRET_999" }),
+    )
+    .await
+    .unwrap();
+    assert!(searched.content.contains("MIDDLE_SECRET_999"));
+
+    // 3. read_tool_output pagination works
+    let page = call(
+        &ex,
+        "read_tool_output",
+        json!({ "output_id": output_id, "offset": 4000, "limit": 2000 }),
+    )
+    .await
+    .unwrap();
+    assert!(page.content.contains("Showing chars 4000-6000"));
+
+    // 4. Subagent of sess_a can read it
+    let mut sub_ctx = ctx.clone();
+    sub_ctx.session_id = Some("sub_1".into());
+    let sub_ex = executor(&[Group::Utilities], &sub_ctx).unwrap();
+    assert!(
+        call(
+            &sub_ex,
+            "read_tool_output",
+            json!({ "output_id": output_id, "offset": 0, "limit": 200 }),
+        )
+        .await
+        .is_ok()
+    );
+
+    // 5. Another session sess_b is denied cross-session access
+    let mut other_ctx = ctx.clone();
+    other_ctx.session_id = Some("sess_b".into());
+    let other_ex = executor(&[Group::Utilities], &other_ctx).unwrap();
+    let denied = call(
+        &other_ex,
+        "read_tool_output",
+        json!({ "output_id": output_id, "offset": 0, "limit": 200 }),
+    )
+    .await
+    .unwrap_err();
+    assert!(denied.contains("access denied"), "{denied}");
 }

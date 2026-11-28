@@ -45,6 +45,7 @@ struct ActiveSession {
     /// Read by the context manager on every request.
     thinking: oort_agent::LiveThinking,
     model: oort_agent::LiveModel,
+    server_tools: oort_agent::LiveServerTools,
     /// Cancelled when the loop task has fully exited.
     finished: CancellationToken,
     generation: u64,
@@ -155,6 +156,10 @@ impl SessionManager {
             .as_ref()
             .map(|p| p.reasoning_effort)
             .unwrap_or_default());
+        let enabled_server_tools = req
+            .enabled_server_tools
+            .clone()
+            .or_else(|| preset.as_ref().and_then(|p| p.enabled_server_tools.clone()));
 
         // Fail fast on unusable keys and unreachable servers, before anything is stored.
         let widgets = req.widgets.unwrap_or(true);
@@ -276,6 +281,7 @@ impl SessionManager {
                 ..Default::default()
             },
             reasoning_effort,
+            enabled_server_tools,
         };
         let id = self.store.create_session(meta, &state).await?;
         self.ensure_active(&id).await?;
@@ -305,11 +311,18 @@ impl SessionManager {
         let cfg = session_settings(&stored.meta)?;
         let active = self.active.lock().await.contains_key(id);
         let root = stored.meta.lineage.workspace_root.clone();
-        let effective = stored.meta.reasoning_effort.or(self
-            .registry
-            .provider_defaults(&cfg)
-            .await
-            .reasoning_effort);
+        let provider_rec = self.registry.provider_record(&cfg).await;
+        let effective = stored.meta.reasoning_effort.or(provider_rec
+            .as_ref()
+            .map(|p| p.defaults.reasoning_effort)
+            .unwrap_or_default());
+        let provider_vendor = provider_rec.as_ref().map(|p| p.vendor).unwrap_or_default();
+        let effective_server_tools = stored
+            .meta
+            .enabled_server_tools
+            .clone()
+            .or_else(|| provider_rec.map(|p| p.default_server_tools))
+            .unwrap_or_default();
         let mut detail = SessionDetail::build(
             stored.meta,
             active,
@@ -320,6 +333,8 @@ impl SessionManager {
         );
         detail.last_error = self.errors.lock().await.get(id).cloned();
         detail.effective_reasoning_effort = effective;
+        detail.provider_vendor = provider_vendor;
+        detail.effective_server_tools = effective_server_tools;
         // What each approval card shows: a diff, the command, the settings, …
         let ctx = self.registry.builtin_context(root.map(Into::into), None);
         for p in &mut detail.pending_approvals {
@@ -411,6 +426,13 @@ impl SessionManager {
             if let Some(a) = self.active.lock().await.get(id) {
                 *a.thinking.write().unwrap_or_else(|e| e.into_inner()) =
                     effort.or(fallback).thinking();
+            }
+        }
+        if let Some(server_tools) = &req.enabled_server_tools {
+            self.store.set_server_tools(id, Some(server_tools)).await?;
+            if let Some(a) = self.active.lock().await.get(id) {
+                *a.server_tools.write().unwrap_or_else(|e| e.into_inner()) =
+                    Some(server_tools.clone());
             }
         }
         let meta = self.store.load_state(id).await?.meta;
@@ -626,14 +648,21 @@ impl SessionManager {
         let hub = self.hub(id).await;
         let cancel = CancellationToken::new();
         let approval = ApprovalHandle::new(stored.meta.approval_policy);
-        let effort = stored.meta.reasoning_effort.or(self
-            .registry
-            .provider_defaults(&cfg)
-            .await
-            .reasoning_effort);
+        let provider_rec = self.registry.provider_record(&cfg).await;
+        let effort = stored.meta.reasoning_effort.or(provider_rec
+            .as_ref()
+            .map(|p| p.defaults.reasoning_effort)
+            .unwrap_or_default());
         let thinking: oort_agent::LiveThinking =
             Arc::new(std::sync::RwLock::new(effort.thinking()));
         let live_model: oort_agent::LiveModel = Arc::new(std::sync::RwLock::new(cfg.model.clone()));
+        let effective_st = stored
+            .meta
+            .enabled_server_tools
+            .clone()
+            .or_else(|| provider_rec.map(|p| p.default_server_tools));
+        let live_server_tools: oort_agent::LiveServerTools =
+            Arc::new(std::sync::RwLock::new(effective_st));
         let (ev_tx, mut ev_rx) = mpsc::channel(1024);
         let agent = self
             .registry
@@ -648,6 +677,7 @@ impl SessionManager {
                 cancel.clone(),
                 Arc::clone(&thinking),
                 Some(Arc::clone(&live_model)),
+                Some(Arc::clone(&live_server_tools)),
             )
             .await?;
         let (in_tx, in_rx) = mpsc::channel(64);
@@ -756,6 +786,7 @@ impl SessionManager {
                 approval,
                 thinking,
                 model: live_model,
+                server_tools: live_server_tools,
                 finished,
                 generation,
             },

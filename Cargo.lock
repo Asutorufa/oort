@@ -1367,6 +1367,7 @@ dependencies = [
  "oort-agent",
  "oort-llm",
  "oort-mcp",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",

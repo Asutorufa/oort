@@ -51,10 +51,19 @@ pub struct ProviderRecord {
     pub id: String,
     pub name: String,
     pub kind: ProviderKind,
+    /// Vendor preset identity, orthogonal to wire protocol (`kind`).
+    #[serde(default)]
+    pub vendor: oort_llm::Vendor,
     pub base_url: Option<String>,
     pub api_key: Option<String>,
     pub default_model: String,
     pub extra_headers: BTreeMap<String, String>,
+    /// Default provider-hosted server tools for new sessions using this provider.
+    #[serde(default)]
+    pub default_server_tools: oort_llm::ServerToolConfig,
+    /// Optional top-level JSON fields merged into requests (e.g. for custom vendors).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_body: Option<serde_json::Value>,
     pub is_enabled: bool,
     /// Retry a session loop that failed with a transient error (429, 5xx, network).
     #[serde(default)]
@@ -272,6 +281,9 @@ pub struct PresetRecord {
     /// Thinking level of new sessions (`default`: the provider's default).
     #[serde(default)]
     pub reasoning_effort: ReasoningEffort,
+    /// Optional provider-hosted server tools override for new sessions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled_server_tools: Option<oort_llm::ServerToolConfig>,
     pub created_at: i64,
     pub updated_at: i64,
 }

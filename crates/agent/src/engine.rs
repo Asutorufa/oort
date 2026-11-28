@@ -506,6 +506,7 @@ impl Agent {
                             StreamEvent::TextDelta(_)
                                 | StreamEvent::ThinkingDelta(_)
                                 | StreamEvent::ToolCallStart { .. }
+                                | StreamEvent::ServerToolUse { .. }
                         ) {
                             first_content = Some(started.elapsed());
                         }
@@ -513,6 +514,7 @@ impl Agent {
                             event,
                             StreamEvent::TextDelta(_)
                                 | StreamEvent::ToolCallStart { .. }
+                                | StreamEvent::ServerToolUse { .. }
                                 | StreamEvent::Done { .. }
                         ) {
                             self.end_thinking(blocks, &mut thinking_since, &mut thinking_ms).await;
@@ -531,6 +533,30 @@ impl Agent {
                                     step_index: blocks.step,
                                     block_id: blocks.thinking(),
                                     delta: d.clone(),
+                                }).await
+                            }
+                            StreamEvent::ServerToolUse { id, name, action, input, .. } => {
+                                self.events.emit(AgentEvent::ServerToolUse {
+                                    block_id: blocks.text(),
+                                    id: id.clone(),
+                                    name: name.clone(),
+                                    action: action.clone(),
+                                    input: input.clone(),
+                                }).await
+                            }
+                            StreamEvent::ServerToolResult { tool_use_id, name, summary, is_error, .. } => {
+                                self.events.emit(AgentEvent::ServerToolResult {
+                                    block_id: blocks.text(),
+                                    tool_use_id: tool_use_id.clone(),
+                                    name: name.clone(),
+                                    summary: summary.clone(),
+                                    is_error: *is_error,
+                                }).await
+                            }
+                            StreamEvent::Citation(citation) => {
+                                self.events.emit(AgentEvent::Citation {
+                                    block_id: blocks.text(),
+                                    citation: citation.clone(),
                                 }).await
                             }
                             _ => {}

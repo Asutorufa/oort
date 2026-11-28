@@ -5,7 +5,7 @@
  * turned into the message it will become (`toMessages`), so a reload cannot reorder, merge or
  * re-group anything.
  */
-import type { ContentPart, PendingApproval, RawMessage, ToolCall } from "../../api/types";
+import type { Citation, ContentPart, PendingApproval, RawMessage, ToolCall } from "../../api/types";
 import type { LiveStep } from "../../hooks/useSessionStream";
 
 export type BlockStatus = "streaming" | "done";
@@ -24,7 +24,18 @@ export interface TextBlock {
   type: "text";
   id: string;
   text: string;
+  citations: Citation[];
   status: BlockStatus;
+}
+
+/** Provider-hosted server tool invocation paired with its optional result. */
+export interface ServerToolBlock {
+  type: "server_tool";
+  id: string;
+  name: string;
+  action?: string | null;
+  input: unknown;
+  result?: { summary: string; is_error: boolean };
 }
 
 /** Consecutive ordinary tool calls (nothing else between them). */
@@ -48,7 +59,7 @@ export interface ApprovalBlock {
   pending: PendingApproval;
 }
 
-export type TurnBlock = ThinkingBlock | TextBlock | ToolGroupBlock | CardBlock | ApprovalBlock;
+export type TurnBlock = ThinkingBlock | TextBlock | ServerToolBlock | ToolGroupBlock | CardBlock | ApprovalBlock;
 export type WorkBlock = ThinkingBlock | ToolGroupBlock;
 
 export interface SourceMessage {
@@ -79,7 +90,10 @@ export const fromRaw = (m: RawMessage): SourceMessage => ({
 export function fromLive(step: LiveStep): SourceMessage {
   const parts: ContentPart[] = step.parts ?? [
     ...(step.thinking ? [{ kind: "thinking", thinking: step.thinking } as const] : []),
-    ...(step.text ? [{ kind: "text", text: step.text } as const] : []),
+    ...step.serverTools,
+    ...(step.text || step.citations.length > 0
+      ? [{ kind: "text", text: step.text, citations: step.citations } as const]
+      : []),
   ];
   return {
     seq: step.seq,
@@ -95,10 +109,11 @@ export function fromLive(step: LiveStep): SourceMessage {
  */
 export function buildBlocks(msgs: SourceMessage[], shown: (callId: string) => boolean = () => true): TurnBlock[] {
   const out: TurnBlock[] = [];
+  const serverIndex = new Map<string, number>();
   for (const m of msgs) {
     if (m.role !== "assistant") continue;
-    const count = { thinking: 0, text: 0 };
-    const blockId = (kind: "thinking" | "text") => {
+    const count = { thinking: 0, text: 0, server: 0 };
+    const blockId = (kind: "thinking" | "text" | "server") => {
       const n = count[kind]++;
       return n === 0 ? `${m.seq}:${kind}` : `${m.seq}:${kind}.${n}`;
     };
@@ -115,9 +130,40 @@ export function buildBlocks(msgs: SourceMessage[], shown: (callId: string) => bo
           durationMs: m.thinkingMs,
           startedAt: live ? (m.streaming?.startedAt ?? null) : null,
         });
+      } else if (p.kind === "server_tool_use") {
+        const idx = out.length;
+        const id = p.id || blockId("server");
+        serverIndex.set(id, idx);
+        out.push({
+          type: "server_tool",
+          id: `${m.seq}:srv:${id}:${idx}`,
+          name: p.name,
+          action: p.action,
+          input: p.input,
+        });
+      } else if (p.kind === "server_tool_result") {
+        const existingIdx = serverIndex.get(p.tool_use_id);
+        if (existingIdx !== undefined && out[existingIdx]?.type === "server_tool") {
+          const cur = out[existingIdx] as ServerToolBlock;
+          out[existingIdx] = { ...cur, result: { summary: p.summary, is_error: p.is_error } };
+        } else {
+          out.push({
+            type: "server_tool",
+            id: `${m.seq}:srvres:${p.tool_use_id}:${out.length}`,
+            name: p.name,
+            input: {},
+            result: { summary: p.summary, is_error: p.is_error },
+          });
+        }
       } else if (p.kind === "text") {
-        if (!p.text.trim()) continue;
-        out.push({ type: "text", id: blockId("text"), text: p.text, status: m.streaming ? "streaming" : "done" });
+        if (!p.text.trim() && !(p.citations && p.citations.length > 0)) continue;
+        out.push({
+          type: "text",
+          id: blockId("text"),
+          text: p.text,
+          citations: p.citations ?? [],
+          status: m.streaming ? "streaming" : "done",
+        });
       } else if (p.kind === "tool_call") {
         if (HIDDEN.has(p.name)) continue;
         const card = CARDS[p.name];

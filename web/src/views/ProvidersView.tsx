@@ -10,10 +10,13 @@ import {
   type ProviderKind,
   type ProviderTest,
   type ReasoningEffort,
+  type ServerToolConfig,
+  type Vendor,
 } from "../api/types";
+import { getProtocolOption, getVendorPreset, VENDOR_PRESETS } from "../api/vendorCatalog";
 import { AlertIcon, CheckIcon, ChevronDown, KindIcon, PlusIcon, RefreshIcon, Spinner, TrashIcon } from "../brand/Icons";
 import { Empty, ErrorBar, Modal } from "../components/common";
-import { useI18n, useT } from "../i18n";
+import { useI18n } from "../i18n";
 import { KeyValueEditor, SecretInput } from "../components/forms";
 import { Checkbox, Collapse, Combobox, SegmentedControl, Switch } from "../components/ui";
 import { navigate } from "../hooks/useHashRoute";
@@ -22,23 +25,33 @@ import { enter, spring, tap } from "../lib/motion";
 
 interface Form {
   name: string;
+  vendor: Vendor;
   kind: ProviderKind;
   base_url: string;
   api_key: string;
   default_model: string;
   extra_headers: Record<string, string>;
+  default_server_tools: ServerToolConfig;
+  extra_body_text: string;
   is_enabled: boolean;
   auto_retry: { enabled: boolean; max_attempts: number };
   defaults: ProviderDefaults;
 }
 
+const KNOWN_DEFAULT_URLS = new Set(
+  VENDOR_PRESETS.flatMap((v) => v.protocols.map((p) => p.defaultBaseUrl)).filter(Boolean),
+);
+
 const blank: Form = {
   name: "",
+  vendor: "openai",
   kind: "openai",
   base_url: "",
   api_key: "",
   default_model: "",
   extra_headers: {},
+  default_server_tools: {},
+  extra_body_text: "",
   is_enabled: true,
   auto_retry: { enabled: false, max_attempts: 3 },
   defaults: DEFAULT_PROVIDER_DEFAULTS,
@@ -46,48 +59,50 @@ const blank: Form = {
 
 const toForm = (p: Provider): Form => ({
   name: p.name,
+  vendor: p.vendor ?? "custom",
   kind: p.kind,
   base_url: p.base_url ?? "",
   api_key: "",
   default_model: p.default_model,
   extra_headers: p.extra_headers,
+  default_server_tools: p.default_server_tools ?? {},
+  extra_body_text: p.extra_body ? JSON.stringify(p.extra_body, null, 2) : "",
   is_enabled: p.is_enabled,
   auto_retry: p.auto_retry ?? { enabled: false, max_attempts: 3 },
   defaults: p.defaults ?? DEFAULT_PROVIDER_DEFAULTS,
 });
 
-const toInput = (f: Form): ProviderInput => ({ ...f, base_url: f.base_url.trim(), name: f.name.trim() });
-
-interface KindInfo {
-  value: ProviderKind;
-  name: string;
-  sub: string;
-  /** Placeholder of the base URL (a default URL, or required / unused). */
-  base: { default: string } | "required" | "unused";
-  model: string;
-  env: string;
+function parseExtraBody(raw: string): { value: Record<string, unknown> | null; error: boolean } {
+  const trimmed = raw.trim();
+  if (!trimmed) return { value: null, error: false };
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return { value: parsed as Record<string, unknown>, error: false };
+    }
+    return { value: null, error: true };
+  } catch {
+    return { value: null, error: true };
+  }
 }
 
-const KINDS: KindInfo[] = [
-  { value: "openai", name: "OpenAI", sub: "Responses API", base: { default: "https://api.openai.com/v1" }, model: "gpt-5.1", env: "OPENAI_API_KEY" },
-  { value: "anthropic", name: "Anthropic", sub: "Messages API", base: { default: "https://api.anthropic.com" }, model: "claude-sonnet-4-5", env: "ANTHROPIC_API_KEY" },
-  { value: "gemini", name: "Gemini", sub: "Google AI Studio", base: { default: "https://generativelanguage.googleapis.com/v1beta" }, model: "gemini-2.5-flash", env: "GEMINI_API_KEY" },
-  { value: "openai_compatible", name: "", sub: "", base: "required", model: "llama3.1:8b", env: "LOCAL_API_KEY" },
-];
-const MOCK: KindInfo = { value: "mock", name: "Mock", sub: "", base: "unused", model: "mock", env: "API_KEY" };
-
-/** Display texts of a kind in the UI language (vendor and API names stay as they are). */
-function useKindInfo() {
-  const t = useT();
-  return (k: ProviderKind): KindInfo & { basePlaceholder: string } => {
-    const i = KINDS.find((x) => x.value === k) ?? MOCK;
-    const name = k === "openai_compatible" ? t("prov.kind.openai_compatible") : i.name;
-    const sub = k === "openai_compatible" ? t("prov.sub.openai_compatible") : k === "mock" ? t("prov.sub.mock") : i.sub;
-    const basePlaceholder =
-      i.base === "required" ? t("prov.baseRequired") : i.base === "unused" ? t("prov.baseUnused") : t("prov.baseDefault", { url: i.base.default });
-    return { ...i, name, sub, basePlaceholder };
+const toInput = (f: Form): ProviderInput => {
+  const parsedExtra = parseExtraBody(f.extra_body_text);
+  return {
+    name: f.name.trim(),
+    vendor: f.vendor,
+    kind: f.kind,
+    base_url: f.base_url.trim(),
+    api_key: f.api_key,
+    default_model: f.default_model,
+    extra_headers: f.extra_headers,
+    default_server_tools: f.default_server_tools,
+    extra_body: parsedExtra.value,
+    is_enabled: f.is_enabled,
+    auto_retry: f.auto_retry,
+    defaults: f.defaults,
   };
-}
+};
 
 const OUTPUT_PRESETS = [4096, 8192, 16384, 32768, 65536];
 const CONTEXT_PRESETS = [32_000, 128_000, 200_000, 1_000_000];
@@ -255,9 +270,49 @@ export function ProvidersView({ selected }: { selected: string | null }) {
 
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setForm((f) => ({ ...f, [k]: v }));
   const setD = <K extends keyof ProviderDefaults>(k: K, v: ProviderDefaults[K]) => setForm((f) => ({ ...f, defaults: { ...f.defaults, [k]: v } }));
-  const kindInfo = useKindInfo();
   const { t, fmt } = useI18n();
-  const info = kindInfo(form.kind);
+  const preset = getVendorPreset(form.vendor);
+  const proto = getProtocolOption(form.vendor, form.kind) ?? preset.protocols[0];
+  const isMock = form.kind === "mock";
+  const extraBodyStatus = parseExtraBody(form.extra_body_text);
+
+  const selectVendor = (v: Vendor) => {
+    if (current) return;
+    const nextPreset = getVendorPreset(v);
+    const nextProto = nextPreset.protocols[0];
+    setForm((f) => {
+      const autoUrl = !f.base_url.trim() || KNOWN_DEFAULT_URLS.has(f.base_url.trim());
+      return {
+        ...f,
+        vendor: v,
+        kind: nextProto.kind,
+        base_url: autoUrl ? (nextPreset.id === "openai" || nextPreset.id === "anthropic" || nextPreset.id === "gemini" ? "" : nextProto.defaultBaseUrl) : f.base_url,
+        default_server_tools: {},
+      };
+    });
+  };
+
+  const selectProtocol = (kind: ProviderKind) => {
+    if (current) return;
+    const nextProto = getProtocolOption(form.vendor, kind);
+    if (!nextProto) return;
+    setForm((f) => {
+      const autoUrl = !f.base_url.trim() || KNOWN_DEFAULT_URLS.has(f.base_url.trim());
+      const nextUrl =
+        nextProto.kind === "openai" && f.vendor === "openai"
+          ? ""
+          : nextProto.defaultBaseUrl;
+      return {
+        ...f,
+        kind,
+        base_url: autoUrl ? nextUrl : f.base_url,
+      };
+    });
+  };
+
+  const setServerTool = (updater: (cur: ServerToolConfig) => ServerToolConfig) => {
+    setForm((f) => ({ ...f, default_server_tools: updater(f.default_server_tools ?? {}) }));
+  };
 
   const runTest = async (id: string) => {
     setTests((t) => ({ ...t, [id]: "running" }));
@@ -292,6 +347,10 @@ export function ProvidersView({ selected }: { selected: string | null }) {
   };
 
   const save = async () => {
+    if (extraBodyStatus.error) {
+      setError(t("prov.extraBodyInvalid"));
+      return;
+    }
     setSaving(true);
     try {
       const saved = current ? await providers.update(current.id, toInput(form)) : await providers.create(toInput(form));
@@ -318,7 +377,13 @@ export function ProvidersView({ selected }: { selected: string | null }) {
 
   const temp = form.defaults.temperature;
   const level = REASONING_LEVELS.find((l) => l.value === form.defaults.reasoning_effort) ?? REASONING_LEVELS[0];
-  const kinds = current?.kind === "mock" ? [...KINDS, MOCK] : KINDS;
+  const basePlaceholder = isMock
+    ? t("prov.baseUnused")
+    : preset.baseRequired
+      ? t("prov.baseRequired")
+      : t("prov.baseDefault", { url: proto.defaultBaseUrl });
+  const supportedTools = proto.serverTools;
+  const hasAnyServerTools = Object.keys(supportedTools).length > 0;
 
   return (
     <div className="master-detail">
@@ -337,7 +402,7 @@ export function ProvidersView({ selected }: { selected: string | null }) {
               {p.id === selected && <motion.span layoutId="provider-list-active" className="list-active" transition={spring} />}
               <div className="provider-row">
                 <span className="provider-kind">
-                  <KindIcon kind={p.kind} size={16} />
+                  <KindIcon kind={p.kind === "mock" ? "mock" : p.vendor ?? p.kind} size={16} />
                 </span>
                 <span className="provider-text">
                   <span className="provider-name">
@@ -373,7 +438,13 @@ export function ProvidersView({ selected }: { selected: string | null }) {
             <header className="pf-head">
               <div>
                 <h2>{current ? current.name : t("prov.add")}</h2>
-                <p>{current ? `${kindInfo(current.kind).name} · ${kindInfo(current.kind).sub}` : t("prov.addSub")}</p>
+                <p>
+                  {current
+                    ? isMock
+                      ? `Mock · ${t("prov.sub.mock")}`
+                      : `${preset.name} · ${proto.label}`
+                    : t("prov.addSub")}
+                </p>
               </div>
               <div className="pf-head-aside">
                 <span className="pf-status">{form.is_enabled ? t("common.enabled") : t("common.disabled")}</span>
@@ -382,51 +453,179 @@ export function ProvidersView({ selected }: { selected: string | null }) {
             </header>
             <ErrorBar error={error} onDismiss={() => setError(null)} />
 
-            <div className="kind-tiles" role="radiogroup" aria-label={t("prov.kinds")}>
-              {kinds.map((k) => {
-                const on = form.kind === k.value;
-                return (
-                  <button
-                    key={k.value}
-                    type="button"
-                    role="radio"
-                    aria-checked={on}
-                    disabled={!!current && !on}
-                    className={`kind-tile ${on ? "on" : ""}`}
-                    onClick={() => !current && set("kind", k.value)}
-                    title={current && !on ? t("prov.kindLocked") : undefined}
-                  >
-                    {on && <motion.span layoutId="kind-tile-active" className="kind-tile-ring" transition={spring} />}
-                    <span className="kind-tile-icon">
-                      <KindIcon kind={k.value} />
-                    </span>
-                    <span className="kind-tile-name">{kindInfo(k.value).name}</span>
-                    <span className="kind-tile-sub">{kindInfo(k.value).sub}</span>
-                  </button>
-                );
-              })}
-            </div>
-            {current && <p className="pf-note">{t("prov.kindLockedNote")}</p>}
+            {!isMock && (
+              <>
+                <div className="kind-tiles vendor-grid" role="radiogroup" aria-label={t("prov.kinds")}>
+                  {VENDOR_PRESETS.map((v) => {
+                    const on = form.vendor === v.id;
+                    return (
+                      <button
+                        key={v.id}
+                        type="button"
+                        role="radio"
+                        aria-checked={on}
+                        disabled={!!current && !on}
+                        className={`kind-tile ${on ? "on" : ""}`}
+                        onClick={() => selectVendor(v.id)}
+                        title={current && !on ? t("prov.kindLocked") : undefined}
+                      >
+                        {on && <motion.span layoutId="kind-tile-active" className="kind-tile-ring" transition={spring} />}
+                        <span className="kind-tile-icon">
+                          <KindIcon kind={v.id} />
+                        </span>
+                        <span className="kind-tile-name">{v.name}</span>
+                        <span className="kind-tile-sub">{v.sub}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <Collapse open={preset.protocols.length > 1}>
+                  <div className="pf-protocol-bar">
+                    <Label hint={current ? <span className="field-hint">{t("prov.protocolLocked")}</span> : undefined}>
+                      {t("prov.protocol")}
+                    </Label>
+                    <SegmentedControl<ProviderKind>
+                      full
+                      ariaLabel={t("prov.protocol")}
+                      value={form.kind}
+                      onChange={(k) => !current && selectProtocol(k)}
+                      options={preset.protocols.map((p) => ({
+                        value: p.kind,
+                        label: p.recommended ? `${p.label} (${t("prov.protocolRecommended")})` : p.label,
+                        disabled: !!current && p.kind !== form.kind,
+                      }))}
+                    />
+                  </div>
+                </Collapse>
+                {current && <p className="pf-note">{t("prov.kindLockedNote")}</p>}
+              </>
+            )}
 
             <Section title={t("prov.connection")} description={t("prov.connectionSub")}>
               <div className="pf-grid">
                 <div className="pf-field">
                   <Label htmlFor={ids.name}>{t("prov.name")}</Label>
-                  <input id={ids.name} value={form.name} placeholder={t("prov.example", { value: info.name })} onChange={(e) => set("name", e.target.value)} />
+                  <input id={ids.name} value={form.name} placeholder={t("prov.example", { value: preset.name })} onChange={(e) => set("name", e.target.value)} />
                 </div>
                 <div className="pf-field">
                   <Label htmlFor={ids.base}>{t("prov.baseUrl")}</Label>
-                  <input id={ids.base} value={form.base_url} placeholder={info.basePlaceholder} disabled={form.kind === "mock"} onChange={(e) => set("base_url", e.target.value)} />
-                  <span className="field-hint">{info.base === "required" ? t("prov.baseRequiredHint") : t("prov.baseOptionalHint")}</span>
+                  <input id={ids.base} value={form.base_url} placeholder={basePlaceholder} disabled={isMock} onChange={(e) => set("base_url", e.target.value)} />
+                  <span className="field-hint">{preset.baseRequired ? t("prov.baseRequiredHint") : t("prov.baseOptionalHint")}</span>
                 </div>
               </div>
-              {form.kind !== "mock" && (
+              {!isMock && (
                 <div className="pf-field">
-                  <Label>{t("prov.apiKey")}</Label>
-                  <SecretInput current={current?.api_key} source={current?.api_key_source} value={form.api_key} onChange={(v) => set("api_key", v)} envName={info.env} />
+                  <Label hint={preset.apiKeyOptional ? <span className="field-hint">{t("prov.apiKeyOptional")}</span> : undefined}>
+                    {t("prov.apiKey")}
+                  </Label>
+                  <SecretInput current={current?.api_key} source={current?.api_key_source} value={form.api_key} onChange={(v) => set("api_key", v)} envName={preset.env} />
                 </div>
               )}
             </Section>
+
+            {!isMock && (
+              <Section title={t("prov.serverTools")} description={t("prov.serverToolsSub")}>
+                {hasAnyServerTools ? (
+                  <div className="pf-server-tools">
+                    {supportedTools.web_search && (
+                      <div className="pf-tool-row">
+                        <div className="pf-tool-info">
+                          <div className="pf-tool-title">
+                            <span>{t("prov.toolWebSearch")}</span>
+                            <span className="pill tiny mono">{supportedTools.web_search}</span>
+                          </div>
+                          <span className="field-hint">{t("prov.toolWebSearchDesc")}</span>
+                        </div>
+                        <Switch
+                          checked={!!form.default_server_tools.web_search?.enabled}
+                          onChange={(on) =>
+                            setServerTool((cur) => ({
+                              ...cur,
+                              web_search: on ? { enabled: true, max_uses: cur.web_search?.max_uses ?? 5 } : null,
+                            }))
+                          }
+                        />
+                      </div>
+                    )}
+                    {supportedTools.url_context && (
+                      <div className="pf-tool-row">
+                        <div className="pf-tool-info">
+                          <div className="pf-tool-title">
+                            <span>{t("prov.toolUrlContext")}</span>
+                            <span className="pill tiny mono">{supportedTools.url_context}</span>
+                          </div>
+                          <span className="field-hint">{t("prov.toolUrlContextDesc")}</span>
+                        </div>
+                        <Switch
+                          checked={!!form.default_server_tools.url_context}
+                          onChange={(on) => setServerTool((cur) => ({ ...cur, url_context: on }))}
+                        />
+                      </div>
+                    )}
+                    {supportedTools.code_execution && (
+                      <div className="pf-tool-row">
+                        <div className="pf-tool-info">
+                          <div className="pf-tool-title">
+                            <span>{t("prov.toolCodeExecution")}</span>
+                            <span className="pill tiny mono">{supportedTools.code_execution}</span>
+                          </div>
+                          <span className="field-hint">{t("prov.toolCodeExecutionDesc")}</span>
+                        </div>
+                        <Switch
+                          checked={!!form.default_server_tools.code_execution}
+                          onChange={(on) => setServerTool((cur) => ({ ...cur, code_execution: on }))}
+                        />
+                      </div>
+                    )}
+                    {supportedTools.file_search && (
+                      <div className="pf-tool-row pf-tool-row-col">
+                        <div className="pf-tool-row-top">
+                          <div className="pf-tool-info">
+                            <div className="pf-tool-title">
+                              <span>{t("prov.toolFileSearch")}</span>
+                              <span className="pill tiny mono">{supportedTools.file_search}</span>
+                            </div>
+                            <span className="field-hint">{t("prov.toolFileSearchDesc")}</span>
+                          </div>
+                          <Switch
+                            checked={!!form.default_server_tools.file_search?.enabled}
+                            onChange={(on) =>
+                              setServerTool((cur) => ({
+                                ...cur,
+                                file_search: on
+                                  ? { enabled: true, vector_store_ids: cur.file_search?.vector_store_ids ?? [] }
+                                  : null,
+                              }))
+                            }
+                          />
+                        </div>
+                        <Collapse open={!!form.default_server_tools.file_search?.enabled}>
+                          <input
+                            className="mono"
+                            placeholder={t("prov.vectorStorePlaceholder")}
+                            value={(form.default_server_tools.file_search?.vector_store_ids ?? []).join(", ")}
+                            onChange={(e) =>
+                              setServerTool((cur) => ({
+                                ...cur,
+                                file_search: {
+                                  enabled: true,
+                                  vector_store_ids: e.target.value
+                                    .split(",")
+                                    .map((s) => s.trim())
+                                    .filter(Boolean),
+                                },
+                              }))
+                            }
+                          />
+                        </Collapse>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <p className="field-hint">{t("prov.serverToolsUnsupported")}</p>
+                )}
+              </Section>
+            )}
 
             <Section title={t("prov.model")} description={t("prov.modelSub")}>
               <div className="pf-field">
@@ -441,7 +640,7 @@ export function ProvidersView({ selected }: { selected: string | null }) {
                 >
                   {t("prov.defaultModel")}
                 </Label>
-                <Combobox value={form.default_model} onChange={(v) => set("default_model", v)} options={models} placeholder={t("prov.example", { value: info.model })} />
+                <Combobox value={form.default_model} onChange={(v) => set("default_model", v)} options={models} placeholder={preset.defaultModel ? t("prov.example", { value: preset.defaultModel }) : "model-id"} />
                 <AnimatePresence mode="wait" initial={false}>
                   <motion.span
                     key={typeof modelsState === "object" ? "err" : models.length ? "n" : "none"}
@@ -577,6 +776,19 @@ export function ProvidersView({ selected }: { selected: string | null }) {
                     value={form.extra_headers}
                     onChange={(v) => set("extra_headers", v)}
                   />
+                  <div className="pf-field">
+                    <Label>{t("prov.extraBody")}</Label>
+                    <textarea
+                      rows={4}
+                      className="mono"
+                      placeholder='{"enable_thinking": true}'
+                      value={form.extra_body_text}
+                      onChange={(e) => set("extra_body_text", e.target.value)}
+                    />
+                    <span className={`field-hint ${extraBodyStatus.error ? "error-text" : ""}`}>
+                      {extraBodyStatus.error ? t("prov.extraBodyInvalid") : t("prov.extraBodyHint")}
+                    </span>
+                  </div>
                 </div>
               </Collapse>
             </section>

@@ -147,14 +147,14 @@ tool_def!(ConfigureMcpServer, "configure_mcp_server", false,
 {
     "type": "object",
     "properties": {
-        "name": { "type": "string", "description": "[A-Za-z0-9_-], becomes the tool prefix" },
-        "transport": { "type": "string", "enum": ["streamable_http", "stdio"] },
-        "url": { "type": "string" },
-        "headers": { "type": "object", "additionalProperties": { "type": "string" } },
-        "command": { "type": "string" },
-        "args": { "type": "array", "items": { "type": "string" } },
-        "env": { "type": "object", "additionalProperties": { "type": "string" } },
-        "test": { "type": "boolean", "description": "connect and list tools after saving (default true)" }
+        "name": { "type": "string", "description": "Server identifier (1-32 chars of [A-Za-z0-9_-], no `__`); becomes the tool prefix" },
+        "transport": { "type": "string", "enum": ["streamable_http", "stdio"], "description": "`streamable_http` (requires `url`) or `stdio` (requires `command`)" },
+        "url": { "type": "string", "description": "HTTP(S) endpoint URL (required when transport is `streamable_http`)" },
+        "headers": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Optional HTTP headers map {header_name: value} (streamable_http only)" },
+        "command": { "type": "string", "description": "Executable to spawn (required when transport is `stdio`)" },
+        "args": { "type": "array", "items": { "type": "string" }, "description": "Optional CLI arguments for `command` (stdio only)" },
+        "env": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Optional environment variables map {VAR: value} (stdio only)" },
+        "test": { "type": "boolean", "description": "Connect and list tools after saving (default true)" }
     },
     "required": ["name", "transport"]
 });
