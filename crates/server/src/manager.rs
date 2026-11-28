@@ -17,9 +17,9 @@ use std::time::Duration;
 
 use oort_agent::{
     AgentEvent, AgentState, FrozenToolset, Inbox, LoopInput, NewSession, SessionStatus,
-    SessionStore,
+    SessionStore, TitleSource,
 };
-use oort_llm::{ContentPart, Message};
+use oort_llm::{ContentPart, Message, Vendor};
 use tokio::sync::{Mutex, broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 
@@ -34,6 +34,7 @@ use crate::hub::Hub;
 use crate::registry::{Registry, ToolSelection, parse_groups};
 use crate::session_tools::RENDER_WIDGET;
 use crate::subagent::{ContextMode, EventFn, SubagentRuntime, SubagentTask, run_subagent};
+use crate::title::{self, TitleHook};
 use oort_agent::{Lineage, SkillExecutionMode};
 use oort_tools::Group;
 
@@ -46,6 +47,8 @@ struct ActiveSession {
     thinking: oort_agent::LiveThinking,
     model: oort_agent::LiveModel,
     server_tools: oort_agent::LiveServerTools,
+    /// Set while the session still needs a title.
+    title_wanted: oort_agent::TitleRequest,
     /// Cancelled when the loop task has fully exited.
     finished: CancellationToken,
     generation: u64,
@@ -75,6 +78,8 @@ pub struct SessionManager {
     errors: Arc<Mutex<BTreeMap<String, LoopError>>>,
     /// Automatic retries made since the last success or user action, per session.
     retries: Arc<Mutex<BTreeMap<String, u32>>>,
+    /// Sessions whose title is being generated.
+    titling: title::InFlight,
     me: Weak<SessionManager>,
 }
 
@@ -91,6 +96,7 @@ impl SessionManager {
             skill_runs: Mutex::default(),
             errors: Arc::default(),
             retries: Arc::default(),
+            titling: Default::default(),
             me: me.clone(),
         })
     }
@@ -264,13 +270,19 @@ impl SessionManager {
             .into_iter()
             .collect();
         let state = AgentState::with_tools(system_prompt, initial, &frozen);
-        let title = req
-            .title
-            .or_else(|| preset.as_ref().map(|p| p.name.clone()))
-            .unwrap_or_default();
+        // A title given by the caller is theirs; otherwise one is generated (the preset's name
+        // stands in until then).
+        let (title, title_source) = match nonempty(req.title.clone()) {
+            Some(title) => (title, TitleSource::Manual),
+            None => (
+                preset.as_ref().map(|p| p.name.clone()).unwrap_or_default(),
+                TitleSource::Default,
+            ),
+        };
         let meta = NewSession {
             id: None,
             title,
+            title_source,
             provider: cfg.provider.clone(),
             model,
             config: serde_json::to_value(&cfg).map_err(|e| ApiError::Internal(e.to_string()))?,
@@ -396,6 +408,9 @@ impl SessionManager {
     pub async fn patch(&self, id: &str, req: PatchSessionRequest) -> Result<(), ApiError> {
         if let Some(title) = &req.title {
             self.store.set_title(id, title.trim()).await?;
+            if let Some(a) = self.active.lock().await.get(id) {
+                a.title_wanted.store(false, Ordering::Relaxed);
+            }
         }
         if let Some(policy) = req.approval_policy {
             self.store.set_approval_policy(id, policy).await?;
@@ -443,6 +458,36 @@ impl SessionManager {
             reasoning_effort: meta.reasoning_effort,
             model: meta.model,
         });
+        Ok(())
+    }
+
+    /// Names the session again on request. A rename made while the model is working wins.
+    pub async fn regenerate_title(&self, id: &str) -> Result<(), ApiError> {
+        let stored = self.store.load_state(id).await?;
+        if stored.meta.lineage.parent_session_id.is_some() {
+            return Err(ApiError::Conflict(
+                "subagent sessions are not renamed".into(),
+            ));
+        }
+        let (user, assistant) = title::opening(&stored.state)
+            .ok_or_else(|| ApiError::BadRequest("the conversation is still empty".into()))?;
+        let cfg = session_settings(&stored.meta)?;
+        let new = match self.registry.title_model(&cfg).await? {
+            Some(model) => title::generate(model.as_ref(), &cfg.model, &user, &assistant).await,
+            None => title::fallback(&user),
+        }
+        .ok_or_else(|| ApiError::BadGateway("no title could be generated".into()))?;
+        let meta = stored.meta;
+        if self
+            .store
+            .replace_title(id, &new, &meta.title, meta.title_source)
+            .await?
+        {
+            if let Some(a) = self.active.lock().await.get(id) {
+                a.title_wanted.store(false, Ordering::Relaxed);
+            }
+            title::publish(&*self.hub(id).await, id, &new);
+        }
         Ok(())
     }
 
@@ -656,6 +701,9 @@ impl SessionManager {
         let thinking: oort_agent::LiveThinking =
             Arc::new(std::sync::RwLock::new(effort.thinking()));
         let live_model: oort_agent::LiveModel = Arc::new(std::sync::RwLock::new(cfg.model.clone()));
+        let native_title = provider_rec
+            .as_ref()
+            .is_some_and(|p| p.vendor == Vendor::Deepseek);
         let effective_st = stored
             .meta
             .enabled_server_tools
@@ -663,6 +711,25 @@ impl SessionManager {
             .or_else(|| provider_rec.map(|p| p.default_server_tools));
         let live_server_tools: oort_agent::LiveServerTools =
             Arc::new(std::sync::RwLock::new(effective_st));
+        // Subagent sessions keep the title their parent gave them.
+        let title_wanted = TitleHook::wanted_flag(
+            stored.meta.title_source == TitleSource::Default
+                && stored.meta.lineage.parent_session_id.is_none(),
+        );
+        let title_hook = if title_wanted.load(Ordering::Relaxed) {
+            Some(TitleHook {
+                store: Arc::clone(&self.store),
+                hub: Arc::clone(&hub),
+                session_id: id.to_string(),
+                native: native_title,
+                wanted: Arc::clone(&title_wanted),
+                model: self.registry.title_model(&cfg).await?,
+                model_id: Arc::clone(&live_model),
+                in_flight: Arc::clone(&self.titling),
+            })
+        } else {
+            None
+        };
         let (ev_tx, mut ev_rx) = mpsc::channel(1024);
         let agent = self
             .registry
@@ -678,6 +745,7 @@ impl SessionManager {
                 Arc::clone(&thinking),
                 Some(Arc::clone(&live_model)),
                 Some(Arc::clone(&live_server_tools)),
+                title_hook,
             )
             .await?;
         let (in_tx, in_rx) = mpsc::channel(64);
@@ -721,6 +789,7 @@ impl SessionManager {
         let me = self.me.clone();
         let closing = self.closing.clone();
         let session_id = id.to_string();
+        let store = Arc::clone(&self.store);
         let mut state = stored.state;
         let done = finished.clone();
         tokio::spawn(async move {
@@ -764,6 +833,7 @@ impl SessionManager {
                     }
                 }
             }
+            let failed = result.is_err();
             hub.publish(|seq| Envelope::LoopExited {
                 seq,
                 error: result.err().map(|e| e.to_string()),
@@ -774,6 +844,19 @@ impl SessionManager {
                 .is_some_and(|a| a.generation == generation)
             {
                 reg.remove(&session_id);
+            }
+            drop(reg);
+            // A first turn that failed or was stopped still deserves a readable title; it stays
+            // undecided, so a later completed turn can replace it.
+            if failed
+                && let Some((user, _)) = title::opening(&state)
+                && let Some(provisional) = title::fallback(&user)
+                && matches!(
+                    store.set_provisional_title(&session_id, &provisional).await,
+                    Ok(true)
+                )
+            {
+                title::publish(&hub, &session_id, &provisional);
             }
             done.cancel();
         });
@@ -787,6 +870,7 @@ impl SessionManager {
                 thinking,
                 model: live_model,
                 server_tools: live_server_tools,
+                title_wanted,
                 finished,
                 generation,
             },

@@ -30,6 +30,7 @@ pub(crate) struct TurnAccumulator {
     citations: Vec<Citation>,
     usage: Option<Usage>,
     stop_reason: Option<StopReason>,
+    title: Option<String>,
 }
 
 impl TurnAccumulator {
@@ -106,6 +107,7 @@ impl TurnAccumulator {
                 }
             }
             StreamEvent::Usage(u) => self.usage = Some(u.clone()),
+            StreamEvent::Title(t) => self.title = Some(t.clone()),
             StreamEvent::Done { stop_reason } => {
                 if stop_reason.is_some() {
                     self.stop_reason = stop_reason.clone();
@@ -131,6 +133,7 @@ impl TurnAccumulator {
             citations: self.citations,
             stop_reason: self.stop_reason,
             usage: self.usage,
+            title: self.title,
         }
     }
 }

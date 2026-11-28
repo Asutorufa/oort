@@ -38,6 +38,7 @@ export const ko: Dict = {
   "sidebar.failed": "오류로 중지됨",
   "sidebar.menu": "더 보기",
   "sidebar.rename": "이름 바꾸기",
+  "sidebar.regenerateTitle": "제목 다시 생성",
   "sidebar.exportJson": "JSON으로 내보내기",
   "sidebar.empty": "아직 채팅이 없습니다",
   "sidebar.theme": "테마",

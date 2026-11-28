@@ -83,6 +83,16 @@ Try MCP with the bundled mock server: `cargo build -p oort-mcp`, then add a `std
 
 Sessions created before the workbench keep working with `*_API_KEY` / `*_BASE_URL` environment variables.
 
+### Session titles
+
+A new chat is named automatically, without touching the conversation's requests (so the prefix cache is unaffected):
+
+1. A `deepseek` provider is asked for a native title (`"title": {"enabled": true}`) with the first request only.
+2. Otherwise (or when DeepSeek returns none), one small background request after the first turn: its own system prompt, no tools, thinking off, 64 output tokens, 15 s.
+3. If that fails, the start of the first message.
+
+A title the user types (or passes to `POST /api/sessions`) is never replaced (`title_source = 'manual'`), and subagent sessions are not named. The sidebar menu can regenerate a title. The offline mock provider goes straight to step 3.
+
 ### Frozen tools and configuration changes
 
 A session's system prompt and tool catalog are frozen (sorted) when it is created, and never derived again, so the provider prefix cache stays valid. Editing, renaming or deleting an MCP server only affects new sessions: an existing session always sends its frozen catalog, served by whatever connection is live; a tool that no longer exists answers with an error result. Deleting a provider makes its sessions read-only (they cannot run again).
@@ -156,9 +166,10 @@ Each provider has an `auto_retry` setting (`{ "enabled": false, "max_attempts": 
 | `GET /api/sessions` | List sessions |
 | `GET /api/sessions/:id` | Snapshot: raw history, active view, checkpoints, pending approvals, usage with per-call `ttft_ms`, `latency_ms` and a request summary (sizes and prefix hashes) |
 | `PATCH /api/sessions/:id` | `{title?, approval_policy?, reasoning_effort?, model?}` (applies to a running loop immediately; the thinking level and model change the next request only, never the history; `model` switches within the session's provider) |
+| `POST /api/sessions/:id/title/regenerate` | Generate the title again (a rename made meanwhile wins) |
 | `DELETE /api/sessions/:id` | Stop the loop and delete the session with its history |
 | `GET /api/sessions/:id/export` | Debug JSON: metadata, settings, frozen prompt and tools, raw history, compactions, LLM call metrics (no secrets) |
-| `GET /api/sessions/:id/events` | SSE: `hello` (status + in-progress turn), then `agent` / `widget` / `loop_exited` / `session_updated` / `deleted` / `lagged`. Ids are `{boot}:{seq}`; reconnecting with `Last-Event-ID` replays missed events (`hello.resumed`), otherwise the client refetches the snapshot |
+| `GET /api/sessions/:id/events` | SSE: `hello` (status + in-progress turn), then `agent` (including `title_updated`) / `widget` / `loop_exited` / `session_updated` / `deleted` / `lagged`. Ids are `{boot}:{seq}`; reconnecting with `Last-Event-ID` replays missed events (`hello.resumed`), otherwise the client refetches the snapshot |
 | `POST /api/sessions/:id/input` | `{"type":"steer"\|"interrupt","text","invoked_skills"?:[{name,arguments?}]}`, `{"type":"approval","call_id","decision":"approve"\|"deny"\|"answer","reason"?,"content"?}`, `{"type":"compact"}` |
 | `POST /api/sessions/:id/cancel` | Stop the background loop (state is kept and can be resumed); also cancels a scheduled automatic retry |
 | `POST /api/sessions/:id/retry` | Start the loop again after it stopped with an error (`last_error` in the session detail) |

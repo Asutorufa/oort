@@ -271,6 +271,11 @@ export function useSessionStream(id: string | null, onDeleted?: () => void) {
         case "plan_updated":
           setPlan(ev.steps);
           return;
+        case "title_updated":
+          // Shown at once; the refetch also covers a snapshot request already in flight.
+          setDetail((d) => d && { ...d, title: ev.title });
+          scheduleRefresh();
+          return;
         case "subagent": {
           const inner = ev.inner;
           setSubagents((all) => {

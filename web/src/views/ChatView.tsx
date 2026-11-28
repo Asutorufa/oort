@@ -1,6 +1,6 @@
-import { AnimatePresence, motion } from "motion/react";
-import { useEffect, useMemo, useState } from "react";
-import { spring } from "../lib/motion";
+import { animate, AnimatePresence, motion } from "motion/react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { fadeSlow, spring } from "../lib/motion";
 import { useT, type Key, type T } from "../i18n";
 import { commands as commandsApi, errorText, providers as providersApi, sessions } from "../api";
 import { useToast } from "../components/common/Toast";
@@ -104,6 +104,18 @@ function Session({ id, onListChanged }: { id: string; onListChanged: () => void 
   const [inspector, setInspector] = useState(false);
   const [inspect, setInspect] = useState<TurnUsage | null>(null);
   const [title, setTitle] = useState<string | null>(null);
+  // A new title (generated or renamed) fades into the header and reaches the sidebar at once.
+  const titleRef = useRef<HTMLInputElement>(null);
+  const shownTitle = useRef<string | undefined>(undefined);
+  const savedTitle = detail?.title;
+  useEffect(() => {
+    if (savedTitle === undefined) return;
+    if (shownTitle.current !== undefined && shownTitle.current !== savedTitle) {
+      if (titleRef.current) animate(titleRef.current, { opacity: [0.2, 1] }, fadeSlow);
+      onListChanged();
+    }
+    shownTitle.current = savedTitle;
+  }, [savedTitle, onListChanged]);
 
   const send = async (input: InputRequest) => {
     try {
@@ -194,6 +206,7 @@ function Session({ id, onListChanged }: { id: string; onListChanged: () => void 
         <header className="chat-top">
           <div className="chat-top-left">
             <input
+              ref={titleRef}
               className="chat-title"
               value={title ?? detail.title}
               placeholder={t("chat.titlePlaceholder")}

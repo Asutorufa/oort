@@ -365,6 +365,7 @@ pub async fn run_subagent(
             profile.name,
             task.task.chars().take(48).collect::<String>()
         ),
+        title_source: Default::default(),
         provider: cfg.provider.clone(),
         model: cfg.model.clone(),
         config: serde_json::to_value(&cfg).map_err(|e| ApiError::Internal(e.to_string()))?,

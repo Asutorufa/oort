@@ -16,6 +16,7 @@ pub mod registry;
 pub mod routes;
 pub mod session_tools;
 pub mod subagent;
+pub mod title;
 pub mod tools;
 
 pub use config::{ServerConfig, SessionConfig};

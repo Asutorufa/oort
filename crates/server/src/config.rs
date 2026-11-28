@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use oort_agent::{
     CompactionPolicy, DefaultContextManager, LiveModel, LiveServerTools, LiveThinking,
-    ProviderDefaults, RequestParams, UsageAccounting,
+    ProviderDefaults, RequestParams, TitleRequest, UsageAccounting,
 };
 use oort_llm::PromptCacheConfig;
 use serde::{Deserialize, Serialize};
@@ -140,9 +140,10 @@ impl SessionConfig {
         thinking: LiveThinking,
         model: Option<LiveModel>,
     ) -> DefaultContextManager {
-        self.context_manager_with_tools(session_id, defaults, thinking, model, None, None)
+        self.context_manager_with_tools(session_id, defaults, thinking, model, None, None, None)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn context_manager_with_tools(
         &self,
         session_id: &str,
@@ -151,6 +152,7 @@ impl SessionConfig {
         model: Option<LiveModel>,
         server_tools: Option<LiveServerTools>,
         extra_body: Option<serde_json::Value>,
+        title_request: Option<TitleRequest>,
     ) -> DefaultContextManager {
         DefaultContextManager::new(RequestParams {
             model: Some(self.model.clone()),
@@ -165,6 +167,7 @@ impl SessionConfig {
             live_model: model,
             live_server_tools: server_tools,
             extra_body,
+            title_request,
             ..Default::default()
         })
         .with_compaction(self.policy())

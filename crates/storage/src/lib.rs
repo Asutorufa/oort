@@ -12,7 +12,8 @@ use oort_agent::store::{assemble_state, canonical_tools_json};
 use oort_agent::{
     AgentState, ApprovalPolicyKind, CompactionCheckpoint, Lineage, LlmCallStats, NewSession,
     ReasoningEffort, ServerToolConfig, SessionId, SessionMeta, SessionSnapshot, SessionStatus,
-    SessionStore, StepDelta, StoreError, StoredSession, ToolOutputBlob, ToolOutputBlobStore,
+    SessionStore, StepDelta, StoreError, StoredSession, TitleSource, ToolOutputBlob,
+    ToolOutputBlobStore,
 };
 use oort_llm::{ContentPart, Message, Role, Usage};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow};
@@ -93,8 +94,8 @@ impl SessionStore for SqliteSessionStore {
              frozen_tools, status, halt_reason, pending_calls, pending_steers, compaction_requested, \
              turn, usage_json, created_at, updated_at, parent_session_id, parent_tool_call_id, depth, \
              workspace_root, enabled_builtin_groups_json, loaded_skills_json, reasoning_effort, \
-             enabled_server_tools_json) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             enabled_server_tools_json, title_source) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(&meta.title)
@@ -121,6 +122,7 @@ impl SessionStore for SqliteSessionStore {
         .bind(to_json(&snap.loaded_skills))
         .bind(meta.reasoning_effort.as_str())
         .bind(meta.enabled_server_tools.as_ref().map(to_json))
+        .bind(meta.title_source.as_str())
         .execute(&mut *tx)
         .await
         .map_err(classify)?;
@@ -297,14 +299,64 @@ impl SessionStore for SqliteSessionStore {
     }
 
     async fn set_title(&self, id: &str, title: &str) -> Result<(), StoreError> {
-        let done = sqlx::query("UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?")
-            .bind(title)
-            .bind(now_ms())
-            .bind(id)
-            .execute(&self.pool)
-            .await
-            .map_err(classify)?;
+        let done = sqlx::query(
+            "UPDATE sessions SET title = ?, title_source = 'manual', updated_at = ? WHERE id = ?",
+        )
+        .bind(title)
+        .bind(now_ms())
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(classify)?;
         found(done.rows_affected(), id)
+    }
+
+    // Generated titles leave `updated_at` alone: naming a chat is not activity in it.
+    async fn set_auto_title(&self, id: &str, title: &str) -> Result<bool, StoreError> {
+        let done = sqlx::query(
+            "UPDATE sessions SET title = ?, title_source = 'auto' \
+             WHERE id = ? AND title_source != 'manual' AND parent_session_id IS NULL",
+        )
+        .bind(title)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(classify)?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn set_provisional_title(&self, id: &str, title: &str) -> Result<bool, StoreError> {
+        let done = sqlx::query(
+            "UPDATE sessions SET title = ? WHERE id = ? AND title = '' \
+             AND title_source = 'default' AND parent_session_id IS NULL",
+        )
+        .bind(title)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(classify)?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn replace_title(
+        &self,
+        id: &str,
+        title: &str,
+        expected: &str,
+        source: TitleSource,
+    ) -> Result<bool, StoreError> {
+        let done = sqlx::query(
+            "UPDATE sessions SET title = ?, title_source = 'auto' \
+             WHERE id = ? AND title = ? AND title_source = ? AND parent_session_id IS NULL",
+        )
+        .bind(title)
+        .bind(id)
+        .bind(expected)
+        .bind(source.as_str())
+        .execute(&self.pool)
+        .await
+        .map_err(classify)?;
+        Ok(done.rows_affected() > 0)
     }
 
     async fn set_approval_policy(
@@ -623,6 +675,7 @@ fn meta_from_row(row: &SqliteRow) -> Result<SessionMeta, StoreError> {
     Ok(SessionMeta {
         id: row.get("id"),
         title: row.get("title"),
+        title_source: TitleSource::parse(row.get("title_source"))?,
         provider: row.get("provider"),
         model: row.get("model"),
         config: from_json(row.get("config_json"), "config_json")?,

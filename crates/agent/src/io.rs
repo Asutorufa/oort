@@ -146,6 +146,11 @@ pub enum AgentEvent {
     PlanUpdated {
         steps: Vec<PlanStep>,
     },
+    /// The session's title was generated (published by the host once it is stored).
+    TitleUpdated {
+        session_id: String,
+        title: String,
+    },
     /// Timing and request summary of a completed LLM call.
     LlmCall {
         stats: Box<LlmCallStats>,

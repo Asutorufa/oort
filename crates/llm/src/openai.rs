@@ -15,7 +15,8 @@ use crate::sse::parse_sse_stream;
 use crate::types::{
     CacheTtl, ChatRequest, ChatResponse, Citation, ContentPart, DocumentSource, ImageSource,
     Message, PromptCacheConfig, ReasoningEffort, Role, StopReason, StreamEvent, ToolCall,
-    ToolChoice, ToolDefinition, Usage, Vendor, extract_domain, parse_tool_arguments,
+    ToolChoice, ToolDefinition, Usage, Vendor, apply_title_request, extract_domain,
+    parse_tool_arguments, title_of,
 };
 
 pub const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
@@ -356,6 +357,7 @@ impl OpenAIClient {
     ) -> Result<Value, Error> {
         let body = self.build_request_body(request, stream)?;
         let mut val = serde_json::to_value(body)?;
+        apply_title_request(self.vendor, request, &mut val);
         merge_extra_body(&mut val, self.extra_body.as_ref());
         merge_extra_body(&mut val, request.extra_body.as_ref());
         Ok(val)
@@ -669,6 +671,7 @@ struct OpenAIResponseMessage {
     tool_calls: Vec<OpenAIToolCallWire>,
     #[serde(default)]
     annotations: Vec<Value>,
+    title: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -717,6 +720,7 @@ struct OpenAIStreamDelta {
     tool_calls: Vec<OpenAIStreamToolCallDelta>,
     #[serde(default)]
     annotations: Vec<Value>,
+    title: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1009,9 +1013,12 @@ fn parse_chat_response(resp: OpenAIChatResponse) -> Result<ChatResponse, Error> 
         }
     }
 
+    let title = title_of(choice.message.title.as_ref());
+
     Ok(ChatResponse {
         id: resp.id,
         model: resp.model,
+        title,
         content: choice.message.content.unwrap_or_default(),
         thinking,
         thinking_signature: None,
@@ -1169,6 +1176,10 @@ where
                             }
                         }
 
+                        if let Some(title) = title_of(choice.delta.title.as_ref()) {
+                            st.queue.push_back(Ok(StreamEvent::Title(title)));
+                        }
+
                         for ann in &choice.delta.annotations {
                             if let Some(c) = parse_url_citation(ann) {
                                 st.queue.push_back(Ok(StreamEvent::Citation(c)));
@@ -1222,6 +1233,7 @@ fn parse_text_completion_response(
         id: resp.id,
         model: resp.model,
         content: choice.text,
+        title: None,
         thinking: None,
         thinking_signature: None,
         tool_calls: Vec::new(),

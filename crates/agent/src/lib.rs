@@ -46,6 +46,7 @@ pub use config_store::{
 };
 pub use context::{
     ContextManager, DefaultContextManager, LiveModel, LiveServerTools, LiveThinking, RequestParams,
+    TitleRequest,
 };
 pub use engine::{Agent, AgentBuilder, INTERRUPTED_TOOL_RESULT, StepOutcome};
 pub use error::AgentError;
@@ -66,7 +67,7 @@ pub use oort_llm::{
 pub use state::{AgentState, CompactionCheckpoint, Phase, StateParts, ToolDecision, UsageLedger};
 pub use store::{
     Lineage, NewSession, PendingCalls, PersistenceHook, SessionId, SessionJournal, SessionMeta,
-    SessionSnapshot, SessionStatus, SessionStore, StepDelta, StoreError, StoredSession,
+    SessionSnapshot, SessionStatus, SessionStore, StepDelta, StoreError, StoredSession, TitleSource,
     ToolOutputBlob, ToolOutputBlobStore,
 };
 pub use tool::{

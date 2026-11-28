@@ -15,7 +15,7 @@ use crate::sse::parse_sse_stream;
 use crate::types::{
     CacheBreakpoint, CacheTtl, ChatRequest, ChatResponse, Citation, ContentPart, DocumentSource,
     ImageSource, Message, PromptCacheConfig, Role, StopReason, StreamEvent, ToolCall, ToolChoice,
-    ToolDefinition, Usage, Vendor, extract_domain,
+    ToolDefinition, Usage, Vendor, apply_title_request, extract_domain, title_of,
 };
 
 pub const DEFAULT_ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com";
@@ -313,6 +313,7 @@ impl AnthropicClient {
     ) -> Result<Value, Error> {
         let body = self.build_request_body(request, stream)?;
         let mut val = serde_json::to_value(body)?;
+        apply_title_request(self.vendor, request, &mut val);
         merge_extra_body(&mut val, self.extra_body.as_ref());
         merge_extra_body(&mut val, request.extra_body.as_ref());
         Ok(val)
@@ -462,6 +463,7 @@ struct AnthropicMessagesResponse {
     content: Vec<Value>,
     stop_reason: Option<String>,
     usage: Option<AnthropicUsage>,
+    title: Option<Value>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -908,6 +910,7 @@ fn parse_anthropic_response(resp: AnthropicMessagesResponse) -> ChatResponse {
         citations,
         stop_reason: resp.stop_reason.as_deref().map(map_anthropic_stop_reason),
         usage: resp.usage.as_ref().map(map_anthropic_usage),
+        title: title_of(resp.title.as_ref()),
     }
 }
 
@@ -1194,6 +1197,9 @@ where
                             }
                         }
                         Some("message_delta") => {
+                            if let Some(title) = title_of(value.pointer("/delta/title")) {
+                                st.queue.push_back(Ok(StreamEvent::Title(title)));
+                            }
                             if let Some(reason) =
                                 value.pointer("/delta/stop_reason").and_then(Value::as_str)
                             {

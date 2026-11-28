@@ -5,10 +5,10 @@ import { GlobeIcon, LayersIcon, MemoryIcon, ModelIcon, MoonIcon, MoreIcon, PlusI
 import { OortMark } from "../brand/OortMark";
 import { href, navigate, type View } from "../hooks/useHashRoute";
 import { THEMES, useTheme } from "../theme/ThemeProvider";
-import { motion } from "motion/react";
+import { AnimatePresence, motion } from "motion/react";
 import { Popover, SegmentedControl, Select } from "../components/ui";
 import { LOCALES, useI18n, type Key, type Locale } from "../i18n";
-import { spring } from "../lib/motion";
+import { fade, spring } from "../lib/motion";
 import { Modal } from "../components/common";
 
 const NAV: { view: View; label: Key; icon: ReactNode }[] = [
@@ -48,6 +48,7 @@ export function Sidebar({
   const menuItem = menu ? items.find((x) => x.id === menu) : undefined;
   const [renaming, setRenaming] = useState<string | null>(null);
   const [title, setTitle] = useState("");
+  const renameFrom = useRef("");
   const [confirm, setConfirm] = useState<SessionSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -57,8 +58,18 @@ export function Sidebar({
   const rename = async (id: string, value: string) => {
     if (renaming !== id) return;
     setRenaming(null);
+    // An untouched name is not a rename: it would pin the title (or undo a newly generated one).
+    if (value === renameFrom.current) return;
     try {
       await sessions.patch(id, { title: value });
+      onChanged();
+    } catch (e) {
+      setError(errorText(e));
+    }
+  };
+  const regenerate = async (id: string) => {
+    try {
+      await sessions.regenerateTitle(id);
       onChanged();
     } catch (e) {
       setError(errorText(e));
@@ -118,7 +129,13 @@ export function Sidebar({
                     }}
                   />
                 ) : (
-                  <span className="conv-title">{s.title || t("common.untitled")}</span>
+                  <span className="conv-title">
+                    <AnimatePresence mode="wait" initial={false}>
+                      <motion.span key={s.title} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={fade}>
+                        {s.title || t("common.untitled")}
+                      </motion.span>
+                    </AnimatePresence>
+                  </span>
                 )}
                 <button
                   ref={(el) => {
@@ -156,11 +173,24 @@ export function Sidebar({
               onClick={() => {
                 setMenu(null);
                 setTitle(menuItem.title);
+                renameFrom.current = menuItem.title;
                 setRenaming(menuItem.id);
               }}
             >
               {t("sidebar.rename")}
             </button>
+            {menuItem.message_count > 0 && (
+              <button
+                role="menuitem"
+                className="menu-item"
+                onClick={() => {
+                  setMenu(null);
+                  regenerate(menuItem.id);
+                }}
+              >
+                {t("sidebar.regenerateTitle")}
+              </button>
+            )}
             <a role="menuitem" className="menu-item" href={sessions.exportUrl(menuItem.id)} download={`oort-${menuItem.id}.json`} onClick={() => setMenu(null)}>
               {t("sidebar.exportJson")}
             </a>

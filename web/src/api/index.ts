@@ -42,6 +42,7 @@ export const sessions = {
     },
   ) => request<SessionDetail>("PATCH", `/sessions/${id}`, req),
   remove: (id: string) => request<void>("DELETE", `/sessions/${id}`),
+  regenerateTitle: (id: string) => request<SessionDetail>("POST", `/sessions/${id}/title/regenerate`),
   exportUrl: (id: string) => `/api/sessions/${id}/export`,
   input: (id: string, input: InputRequest) => request<void>("POST", `/sessions/${id}/input`, input),
   cancel: (id: string) => request<void>("POST", `/sessions/${id}/cancel`),

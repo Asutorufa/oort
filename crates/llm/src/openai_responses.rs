@@ -17,7 +17,7 @@ use crate::sse::parse_sse_stream;
 use crate::types::{
     ChatRequest, ChatResponse, Citation, ContentPart, DocumentSource, ImageSource, Message, Role,
     StopReason, StreamEvent, ToolCall, ToolChoice, ToolDefinition, Usage, Vendor, extract_domain,
-    parse_tool_arguments,
+    parse_tool_arguments, apply_title_request, title_of,
 };
 
 /// HTTP client for the OpenAI Responses API (`/v1/responses`).
@@ -131,15 +131,20 @@ impl OpenAIResponsesClient {
             None
         };
 
-        let reasoning =
-            request
-                .thinking
-                .as_ref()
-                .filter(|t| t.enabled)
-                .map(|t| ResponsesReasoningConfig {
-                    effort: t.effort.map(reasoning_effort_str),
-                    summary: Some("auto"),
-                });
+        let thinking = request.thinking.as_ref();
+        let thinks = thinking.is_some_and(|t| t.enabled);
+        // DeepSeek thinks unless told not to; elsewhere "off" sends nothing.
+        let reasoning = match thinking {
+            Some(t) if t.enabled => Some(ResponsesReasoningConfig {
+                effort: t.effort.map(reasoning_effort_str),
+                summary: Some("auto"),
+            }),
+            Some(_) if self.vendor == Vendor::Deepseek => Some(ResponsesReasoningConfig {
+                effort: Some("none"),
+                summary: None,
+            }),
+            _ => None,
+        };
 
         let (prompt_cache_key, prompt_cache_retention) =
             extract_openai_cache_fields(request.prompt_cache.as_ref());
@@ -152,8 +157,8 @@ impl OpenAIResponsesClient {
             tool_choice,
             max_output_tokens: request.max_tokens,
             // Reasoning models reject sampling parameters.
-            temperature: request.temperature.filter(|_| reasoning.is_none()),
-            top_p: request.top_p.filter(|_| reasoning.is_none()),
+            temperature: request.temperature.filter(|_| !thinks),
+            top_p: request.top_p.filter(|_| !thinks),
             reasoning,
             prompt_cache_key,
             prompt_cache_retention,
@@ -168,6 +173,7 @@ impl OpenAIResponsesClient {
     ) -> Result<Value, Error> {
         let body = self.build_request_body(request, stream)?;
         let mut val = serde_json::to_value(body)?;
+        apply_title_request(self.vendor, request, &mut val);
         merge_extra_body(&mut val, self.extra_body.as_ref());
         merge_extra_body(&mut val, request.extra_body.as_ref());
         Ok(val)
@@ -264,6 +270,7 @@ struct ResponsesApiResponse {
     #[serde(default)]
     output: Vec<Value>,
     usage: Option<ResponsesUsage>,
+    title: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -752,6 +759,7 @@ fn parse_responses_body(resp: ResponsesApiResponse) -> Result<ChatResponse, Erro
         citations,
         stop_reason,
         usage: resp.usage.map(map_responses_usage),
+        title: title_of(resp.title.as_ref()),
     })
 }
 
@@ -980,6 +988,9 @@ where
                                 st.queue
                                     .push_back(Ok(StreamEvent::Usage(map_responses_usage(usage))));
                             }
+                            if let Some(title) = title_of(value.pointer("/response/title")) {
+                                st.queue.push_back(Ok(StreamEvent::Title(title)));
+                            }
                             let stop_reason = if st.had_tool_calls {
                                 Some(StopReason::ToolUse)
                             } else {
@@ -989,6 +1000,13 @@ where
                         }
                         Some("response.failed" | "response.incomplete" | "error") => {
                             let msg = extract_error_message_from_value(&value)
+                                .or_else(|| {
+                                    // `incomplete` carries a reason instead of an error.
+                                    value
+                                        .pointer("/response/incomplete_details/reason")
+                                        .and_then(Value::as_str)
+                                        .map(|r| format!("OpenAI Responses incomplete: {r}"))
+                                })
                                 .unwrap_or_else(|| "OpenAI Responses stream error".to_string());
                             st.done = true;
                             return Some((Err(Error::api(msg)), st));

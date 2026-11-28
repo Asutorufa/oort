@@ -57,6 +57,38 @@ impl SessionStatus {
     }
 }
 
+/// Who chose the session's title.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TitleSource {
+    /// Not decided yet (empty, or a placeholder such as the preset's name).
+    #[default]
+    Default,
+    /// Generated.
+    Auto,
+    /// Chosen by the user or the creating client; generation never replaces it.
+    Manual,
+}
+
+impl TitleSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Auto => "auto",
+            Self::Manual => "manual",
+        }
+    }
+
+    pub fn parse(s: &str) -> Result<Self, StoreError> {
+        Ok(match s {
+            "default" => Self::Default,
+            "auto" => Self::Auto,
+            "manual" => Self::Manual,
+            other => return Err(StoreError::Corrupt(format!("unknown title source {other:?}"))),
+        })
+    }
+}
+
 /// Tool calls awaiting execution. `decisions` is `None` before hooks ran (`ToolsPending`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PendingCalls {
@@ -152,6 +184,8 @@ pub struct NewSession {
     /// Explicit id; the backend generates one when `None`.
     pub id: Option<SessionId>,
     pub title: String,
+    #[serde(default)]
+    pub title_source: TitleSource,
     pub provider: String,
     pub model: String,
     /// Immutable, application-defined session configuration (request parameters, policies, …).
@@ -190,6 +224,7 @@ pub struct Lineage {
 pub struct SessionMeta {
     pub id: SessionId,
     pub title: String,
+    pub title_source: TitleSource,
     pub provider: String,
     pub model: String,
     pub config: serde_json::Value,
@@ -317,7 +352,26 @@ pub trait SessionStore: Send + Sync {
     /// LLM call measurements in seq order.
     async fn list_llm_calls(&self, id: &str) -> Result<Vec<LlmCallStats>, StoreError>;
 
+    /// A rename by the user: the title becomes [`TitleSource::Manual`].
     async fn set_title(&self, id: &str, title: &str) -> Result<(), StoreError>;
+
+    /// Stores a generated title unless the user chose one or the session is a subagent's.
+    /// Returns whether it was stored.
+    async fn set_auto_title(&self, id: &str, title: &str) -> Result<bool, StoreError>;
+
+    /// Fills an empty, undecided title with a placeholder that generation may still replace.
+    /// Returns whether it was stored.
+    async fn set_provisional_title(&self, id: &str, title: &str) -> Result<bool, StoreError>;
+
+    /// Replaces the title only while it is still `(expected, source)`: the compare-and-swap of
+    /// an explicit regeneration, so a rename made meanwhile wins. Returns whether it was stored.
+    async fn replace_title(
+        &self,
+        id: &str,
+        title: &str,
+        expected: &str,
+        source: TitleSource,
+    ) -> Result<bool, StoreError>;
 
     /// The approval policy is not part of the request prefix, so it may change at any time.
     async fn set_approval_policy(
