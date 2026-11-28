@@ -173,7 +173,7 @@ input[type="checkbox"] { width: auto; accent-color: var(--primary); }
 .thread { flex: 1; overflow: auto; min-height: 0; }
 .thread-inner { max-width: 760px; margin: 0 auto; padding: 24px 24px 200px; display: flex; flex-direction: column; gap: 24px; }
 .group { display: flex; flex-direction: column; gap: 24px; }
-.row-user { display: flex; justify-content: flex-end; }
+.row-user { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
 .bubble.user { background: var(--bg-user-bubble); color: var(--text-primary); border-radius: 18px; padding: 9px 15px; max-width: 80%; }
 .bubble.user .plain { white-space: pre-wrap; overflow-wrap: anywhere; }
 .bubble.response { font-size: 12.5px; color: var(--text-secondary); background: transparent; border: 1px solid var(--border-subtle); padding: 5px 12px; }
@@ -366,6 +366,45 @@ input[type="checkbox"] { width: auto; accent-color: var(--primary); }
 .attached-chip { display: inline-flex; align-items: center; gap: 6px; background: var(--bg-surface); border: 1px solid var(--border-default); color: var(--text-primary); border-radius: 8px; padding: 1px 3px 1px 9px; font-family: var(--mono); font-size: 12px; }
 .attached-chip button { border: 0; background: none; padding: 3px; color: var(--text-muted); border-radius: 5px; }
 .attached-chip button:hover:not(:disabled) { background: var(--bg-selected); color: var(--text-primary); }
+
+/* ----- images: composer strip, drop overlay, message grid, lightbox ----- */
+.dock-images { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 12px 14px 4px; list-style: none; }
+.dock-images li { position: relative; width: 56px; height: 56px; }
+.dock .dock-thumb { display: block; width: 100%; height: 100%; padding: 0; overflow: hidden; border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--bg-muted); cursor: zoom-in; }
+.dock-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.dock-images li.uploading img, .dock-images li.error img { opacity: .45; }
+.dock-thumb-state { position: absolute; left: 50%; top: 50%; margin: -8px 0 0 -8px; width: 16px; height: 16px; }
+.dock-thumb-state.spinner { border: 2px solid var(--border-strong); border-top-color: var(--text-primary); border-radius: 50%; pointer-events: none; }
+.dock .dock-thumb-state.retry { display: grid; place-items: center; width: 24px; height: 24px; min-width: 0; margin: -12px 0 0 -12px; padding: 0; border: 0; border-radius: 50%; background: var(--bg-canvas); color: var(--text-primary); }
+.dock-thumb-dot { position: absolute; left: 4px; bottom: 4px; width: 7px; height: 7px; border-radius: 50%; background: var(--danger); }
+.dock .dock-thumb-remove { position: absolute; top: 2px; right: 2px; display: grid; place-items: center; width: 16px; height: 16px; min-width: 0; padding: 0; border: 0; border-radius: 50%; background: var(--text-primary); color: var(--bg-canvas); opacity: 0; }
+.dock .dock-thumb-remove:hover:not(:disabled) { background: var(--text-primary); color: var(--bg-canvas); }
+.dock-images li:hover .dock-thumb-remove, .dock-images li:focus-within .dock-thumb-remove { opacity: 1; }
+@media (hover: none) { .dock .dock-thumb-remove { opacity: 1; } }
+
+.drop-overlay { position: absolute; inset: 0; z-index: 30; display: flex; padding: 12px; background: color-mix(in srgb, var(--bg-canvas) 85%, transparent); pointer-events: none; }
+.drop-overlay > div { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; border: 1.5px dashed var(--border-strong); border-radius: 16px; color: var(--text-secondary); font-size: 13px; text-align: center; }
+
+.msg-images { display: grid; gap: 6px; max-width: 100%; }
+.msg-images button { display: block; min-width: 0; height: auto; padding: 0; border: 0; border-radius: 8px; overflow: hidden; background: var(--bg-muted); cursor: zoom-in; }
+.msg-images img { display: block; width: 100%; height: 112px; object-fit: cover; }
+.msg-images.count-1 { max-width: min(320px, 100%); }
+.msg-images.count-1 button { border-radius: 12px; }
+.msg-images.count-1 img { width: auto; height: auto; max-width: 100%; max-height: 280px; }
+.msg-images.count-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); width: min(360px, 100%); }
+.msg-images.count-2 img { height: 144px; }
+.msg-images.count-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); width: min(420px, 100%); }
+
+.lightbox { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; padding: 56px 64px 64px; background: rgba(0, 0, 0, .85); color: #fff; outline: none; }
+.lightbox > img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; }
+.lightbox .lightbox-btn { display: inline-grid; place-items: center; width: 34px; height: 34px; padding: 0; border: 0; border-radius: 50%; background: rgba(255, 255, 255, .12); color: #fff; cursor: pointer; }
+.lightbox .lightbox-btn:hover:not(:disabled) { background: rgba(255, 255, 255, .24); color: #fff; }
+.lightbox-close { position: absolute; top: 14px; right: 14px; }
+.lightbox-prev, .lightbox-next { position: absolute; top: 50%; margin-top: -17px; }
+.lightbox-prev { left: 14px; }
+.lightbox-next { right: 14px; }
+.lightbox-bar { position: absolute; left: 0; right: 0; bottom: 16px; display: flex; align-items: center; justify-content: center; gap: 12px; padding: 0 16px; font-size: 12.5px; color: rgba(255, 255, 255, .8); white-space: nowrap; }
+.lightbox-name { overflow: hidden; text-overflow: ellipsis; max-width: 40vw; }
 
 /* ----- welcome ----- */
 .welcome { position: relative; height: 100%; display: flex; flex-direction: column; }

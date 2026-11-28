@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { ContentPart, Message, SessionDetail } from "../../api/types";
 import { useT, type T } from "../../i18n";
 import { Collapse, SegmentedControl } from "../ui";
+import { imagesOf } from "./MessageImages";
 
 const ROLE: Record<Message["role"], string> = { system: "sys", user: "user", assistant: "asst", tool: "tool" };
 
@@ -16,6 +17,10 @@ function blockText(p: ContentPart): string {
       return `${p.name}  ${p.id}\n${JSON.stringify(p.arguments, null, 2)}`;
     case "tool_result":
       return `${p.name ?? ""}  ${p.tool_call_id}${p.is_error ? "  error" : ""}\n${p.content}`;
+    case "image":
+      return p.source.type === "attachment"
+        ? [p.source.filename, p.source.width && p.source.height ? `${p.source.width}×${p.source.height}` : "", p.source.media_type, p.source.attachment_id].filter(Boolean).join("  ")
+        : p.source.type;
     default:
       return JSON.stringify(p, null, 2);
   }
@@ -28,7 +33,20 @@ function RowSummary({ m, t }: { m: Message; t: T }) {
   const text = parts.find((p) => p.kind === "text" && p.text.trim());
   const calls = parts.flatMap((p) => (p.kind === "tool_call" || p.kind === "server_tool_use" ? [p.name] : []));
   const thought = parts.some((p) => p.kind === "thinking");
-  const extra = parts.length > 1 ? <span className="insp-extra">+{parts.length - 1}</span> : null;
+  const images = imagesOf(parts);
+  // The image chip already stands for all the images.
+  const rest = parts.length - Math.max(images.length, 1);
+  const extra = rest > 0 && !(images.length && rest === 1 && text) ? <span className="insp-extra">+{rest}</span> : null;
+  const only = images.length === 1 ? images[0] : null;
+  const imageChip = images.length ? (
+    <span className="insp-chip">
+      {only
+        ? only.width && only.height
+          ? t("debug.image", { size: `${only.width}×${only.height}` })
+          : t("debug.images", { n: 1 })
+        : t("debug.images", { n: images.length })}
+    </span>
+  ) : null;
   if (results.length) {
     const failed = results.some((p) => p.is_error);
     return (
@@ -42,12 +60,13 @@ function RowSummary({ m, t }: { m: Message; t: T }) {
     <>
       <span className="insp-main">
         {thought && <span className="insp-chip">Think</span>}
+        {imageChip}
         {text?.kind === "text" ? (
           <span className="insp-text">{text.text.slice(0, 200)}</span>
         ) : calls.length ? (
           <span className="insp-tool">{calls.join(", ")}</span>
         ) : (
-          !thought && <span className="insp-tool">{parts[0]?.kind ?? t("common.empty")}</span>
+          !thought && !images.length && <span className="insp-tool">{parts[0]?.kind ?? t("common.empty")}</span>
         )}
       </span>
       {extra}

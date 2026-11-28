@@ -1,4 +1,4 @@
-import { request } from "./client";
+import { ApiError, request } from "./client";
 import type {
   ReasoningEffort,
   CreateSessionRequest,
@@ -23,9 +23,26 @@ import type {
   CommandInfo,
   CommandResult,
   Memory,
+  UploadedAttachment,
 } from "./types";
 
 export { ApiError, errorText } from "./client";
+
+export const attachmentUrl = (id: string) => `/api/attachments/${encodeURIComponent(id)}`;
+
+export const attachments = {
+  /** One file per request, so each thumbnail can succeed, fail and retry on its own. */
+  upload: async (file: File): Promise<UploadedAttachment> => {
+    const form = new FormData();
+    form.append("files", file, file.name);
+    const res = await fetch("/api/attachments", { method: "POST", body: form });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new ApiError(err.error ?? `HTTP ${res.status}`, res.status);
+    }
+    return ((await res.json()) as { attachments: UploadedAttachment[] }).attachments[0];
+  },
+};
 
 export const sessions = {
   list: () => request<SessionSummary[]>("GET", "/sessions"),

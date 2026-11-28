@@ -6,3 +6,7 @@
 .env
 /oort.db*
 oort-notes.md
+
+# Uploaded images (next to oort.db)
+/attachments/
+crates/attachments/

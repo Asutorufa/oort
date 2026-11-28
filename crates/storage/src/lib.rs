@@ -4,7 +4,9 @@
 //! (`migrations/`) enforces the append-only invariants with triggers, so even a buggy caller
 //! cannot rewrite history or the frozen prefix.
 
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
@@ -22,6 +24,7 @@ use sqlx::{Row, SqliteConnection, SqlitePool};
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
 pub mod analytics;
+pub mod attachments;
 mod config;
 pub mod pricing;
 
@@ -29,6 +32,9 @@ pub mod pricing;
 #[derive(Debug, Clone)]
 pub struct SqliteSessionStore {
     pool: SqlitePool,
+    attachments_dir: PathBuf,
+    /// Serializes writing and removing attachment files (shared by clones).
+    files_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl SqliteSessionStore {
@@ -37,12 +43,24 @@ impl SqliteSessionStore {
         let opts = SqliteConnectOptions::from_str(url)
             .map_err(backend)?
             .create_if_missing(true);
+        // `<data_dir>/attachments`, next to the database file.
+        let dir = (!url.contains(":memory:") && !url.contains("mode=memory")).then(|| {
+            opts.get_filename()
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or(Path::new("."))
+                .join("attachments")
+        });
         let pool = SqlitePoolOptions::new()
             .max_connections(8)
             .connect_with(with_pragmas(opts))
             .await
             .map_err(backend)?;
-        Self::from_pool(pool).await
+        let store = Self::from_pool(pool).await?;
+        Ok(match dir {
+            Some(dir) => store.with_attachments_dir(dir),
+            None => store,
+        })
     }
 
     /// A private in-memory database (`sqlite::memory:`). The pool is pinned to one connection
@@ -62,7 +80,13 @@ impl SqliteSessionStore {
     /// Wraps an existing pool (its connections must enable `foreign_keys`) and migrates it.
     pub async fn from_pool(pool: SqlitePool) -> Result<Self, StoreError> {
         MIGRATOR.run(&pool).await.map_err(backend)?;
-        let store = Self { pool };
+        let store = Self {
+            pool,
+            // Only for databases without a directory of their own (`connect` sets it).
+            attachments_dir: std::env::temp_dir()
+                .join(format!("oort-attachments-{}", uuid::Uuid::now_v7())),
+            files_lock: Arc::default(),
+        };
         // Statistics only: a failure must not keep the workbench from starting (the marker
         // is rolled back with it, so the next start tries again).
         if let Err(e) = analytics::backfill(&store).await {
@@ -441,6 +465,8 @@ impl SessionStore for SqliteSessionStore {
     /// Deletes the session and its subagent descendants (children first) in one transaction.
     /// Every row is marked `deleting` first, which the delete triggers require.
     async fn delete_session(&self, id: &str) -> Result<(), StoreError> {
+        let _files = self.files_lock.lock().await;
+        let mut files = Vec::new();
         let mut tx = self.pool.begin().await.map_err(backend)?;
         let ids: Vec<String> = sqlx::query_scalar(
             "WITH RECURSIVE tree(id, depth) AS (SELECT id, 0 FROM sessions WHERE id = ? \
@@ -463,6 +489,7 @@ impl SessionStore for SqliteSessionStore {
             analytics::snapshot_title(&mut tx, sid).await?;
         }
         for sid in &ids {
+            files.extend(attachments::delete_session_rows(&mut tx, sid).await?);
             for table in ["tool_output_blobs", "llm_calls", "compactions", "messages"] {
                 sqlx::query(&format!("DELETE FROM {table} WHERE session_id = ?"))
                     .bind(sid)
@@ -476,7 +503,8 @@ impl SessionStore for SqliteSessionStore {
                 .await
                 .map_err(classify)?;
         }
-        tx.commit().await.map_err(backend)
+        tx.commit().await.map_err(backend)?;
+        self.remove_unreferenced(files).await
     }
 }
 

@@ -61,6 +61,9 @@ pub struct CreateSessionRequest {
     /// Optional first user message (starts the first turn immediately).
     #[serde(default)]
     pub message: Option<String>,
+    /// Images of the first message (which may then have no text).
+    #[serde(default)]
+    pub attachment_ids: Vec<String>,
 }
 
 /// `PATCH /api/sessions/:id`.
@@ -93,14 +96,21 @@ pub struct InvokedSkill {
 pub enum InputRequest {
     /// Soft insert (also how a new message is sent to an idle session).
     Steer {
+        #[serde(default)]
         text: String,
+        /// Uploaded images sent with the message (at most 6); the text may then be empty.
+        #[serde(default)]
+        attachment_ids: Vec<String>,
         /// Skills attached explicitly (chips / `/name`), appended to this message.
         #[serde(default)]
         invoked_skills: Vec<InvokedSkill>,
     },
     /// Hard interrupt of the current turn.
     Interrupt {
+        #[serde(default)]
         text: String,
+        #[serde(default)]
+        attachment_ids: Vec<String>,
         #[serde(default)]
         invoked_skills: Vec<InvokedSkill>,
     },

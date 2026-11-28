@@ -54,8 +54,31 @@ export type ContentPart =
   | ({ kind: "tool_result" } & ToolResult)
   | { kind: "server_tool_use"; id: string; name: string; action?: string | null; input: unknown; raw_provider_payload?: unknown }
   | { kind: "server_tool_result"; tool_use_id: string; name: string; summary: string; is_error: boolean; raw_provider_payload?: unknown }
-  | { kind: "image"; source: unknown }
+  | { kind: "image"; source: ImageSource }
   | { kind: "document"; source: unknown; filename?: string };
+
+/** An uploaded image referenced by a message (the bytes stay on the server). */
+export interface ImageAttachment {
+  type: "attachment";
+  attachment_id: string;
+  media_type: string;
+  filename?: string;
+  width?: number;
+  height?: number;
+}
+
+export type ImageSource = ImageAttachment | { type: "url"; url: string } | { type: "base64"; media_type: string; data: string };
+
+/** One entry of `POST /api/attachments`. */
+export interface UploadedAttachment {
+  id: string;
+  url: string;
+  mime_type: string;
+  filename: string | null;
+  size_bytes: number;
+  width: number | null;
+  height: number | null;
+}
 
 export interface Message {
   role: Role;
@@ -326,6 +349,7 @@ export interface CreateSessionRequest {
   max_context_tokens?: number;
   title?: string;
   message?: string;
+  attachment_ids?: string[];
   skill_ids?: string[];
   widgets?: boolean;
   builtin_groups?: string[];
@@ -338,8 +362,8 @@ export interface InvokedSkill {
 }
 
 export type InputRequest =
-  | { type: "steer"; text: string; invoked_skills?: InvokedSkill[] }
-  | { type: "interrupt"; text: string; invoked_skills?: InvokedSkill[] }
+  | { type: "steer"; text: string; attachment_ids?: string[]; invoked_skills?: InvokedSkill[] }
+  | { type: "interrupt"; text: string; attachment_ids?: string[]; invoked_skills?: InvokedSkill[] }
   | { type: "approval"; call_id: string; decision: "approve" }
   | { type: "approval"; call_id: string; decision: "deny"; reason: string }
   | { type: "approval"; call_id: string; decision: "answer"; content: string }

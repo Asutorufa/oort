@@ -843,6 +843,7 @@ fn encode_gemini_message(
                 });
             }
             ContentPart::Image { source } => match source {
+                ImageSource::Attachment { .. } => {}
                 ImageSource::Base64 { media_type, data } => {
                     parts.push(GeminiPart {
                         inline_data: Some(GeminiBlob {

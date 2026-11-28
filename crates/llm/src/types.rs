@@ -23,6 +23,19 @@ pub enum ImageSource {
     Url { url: String },
     /// Base64-encoded raw image bytes with its MIME media type (e.g. `"image/png"`).
     Base64 { media_type: String, data: String },
+    /// An image kept in the host's attachment store. This is the only form conversation history
+    /// holds: the host turns it into [`ImageSource::Base64`] on a copy of each request, so
+    /// adapters never see it (they send nothing for an unresolved one).
+    Attachment {
+        attachment_id: String,
+        media_type: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        filename: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        width: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        height: Option<u32>,
+    },
 }
 
 /// Document / PDF payload for multimodal prompts.

@@ -42,10 +42,10 @@ export function Welcome({ visible, onCreated }: { visible: boolean; onCreated: (
   const provider = enabled.find((p) => p.id === providerId) ?? enabled[0];
   const toggle = (list: string[], id: string) => (list.includes(id) ? list.filter((x) => x !== id) : [...list, id]);
 
-  const start = async (message: string) => {
+  const start = async (message: string, attachment_ids: string[]) => {
     setError(null);
     const req: CreateSessionRequest = presetId
-      ? { preset_id: presetId, message }
+      ? { preset_id: presetId, message, attachment_ids }
       : {
           provider_id: provider?.id,
           model: model.trim() || undefined,
@@ -54,6 +54,7 @@ export function Welcome({ visible, onCreated }: { visible: boolean; onCreated: (
           builtin_groups: groups,
           workspace_root: groups.includes("workspace") ? workspace.trim() : undefined,
           message,
+          attachment_ids,
         };
     localStorage.setItem("oort.groups", JSON.stringify(groups));
     localStorage.setItem("oort.workspace", workspace);
@@ -102,7 +103,7 @@ export function Welcome({ visible, onCreated }: { visible: boolean; onCreated: (
         )}
         <ErrorBar error={error} onDismiss={() => setError(null)} />
       </div>
-      <Composer busy={false} commands={[]} onSend={(text) => start(text)} autoFocus placeholder={t("composer.placeholderNew")} />
+      <Composer busy={false} commands={[]} onSend={(text, _skills, ids) => start(text, ids)} autoFocus placeholder={t("composer.placeholderNew")} />
     </div>
   );
 }

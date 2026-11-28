@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use oort_server::{Registry, ServerConfig, SessionManager, router};
 use oort_storage::SqliteSessionStore;
+use oort_storage::attachments::AttachmentStore;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -15,6 +16,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let cfg = ServerConfig::from_env()?;
     let store = Arc::new(SqliteSessionStore::connect(&cfg.db_url).await?);
+    // Uploads that were never sent are dropped after a day.
+    match store.sweep_unsent_attachments(24 * 60 * 60 * 1000).await {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(n, "removed unsent attachments"),
+        Err(e) => tracing::warn!(error = %e, "attachment cleanup failed"),
+    }
     let builtin = Arc::new(oort_server::tools::builtin_executor(&cfg.workspace));
     let registry = Arc::new(
         Registry::new(store.clone(), builtin)
