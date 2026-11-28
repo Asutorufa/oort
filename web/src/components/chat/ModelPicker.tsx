@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Provider } from "../../api/types";
+import { useT } from "../../i18n";
 
 /** One pill showing "provider · model"; opens a small popover to change either. */
 export function ModelPicker({
@@ -29,20 +30,21 @@ export function ModelPicker({
     };
   }, [open]);
   const shownModel = model.trim() || provider?.default_model || "";
+  const t = useT();
 
   return (
     <div className="picker" ref={box}>
       <button className={`picker-pill ${open ? "open" : ""}`} onClick={() => setOpen(!open)} aria-haspopup="dialog" aria-expanded={open}>
         <span className="picker-dot" />
-        <span className="picker-provider">{provider?.name ?? "モデルを選択"}</span>
+        <span className="picker-provider">{provider?.name ?? t("picker.choose")}</span>
         {shownModel && <span className="picker-model">{shownModel}</span>}
         <svg className="chev" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
           <path d="M3 4.5 6 7.5 9 4.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       </button>
       {open && (
-        <div className="picker-pop" role="dialog" aria-label="モデルを選択">
-          <div className="picker-label">プロバイダ</div>
+        <div className="picker-pop" role="dialog" aria-label={t("picker.choose")}>
+          <div className="picker-label">{t("picker.provider")}</div>
           <ul>
             {providers.map((p) => (
               <li key={p.id}>
@@ -60,10 +62,10 @@ export function ModelPicker({
               </li>
             ))}
           </ul>
-          <div className="picker-label">モデル</div>
+          <div className="picker-label">{t("picker.model")}</div>
           <input
             value={model}
-            placeholder={provider?.default_model ? `${provider.default_model}（既定）` : "モデル名"}
+            placeholder={provider?.default_model ? t("picker.defaultModel", { model: provider.default_model }) : t("picker.modelName")}
             onChange={(e) => onModel(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && setOpen(false)}
           />

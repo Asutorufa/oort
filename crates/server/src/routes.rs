@@ -46,6 +46,7 @@ pub fn router(manager: Arc<SessionManager>, web_dist: Option<&FsPath>) -> Router
         .route("/sessions/{id}/events", get(session_events))
         .route("/sessions/{id}/input", post(session_input))
         .route("/sessions/{id}/cancel", post(cancel_session))
+        .route("/sessions/{id}/retry", post(retry_session))
         .route("/sessions/{id}/export", get(export_session))
         .route("/sessions/{id}/children", get(session_children))
         .route("/commands", get(list_commands))
@@ -57,6 +58,7 @@ pub fn router(manager: Arc<SessionManager>, web_dist: Option<&FsPath>) -> Router
         )
         .route("/providers", get(list_providers).post(create_provider))
         .route("/providers/test", post(test_new_provider))
+        .route("/providers/models", post(models_new_provider))
         .route(
             "/providers/{id}",
             get(get_provider)
@@ -64,6 +66,7 @@ pub fn router(manager: Arc<SessionManager>, web_dist: Option<&FsPath>) -> Router
                 .delete(delete_provider),
         )
         .route("/providers/{id}/test", post(test_provider))
+        .route("/providers/{id}/models", post(provider_models))
         .route("/mcp-servers", get(list_mcp).post(create_mcp))
         .route("/mcp-servers/test", post(test_new_mcp))
         .route(
@@ -157,6 +160,14 @@ async fn session_input(
     Json(input): Json<InputRequest>,
 ) -> Result<StatusCode, ApiError> {
     m.input(&id, input).await?;
+    Ok(StatusCode::ACCEPTED)
+}
+
+async fn retry_session(
+    State(m): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    m.retry(&id).await?;
     Ok(StatusCode::ACCEPTED)
 }
 
@@ -264,6 +275,39 @@ async fn test_provider(
     let ping = input.ping;
     let rec = input.apply(&m.registry().config.get_provider(&id).await?)?;
     Ok(Json(m.registry().test_provider(&rec, ping).await))
+}
+
+#[derive(serde::Serialize)]
+struct ModelList {
+    models: Vec<String>,
+}
+
+/// Model ids of a saved provider (an optional body overrides unsaved fields such as the key).
+async fn provider_models(
+    State(m): State<AppState>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> ApiResult<ModelList> {
+    let input: ProviderInput = optional_body(&body)?;
+    let rec = input.apply(&m.registry().config.get_provider(&id).await?)?;
+    Ok(Json(ModelList {
+        models: m.registry().list_models(&rec).await?,
+    }))
+}
+
+/// Model ids for an unsaved provider form.
+async fn models_new_provider(
+    State(m): State<AppState>,
+    Json(mut input): Json<ProviderInput>,
+) -> ApiResult<ModelList> {
+    // Listing needs no name; give the throwaway record one so validation passes.
+    if input.name.as_deref().is_none_or(|n| n.trim().is_empty()) {
+        input.name = Some("unsaved".into());
+    }
+    let rec: ProviderRecord = input.create()?;
+    Ok(Json(ModelList {
+        models: m.registry().list_models(&rec).await?,
+    }))
 }
 
 /// Tests an unsaved provider form.

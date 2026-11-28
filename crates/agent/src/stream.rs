@@ -12,6 +12,7 @@ struct PendingCall {
     id: String,
     name: String,
     args: String,
+    signature: Option<String>,
 }
 
 /// Like `oort_llm::StreamCollector`, but tolerant of malformed tool arguments: they are kept
@@ -62,6 +63,11 @@ impl TurnAccumulator {
                 .args
                 .push_str(arguments_delta),
             StreamEvent::ToolCallEnd { .. } => {}
+            StreamEvent::ToolCallSignature { index, signature } => {
+                if !signature.is_empty() {
+                    self.calls.entry(*index).or_default().signature = Some(signature.clone());
+                }
+            }
             StreamEvent::Usage(u) => self.usage = Some(u.clone()),
             StreamEvent::Done { stop_reason } => {
                 if stop_reason.is_some() {
@@ -75,7 +81,7 @@ impl TurnAccumulator {
         let tool_calls = self
             .calls
             .into_values()
-            .map(|c| ToolCall::new(c.id, c.name, parse_args(&c.args)))
+            .map(|c| ToolCall::new(c.id, c.name, parse_args(&c.args)).with_signature(c.signature))
             .collect();
         ChatResponse {
             id: self.id,

@@ -1,7 +1,9 @@
 import type { TurnUsage } from "../../api/types";
-import { Badge, fmtMs, Modal, pct } from "../common";
+import { Badge, Modal } from "../common";
+import { useI18n, useT } from "../../i18n";
 
 function Hash({ label, now, prev }: { label: string; now: string; prev?: string }) {
+  const t = useT();
   const changed = prev !== undefined && prev !== now;
   return (
     <tr>
@@ -9,13 +11,13 @@ function Hash({ label, now, prev }: { label: string; now: string; prev?: string 
       <td>
         <code>{now}</code>{" "}
         {prev === undefined ? (
-          <span className="muted">first call</span>
+          <span className="muted">{t("turn.firstCall")}</span>
         ) : changed ? (
-          <Badge tone={label === "messages" ? "muted" : "error"} title="differs from the previous call">
-            changed
+          <Badge tone={label === "messages" ? "muted" : "error"} title={t("turn.changedHint")}>
+            {t("turn.changed")}
           </Badge>
         ) : (
-          <Badge tone="ok">same as previous</Badge>
+          <Badge tone="ok">{t("turn.same")}</Badge>
         )}
       </td>
     </tr>
@@ -25,78 +27,79 @@ function Hash({ label, now, prev }: { label: string; now: string; prev?: string 
 /** Per-call debug info: latency, tokens, cache and what the request looked like. */
 export function TurnInspector({ turn, prev, onClose }: { turn: TurnUsage; prev?: TurnUsage; onClose: () => void }) {
   const req = turn.request;
+  const { t, fmt } = useI18n();
   const prefixBroken =
     req && prev?.request && (req.hash.system !== prev.request.hash.system || req.hash.tools !== prev.request.hash.tools);
   return (
-    <Modal title={`Turn ${turn.turn} · message #${turn.seq}`} onClose={onClose}>
+    <Modal title={t("turn.title", { turn: turn.turn, seq: turn.seq })} onClose={onClose}>
       <div className="stats">
         <div className="stat">
-          <span className="muted">TTFT</span>
-          <b>{fmtMs(turn.ttft_ms)}</b>
+          <span className="muted">{t("insp.ttft")}</span>
+          <b>{fmt.ms(turn.ttft_ms)}</b>
         </div>
         <div className="stat">
-          <span className="muted">total</span>
-          <b>{fmtMs(turn.latency_ms)}</b>
+          <span className="muted">{t("insp.total")}</span>
+          <b>{fmt.ms(turn.latency_ms)}</b>
         </div>
         <div className="stat">
-          <span className="muted">cache hit</span>
-          <b className={turn.cache_hit_rate > 0.5 ? "good" : "bad"}>{pct(turn.cache_hit_rate)}</b>
+          <span className="muted">{t("turn.cacheHit")}</span>
+          <b className={turn.cache_hit_rate > 0.5 ? "good" : "bad"}>{fmt.percent(turn.cache_hit_rate)}</b>
         </div>
       </div>
       <table className="kv">
         <tbody>
           <tr>
-            <td>prompt tokens</td>
-            <td>{turn.prompt_tokens}</td>
+            <td>{t("turn.promptTokens")}</td>
+            <td>{fmt.number(turn.prompt_tokens)}</td>
           </tr>
           <tr>
-            <td>input (as reported)</td>
-            <td>{turn.input_tokens}</td>
+            <td>{t("turn.inputReported")}</td>
+            <td>{fmt.number(turn.input_tokens)}</td>
           </tr>
           <tr>
-            <td>cache read / write</td>
+            <td>{t("turn.cacheRW")}</td>
             <td>
-              {turn.cache_read_tokens} / {turn.cache_creation_tokens}
+              {fmt.number(turn.cache_read_tokens)} / {fmt.number(turn.cache_creation_tokens)}
             </td>
           </tr>
           <tr>
-            <td>output tokens</td>
-            <td>{turn.output_tokens}</td>
+            <td>{t("turn.outputTokens")}</td>
+            <td>{fmt.number(turn.output_tokens)}</td>
           </tr>
         </tbody>
       </table>
-      <h4>Request</h4>
+      <h4>{t("turn.request")}</h4>
       {req ? (
         <>
           {prefixBroken && (
-            <div className="warning">The system prompt or tool catalog changed since the previous call: the cached prefix cannot be reused.</div>
+            <div className="warning">{t("turn.prefixBroken")}</div>
           )}
           <table className="kv">
             <tbody>
               <tr>
-                <td>model</td>
-                <td>{req.model ?? "(client default)"}</td>
+                <td>{t("turn.model")}</td>
+                <td>{req.model ?? t("turn.clientDefault")}</td>
               </tr>
               <tr>
-                <td>messages / tools</td>
+                <td>{t("turn.messagesTools")}</td>
                 <td>
                   {req.messages} / {req.tools}
                 </td>
               </tr>
               <tr>
-                <td>size</td>
-                <td>{(req.bytes / 1024).toFixed(1)} KiB</td>
+                <td>{t("turn.size")}</td>
+                <td>{fmt.number(req.bytes / 1024, { maximumFractionDigits: 1 })} KiB</td>
               </tr>
               <tr>
                 <td>max_tokens</td>
                 <td>{req.max_tokens ?? "—"}</td>
               </tr>
               <tr>
-                <td>cache breakpoints</td>
+                <td>{t("turn.breakpoints")}</td>
                 <td>
                   {req.breakpoints.map((b, i) => (
                     <code key={i} className="chip">
-                      {b.type === "after_message" ? `after #${b.index}` : "tools+system"}
+                      {b.type === "after_message" ? t("turn.after", { index: b.index ?? 0 }) : "tools+system"}
                     </code>
                   ))}
                 </td>
@@ -108,7 +111,7 @@ export function TurnInspector({ turn, prev, onClose }: { turn: TurnUsage; prev?:
           </table>
         </>
       ) : (
-        <div className="muted">No request snapshot for this call (recorded before metrics existed).</div>
+        <div className="muted">{t("turn.noSnapshot")}</div>
       )}
     </Modal>
   );

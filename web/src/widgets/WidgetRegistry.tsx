@@ -5,13 +5,14 @@ import { DataTable } from "./DataTable";
 import { InteractiveForm } from "./InteractiveForm";
 import type { WidgetProps } from "./protocol";
 import { WidgetCard } from "./WidgetCard";
+import { currentLocale, translate } from "../i18n";
 
 // Charts pull in recharts: loaded on first use.
 const MetricsChart = lazy(() => import("./MetricsChart"));
 
 function LazyChart(props: WidgetProps) {
   return (
-    <Suspense fallback={<WidgetCard title={props.spec.title} kind="metrics"><div className="muted">グラフを読み込み中…</div></WidgetCard>}>
+    <Suspense fallback={<WidgetCard title={props.spec.title} kind="metrics"><div className="muted">{translate(currentLocale(), "widget.loadingChart")}</div></WidgetCard>}>
       <MetricsChart {...props} />
     </Suspense>
   );
@@ -31,7 +32,7 @@ function Fallback({ spec }: WidgetProps) {
   return (
     <details className="widget widget-unknown">
       <summary>
-        表示できないカード <code>{spec.widget_type}</code>
+        {translate(currentLocale(), "widget.unknown")} <code>{spec.widget_type}</code>
       </summary>
       <pre className="json">{JSON.stringify(spec, null, 2)}</pre>
     </details>

@@ -6,6 +6,7 @@ use reqwest::header::HeaderMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::Error;
 use crate::client::{ChatStream, LlmClient};
 use crate::error::extract_error_message_from_value;
 use crate::http::{apply_headers, bytes_stream, ensure_success, insert_header, normalize_base_url};
@@ -15,7 +16,6 @@ use crate::types::{
     PromptCacheConfig, ReasoningEffort, Role, StopReason, StreamEvent, ToolCall, ToolChoice,
     ToolDefinition, Usage, parse_tool_arguments,
 };
-use crate::Error;
 
 pub const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 
@@ -252,8 +252,9 @@ impl OpenAIClient {
             tools,
             tool_choice,
             max_tokens: request.max_tokens,
-            temperature: request.temperature,
-            top_p: request.top_p,
+            // Reasoning models reject sampling parameters.
+            temperature: request.temperature.filter(|_| reasoning_effort.is_none()),
+            top_p: request.top_p.filter(|_| reasoning_effort.is_none()),
             stop,
             reasoning_effort,
             prompt_cache_key,
@@ -298,7 +299,13 @@ impl LlmClient for OpenAIClient {
     }
 
     async fn list_models(&self) -> Result<Vec<String>, Error> {
-        fetch_openai_models(&self.http, &self.base_url, &self.api_key, &self.extra_headers).await
+        fetch_openai_models(
+            &self.http,
+            &self.base_url,
+            &self.api_key,
+            &self.extra_headers,
+        )
+        .await
     }
 }
 
@@ -752,10 +759,7 @@ fn encode_openai_message(msg: &Message, out: &mut Vec<OpenAIMessage>) {
                                             Value::String(name.clone()),
                                         );
                                     }
-                                    obj.insert(
-                                        "file_data".to_string(),
-                                        Value::String(url.clone()),
-                                    );
+                                    obj.insert("file_data".to_string(), Value::String(url.clone()));
                                     Value::Object(obj)
                                 }
                             };
@@ -870,6 +874,7 @@ fn parse_chat_response(resp: OpenAIChatResponse) -> Result<ChatResponse, Error> 
             id: tc.id,
             name: tc.function.name,
             arguments,
+            signature: None,
         });
     }
 
@@ -1039,7 +1044,8 @@ fn flush_openai_end<S>(st: &mut OpenAIStreamState<S>) {
     st.done = true;
     let open = std::mem::take(&mut st.open_tool_calls);
     for idx in open {
-        st.queue.push_back(Ok(StreamEvent::ToolCallEnd { index: idx }));
+        st.queue
+            .push_back(Ok(StreamEvent::ToolCallEnd { index: idx }));
     }
     st.queue.push_back(Ok(StreamEvent::Done {
         stop_reason: st.finish_reason.take(),
@@ -1325,7 +1331,9 @@ mod tests {
             .mock("POST", "/chat/completions")
             .with_status(401)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"error":{"message":"Incorrect API key","type":"invalid_request_error"}}"#)
+            .with_body(
+                r#"{"error":{"message":"Incorrect API key","type":"invalid_request_error"}}"#,
+            )
             .create_async()
             .await;
 
@@ -1369,8 +1377,14 @@ mod tests {
         ]);
 
         let body = serde_json::to_value(client.build_request_body(&req, false).unwrap()).unwrap();
-        assert_eq!(body["messages"][0]["content"][1]["image_url"]["url"], "data:image/png;base64,AAAA");
-        assert_eq!(body["messages"][1]["tool_calls"][0]["function"]["name"], "inspect");
+        assert_eq!(
+            body["messages"][0]["content"][1]["image_url"]["url"],
+            "data:image/png;base64,AAAA"
+        );
+        assert_eq!(
+            body["messages"][1]["tool_calls"][0]["function"]["name"],
+            "inspect"
+        );
         assert_eq!(body["messages"][2]["role"], "tool");
         assert_eq!(body["messages"][2]["tool_call_id"], "call_1");
     }
@@ -1404,8 +1418,8 @@ mod tests {
             .create_async()
             .await;
 
-        let client = OpenAIClient::new("sk-cmpl", "gpt-3.5-turbo-instruct")
-            .with_base_url(server.url());
+        let client =
+            OpenAIClient::new("sk-cmpl", "gpt-3.5-turbo-instruct").with_base_url(server.url());
         let req = CompletionRequest::new("fn main() {\n")
             .with_suffix("}\n")
             .with_max_tokens(64)
@@ -1445,8 +1459,8 @@ mod tests {
             .create_async()
             .await;
 
-        let client = OpenAIClient::new("sk-cmpl", "gpt-3.5-turbo-instruct")
-            .with_base_url(server.url());
+        let client =
+            OpenAIClient::new("sk-cmpl", "gpt-3.5-turbo-instruct").with_base_url(server.url());
         let stream = client
             .complete_stream(CompletionRequest::new("Say hello"))
             .await

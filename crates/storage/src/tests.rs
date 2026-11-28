@@ -475,6 +475,14 @@ fn provider(id: &str, name: &str) -> ProviderRecord {
         default_model: "gemini-2.5-flash".into(),
         extra_headers: [("x-org".to_string(), "acme".to_string())].into(),
         is_enabled: true,
+        auto_retry: Default::default(),
+        defaults: oort_agent::ProviderDefaults {
+            reasoning_effort: oort_agent::ReasoningEffort::Low,
+            temperature: Some(0.5),
+            max_output_tokens: Some(8192),
+            context_window: Some(1_000_000),
+            timeout_secs: 300,
+        },
         created_at: 1,
         updated_at: 1,
     }
@@ -533,6 +541,7 @@ async fn config_crud_and_reference_checks() {
         skill_ids: vec!["file:review".into()],
         builtin_groups: vec!["memory".into()],
         workspace_root: None,
+        reasoning_effort: oort_agent::ReasoningEffort::High,
         created_at: 1,
         updated_at: 1,
     };
@@ -829,7 +838,11 @@ async fn subagent_sessions_form_a_tree_hidden_from_the_list() {
         .into_iter()
         .map(|m| m.id)
         .collect();
-    assert_eq!(top, std::slice::from_ref(&parent), "children are not top-level sessions");
+    assert_eq!(
+        top,
+        std::slice::from_ref(&parent),
+        "children are not top-level sessions"
+    );
     let kids = h.store.list_children(&parent).await.unwrap();
     assert_eq!(kids.len(), 1);
     assert_eq!(kids[0].lineage.depth, 1);

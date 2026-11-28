@@ -1,3 +1,4 @@
+import type { Key } from "../i18n";
 // Mirrors crates/server/src/{api,config_api}.rs and the serde shapes of oort-agent / oort-llm.
 
 // ----- IR ------------------------------------------------------------------------------------
@@ -62,11 +63,11 @@ export type Phase =
 export type SessionStatus = "idle" | "running" | "needs_approval" | "halted";
 export type ApprovalPolicy = "auto_all" | "auto_readonly" | "always_ask";
 
-export const APPROVAL_POLICIES: { value: ApprovalPolicy; label: string; hint: string }[] = [
-  { value: "auto_all", label: "Auto All", hint: "every tool runs without asking" },
-  { value: "auto_readonly", label: "Auto Read-Only", hint: "read-only tools run; others ask" },
-  { value: "always_ask", label: "Always Ask", hint: "every tool call asks" },
-];
+export const APPROVAL_POLICIES: { value: ApprovalPolicy; label: Key; hint: Key }[] = (["auto_all", "auto_readonly", "always_ask"] as const).map((v) => ({
+  value: v,
+  label: `policy.${v}` as const,
+  hint: `policy.${v}.desc` as const,
+}));
 
 export interface SessionMeta {
   id: string;
@@ -74,6 +75,8 @@ export interface SessionMeta {
   provider: string;
   model: string;
   approval_policy: ApprovalPolicy;
+  /** Session override of the provider's thinking level. */
+  reasoning_effort?: ReasoningEffort;
   lineage: Lineage;
   status: SessionStatus;
   turn: number;
@@ -92,6 +95,48 @@ export interface Lineage {
 
 export interface SessionSummary extends SessionMeta {
   active: boolean;
+  /** The last loop exited with an error. */
+  failed?: boolean;
+}
+
+/** Why the loop last stopped with an error; cleared when it runs again. */
+export interface LoopError {
+  message: string;
+  at: number;
+  /** Set while an automatic retry is scheduled (Unix ms). */
+  retry_at: number | null;
+  attempt: number;
+  max_attempts: number;
+}
+
+/** Provider-neutral thinking level (`default`: leave it to the provider / model). */
+export type ReasoningEffort = "default" | "off" | "low" | "medium" | "high";
+
+export const REASONING_LEVELS: { value: ReasoningEffort; label: Key; description: Key }[] = (["default", "off", "low", "medium", "high"] as const).map((v) => ({
+  value: v,
+  label: `reasoning.${v}` as const,
+  description: `reasoning.${v}.desc` as const,
+}));
+
+export interface ProviderDefaults {
+  reasoning_effort: ReasoningEffort;
+  temperature: number | null;
+  max_output_tokens: number | null;
+  context_window: number | null;
+  timeout_secs: number;
+}
+
+export const DEFAULT_PROVIDER_DEFAULTS: ProviderDefaults = {
+  reasoning_effort: "default",
+  temperature: null,
+  max_output_tokens: null,
+  context_window: null,
+  timeout_secs: 120,
+};
+
+export interface AutoRetry {
+  enabled: boolean;
+  max_attempts: number;
 }
 
 export interface SessionSettings {
@@ -145,6 +190,9 @@ export interface Checkpoint {
 
 export interface SessionDetail extends SessionMeta {
   active: boolean;
+  last_error?: LoopError | null;
+  /** What requests use: the session's level, or the provider's when it is `default`. */
+  effective_reasoning_effort?: ReasoningEffort;
   settings: SessionSettings;
   phase: Phase;
   system_prompt: string;
@@ -218,6 +266,7 @@ export type Envelope =
 
 export interface CreateSessionRequest {
   preset_id?: string;
+  reasoning_effort?: ReasoningEffort;
   provider_id?: string;
   model?: string;
   mcp_server_ids?: string[];
@@ -286,6 +335,8 @@ export interface Provider {
   default_model: string;
   extra_headers: Record<string, string>;
   is_enabled: boolean;
+  auto_retry: AutoRetry;
+  defaults: ProviderDefaults;
   created_at: number;
   updated_at: number;
 }
@@ -299,6 +350,8 @@ export interface ProviderInput {
   default_model?: string;
   extra_headers?: Record<string, string>;
   is_enabled?: boolean;
+  auto_retry?: AutoRetry;
+  defaults?: ProviderDefaults;
   ping?: boolean;
 }
 
@@ -399,6 +452,7 @@ export interface Preset {
   skill_ids: string[];
   builtin_groups: string[];
   workspace_root: string | null;
+  reasoning_effort: ReasoningEffort;
   created_at: number;
   updated_at: number;
 }
@@ -487,11 +541,12 @@ export interface Memory {
   score?: number;
 }
 
-export const BUILTIN_GROUPS: { id: string; label: string; hint: string }[] = [
-  { id: "self_config", label: "Self-Config", hint: "Skill の保存・MCP サーバーの登録（常に確認）" },
-  { id: "core_ux", label: "Core UX", hint: "計画の表示・あなたへの質問・カード" },
-  { id: "memory", label: "Memory", hint: "会話をまたいで覚える・思い出す" },
-  { id: "utilities", label: "Utilities", hint: "現在時刻・Web ページの取得" },
-  { id: "subagent", label: "Subagent", hint: "調査を読み取り専用のサブエージェントに任せる" },
-  { id: "workspace", label: "Local Workspace", hint: "指定フォルダのファイル読み書き・コマンド実行" },
+/** Builtin tool groups; labels and hints are `groups.<id>` / `groups.<id>.hint` in the dictionaries. */
+export const BUILTIN_GROUPS: { id: "self_config" | "core_ux" | "memory" | "utilities" | "subagent" | "workspace" }[] = [
+  { id: "self_config" },
+  { id: "core_ux" },
+  { id: "memory" },
+  { id: "utilities" },
+  { id: "subagent" },
+  { id: "workspace" },
 ];

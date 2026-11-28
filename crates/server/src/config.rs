@@ -3,7 +3,10 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use oort_agent::{CompactionPolicy, DefaultContextManager, RequestParams, UsageAccounting};
+use oort_agent::{
+    CompactionPolicy, DefaultContextManager, LiveModel, LiveThinking, ProviderDefaults,
+    RequestParams, UsageAccounting,
+};
 use oort_llm::PromptCacheConfig;
 use serde::{Deserialize, Serialize};
 
@@ -127,11 +130,27 @@ impl SessionConfig {
         p
     }
 
-    pub fn context_manager(&self, session_id: &str) -> DefaultContextManager {
+    /// Request parameters: the session's own values, then the provider's defaults. The thinking
+    /// level is read from `thinking` on every request (it may change between turns; it is not
+    /// part of the cached prefix).
+    pub fn context_manager(
+        &self,
+        session_id: &str,
+        defaults: &ProviderDefaults,
+        thinking: LiveThinking,
+        model: Option<LiveModel>,
+    ) -> DefaultContextManager {
         DefaultContextManager::new(RequestParams {
             model: Some(self.model.clone()),
-            max_tokens: Some(self.max_tokens.unwrap_or(4096)),
+            max_tokens: Some(
+                self.max_tokens
+                    .or(defaults.max_output_tokens)
+                    .unwrap_or(4096),
+            ),
+            temperature: defaults.temperature,
             prompt_cache: Some(PromptCacheConfig::enabled().with_key(session_id)),
+            live_thinking: Some(thinking),
+            live_model: model,
             ..Default::default()
         })
         .with_compaction(self.policy())
