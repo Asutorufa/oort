@@ -3,8 +3,8 @@
 use serde_json::{Value, json};
 
 use crate::{
-    AnthropicClient, ChatRequest, GeminiClient, Message, OpenAIClient, OpenAIResponsesClient,
-    ReasoningEffort, ThinkingConfig,
+    AnthropicClient, ChatRequest, GeminiClient, LlmClient, Message, OpenAIClient,
+    OpenAIResponsesClient, ReasoningEffort, ThinkingConfig, Vendor, collect_stream,
 };
 
 fn req(thinking: Option<ThinkingConfig>) -> ChatRequest {
@@ -87,6 +87,36 @@ fn openai_sends_reasoning_effort_without_temperature() {
     );
     assert_eq!(b["reasoning"]["effort"], "high");
     assert!(b.get("temperature").is_none(), "{b}");
+}
+
+#[test]
+fn deepseek_responses_turns_thinking_off_explicitly() {
+    let build = |vendor, thinking| {
+        let c = OpenAIResponsesClient::new("k", "m").with_vendor(vendor);
+        body(c.build_request_body(&req(thinking), false).unwrap())
+    };
+    let off = Some(ThinkingConfig::disabled());
+    let b = build(Vendor::Deepseek, off.clone());
+    assert_eq!(b["reasoning"], json!({ "effort": "none" }));
+    assert!(b.get("temperature").is_some(), "{b}");
+    assert!(build(Vendor::Deepseek, None).get("reasoning").is_none());
+    assert!(build(Vendor::Openai, off).get("reasoning").is_none());
+}
+
+#[tokio::test]
+async fn an_incomplete_responses_stream_names_its_reason() {
+    let mut server = mockito::Server::new_async().await;
+    server
+        .mock("POST", "/responses")
+        .with_header("content-type", "text/event-stream")
+        .with_body("data: {\"type\":\"response.incomplete\",\"response\":{\"error\":null,\"incomplete_details\":{\"reason\":\"max_output_tokens\"}}}\n\n")
+        .create_async()
+        .await;
+    let c = OpenAIResponsesClient::new("k", "m").with_base_url(server.url());
+    let error = collect_stream(c.chat_stream(req(None)).await.unwrap())
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("max_output_tokens"), "{error}");
 }
 
 #[test]

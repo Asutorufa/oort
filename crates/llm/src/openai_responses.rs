@@ -131,15 +131,20 @@ impl OpenAIResponsesClient {
             None
         };
 
-        let reasoning =
-            request
-                .thinking
-                .as_ref()
-                .filter(|t| t.enabled)
-                .map(|t| ResponsesReasoningConfig {
-                    effort: t.effort.map(reasoning_effort_str),
-                    summary: Some("auto"),
-                });
+        let thinking = request.thinking.as_ref();
+        let thinks = thinking.is_some_and(|t| t.enabled);
+        // DeepSeek thinks unless told not to; elsewhere "off" sends nothing.
+        let reasoning = match thinking {
+            Some(t) if t.enabled => Some(ResponsesReasoningConfig {
+                effort: t.effort.map(reasoning_effort_str),
+                summary: Some("auto"),
+            }),
+            Some(_) if self.vendor == Vendor::Deepseek => Some(ResponsesReasoningConfig {
+                effort: Some("none"),
+                summary: None,
+            }),
+            _ => None,
+        };
 
         let (prompt_cache_key, prompt_cache_retention) =
             extract_openai_cache_fields(request.prompt_cache.as_ref());
@@ -152,8 +157,8 @@ impl OpenAIResponsesClient {
             tool_choice,
             max_output_tokens: request.max_tokens,
             // Reasoning models reject sampling parameters.
-            temperature: request.temperature.filter(|_| reasoning.is_none()),
-            top_p: request.top_p.filter(|_| reasoning.is_none()),
+            temperature: request.temperature.filter(|_| !thinks),
+            top_p: request.top_p.filter(|_| !thinks),
             reasoning,
             prompt_cache_key,
             prompt_cache_retention,
@@ -995,6 +1000,13 @@ where
                         }
                         Some("response.failed" | "response.incomplete" | "error") => {
                             let msg = extract_error_message_from_value(&value)
+                                .or_else(|| {
+                                    // `incomplete` carries a reason instead of an error.
+                                    value
+                                        .pointer("/response/incomplete_details/reason")
+                                        .and_then(Value::as_str)
+                                        .map(|r| format!("OpenAI Responses incomplete: {r}"))
+                                })
                                 .unwrap_or_else(|| "OpenAI Responses stream error".to_string());
                             st.done = true;
                             return Some((Err(Error::api(msg)), st));
