@@ -543,3 +543,15 @@ select:disabled { cursor: default; opacity: .7; }
 .trace-item pre { margin: 4px 0 0; font-size: 12px; max-height: 240px; overflow: auto; }
 .trace-item summary { cursor: pointer; color: var(--text-secondary); }
 .trace-role { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted); font-weight: 600; }
+
+/* ----- loop error ----- */
+.status-chip.failed .status-dot { background: var(--danger); }
+.loop-error { border-color: color-mix(in srgb, var(--danger) 22%, var(--border-subtle)); }
+.loop-error-icon { color: var(--danger); display: grid; padding-top: 3px; }
+.loop-error .widget-sub a { color: var(--text-primary); }
+.loop-error .widget-body:empty { display: none; }
+.loop-error-quota { font-size: 12.5px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.loop-error-raw { margin: 8px 0 0; padding: 8px 10px; background: var(--bg-code); border: 1px solid var(--border-subtle); border-radius: 8px; font-size: 12px; max-height: 220px; overflow: auto; color: var(--text-secondary); }
+.loop-error > .decision { padding: 10px 16px 12px; border-top: 1px solid var(--border-subtle); }
+.loop-error-note { font-size: 12.5px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.row input.narrow { flex: none; width: 64px; min-width: 0; padding: 4px 8px; font-variant-numeric: tabular-nums; }

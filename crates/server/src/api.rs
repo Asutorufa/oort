@@ -104,6 +104,8 @@ pub struct SessionSummary {
     #[serde(flatten)]
     pub meta: SessionMeta,
     pub active: bool,
+    /// The last loop exited with an error (details in the session detail's `last_error`).
+    pub failed: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -180,6 +182,9 @@ pub struct SessionDetail {
     #[serde(flatten)]
     pub meta: SessionMeta,
     pub active: bool,
+    /// Why the loop last stopped with an error (an LLM 429, a network failure, …). Cleared when
+    /// the loop starts again; while it is set the session is not resumed automatically.
+    pub last_error: Option<LoopError>,
     pub settings: SessionConfig,
     pub phase: Phase,
     pub system_prompt: String,
@@ -193,6 +198,19 @@ pub struct SessionDetail {
     pub active_view: ActiveView,
     pub usage: UsageView,
     pub context: ContextView,
+}
+
+/// A loop that exited with an error, kept so clients can show it and offer a retry.
+#[derive(Debug, Clone, Serialize)]
+pub struct LoopError {
+    pub message: String,
+    /// Unix milliseconds.
+    pub at: i64,
+    /// When the loop is retried automatically (provider setting), in Unix milliseconds.
+    pub retry_at: Option<i64>,
+    /// Automatic retries already made for this failure streak, and the provider's limit.
+    pub attempt: u32,
+    pub max_attempts: u32,
 }
 
 impl SessionDetail {
@@ -265,6 +283,7 @@ impl SessionDetail {
 
         Self {
             active,
+            last_error: None,
             phase: state.phase.clone(),
             system_prompt: state.system_prompt().to_string(),
             tools: state.tool_snapshot().map(<[_]>::to_vec).unwrap_or_default(),

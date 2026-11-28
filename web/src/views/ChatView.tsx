@@ -61,6 +61,13 @@ function Session({ id, onListChanged }: { id: string; onListChanged: () => void 
     reloadChildren();
   }, [knownChildren, detail?.raw.length, reloadChildren]);
   const [error, setError] = useState<string | null>(null);
+  // Pick up the automatic retry when it fires (its events start a new loop on the server).
+  const retryAt = detail?.last_error?.retry_at ?? null;
+  useEffect(() => {
+    if (retryAt == null) return;
+    const t = window.setTimeout(refresh, Math.max(0, retryAt - Date.now()) + 800);
+    return () => window.clearTimeout(t);
+  }, [retryAt, refresh]);
   const [inspector, setInspector] = useState(false);
   const [inspect, setInspect] = useState<TurnUsage | null>(null);
   const [title, setTitle] = useState<string | null>(null);
@@ -133,8 +140,9 @@ function Session({ id, onListChanged }: { id: string; onListChanged: () => void 
   if (!detail) return <Empty>{loadError ?? "読み込み中…"}</Empty>;
   const turns = detail.usage.per_turn;
   const prevTurn = inspect ? turns[turns.findIndex((t) => t.seq === inspect.seq) - 1] : undefined;
-  const busy = detail.status === "running";
-  const status = STATUS[detail.status];
+  const failed = !!detail.last_error;
+  const busy = detail.status === "running" && !failed;
+  const status = failed ? (detail.last_error?.retry_at ? "再試行待ち" : "エラー") : STATUS[detail.status];
   const planSteps = plan ?? lastPlan(detail.raw);
 
   return (
@@ -153,7 +161,7 @@ function Session({ id, onListChanged }: { id: string; onListChanged: () => void 
             onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
           />
           {status && (
-            <span className={`status-chip ${detail.status}`}>
+            <span className={`status-chip ${failed ? "failed" : detail.status}`}>
               <span className="status-dot" />
               {status}
             </span>
@@ -182,6 +190,19 @@ function Session({ id, onListChanged }: { id: string; onListChanged: () => void 
           }}
           onAnswer={(callId, content) => send({ type: "approval", call_id: callId, decision: "answer", content })}
           onStartWithMcp={startWithMcp}
+          onRetry={async () => {
+            try {
+              await sessions.retry(id);
+              setError(null);
+              refresh();
+            } catch (e) {
+              setError(errorText(e));
+            }
+          }}
+          onCancelAutoRetry={async () => {
+            await sessions.cancel(id).catch((e) => setError(errorText(e)));
+            refresh();
+          }}
         />
         <Composer
           busy={busy}

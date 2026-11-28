@@ -114,6 +114,12 @@ Sessions (and presets) choose builtin tool groups at creation; their tools are f
 
 ### Subagents
 
+### Loop errors and automatic retry
+
+When the loop stops with an error (an HTTP 429 quota error, a 5xx, a dropped connection, …) the session detail carries `last_error` (`message`, `at`, `retry_at`, `attempt`, `max_attempts`) and the session list marks it `failed`. The web UI shows the error in the conversation with a plain explanation, the provider's suggested wait and a retry button. A failed session is not resumed by reconnecting; it waits for `POST /api/sessions/:id/retry` or new input.
+
+Each provider has an `auto_retry` setting (`{ "enabled": false, "max_attempts": 3 }` by default). When it is enabled, transient errors (408, 429, 5xx, network) are retried after the provider's hint (`Please retry in 13s`) plus a second, or after an exponential backoff (5s, 10s, … at most 2 minutes), up to `max_attempts` times. Authentication and other client errors are never retried. The offline mock model fails on purpose for a user message line `!error <status> [once] <message>`.
+
 `spawn_subagent` runs an isolated child session (stored with `parent_session_id`, hidden from the session list, listed by `GET /api/sessions/:id/children`) and returns only its final report. Children are read-only: they get read-only tools, writes are refused with a message asking them to report proposed changes, they cannot ask the user, and they cannot spawn beyond `max_depth` (default 1). Several subagents in one turn run in parallel; interrupting or stopping the parent cancels them. A turn budget makes them summarize instead of failing, and a timeout returns partial findings. Profiles: `explorer`, `researcher`, `reviewer`, or `preset:<name>`. `context_mode: "fork"` copies the parent's history prefix and tool catalog byte for byte so the provider can reuse the parent's cached prefix. Child events are relayed to the parent's stream as `subagent` events.
 
 ### Commands and explicit skills
@@ -145,7 +151,8 @@ Sessions (and presets) choose builtin tool groups at creation; their tools are f
 | `GET /api/sessions/:id/export` | Debug JSON: metadata, settings, frozen prompt and tools, raw history, compactions, LLM call metrics (no secrets) |
 | `GET /api/sessions/:id/events` | SSE: `hello` (status + in-progress turn), then `agent` / `widget` / `loop_exited` / `session_updated` / `deleted` / `lagged`. Ids are `{boot}:{seq}`; reconnecting with `Last-Event-ID` replays missed events (`hello.resumed`), otherwise the client refetches the snapshot |
 | `POST /api/sessions/:id/input` | `{"type":"steer"\|"interrupt","text","invoked_skills"?:[{name,arguments?}]}`, `{"type":"approval","call_id","decision":"approve"\|"deny"\|"answer","reason"?,"content"?}`, `{"type":"compact"}` |
-| `POST /api/sessions/:id/cancel` | Stop the background loop (state is kept and can be resumed) |
+| `POST /api/sessions/:id/cancel` | Stop the background loop (state is kept and can be resumed); also cancels a scheduled automatic retry |
+| `POST /api/sessions/:id/retry` | Start the loop again after it stopped with an error (`last_error` in the session detail) |
 
 ## Testing
 

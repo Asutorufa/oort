@@ -56,9 +56,29 @@ pub struct ProviderRecord {
     pub default_model: String,
     pub extra_headers: BTreeMap<String, String>,
     pub is_enabled: bool,
+    /// Retry a session loop that failed with a transient error (429, 5xx, network).
+    #[serde(default)]
+    pub auto_retry: AutoRetry,
     /// Unix milliseconds.
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+/// Automatic retry of failed loops for one provider. Off by default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AutoRetry {
+    pub enabled: bool,
+    /// Attempts after the first failure before giving up (1–10).
+    pub max_attempts: u32,
+}
+
+impl Default for AutoRetry {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_attempts: 3,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

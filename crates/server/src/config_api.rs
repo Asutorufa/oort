@@ -8,8 +8,8 @@ use std::collections::BTreeMap;
 
 use oort_agent::secret::{self, SecretSource};
 use oort_agent::{
-    ApprovalPolicyKind, McpAuth, McpServerRecord, McpTransportKind, PresetRecord, ProviderKind,
-    ProviderRecord,
+    ApprovalPolicyKind, AutoRetry, McpAuth, McpServerRecord, McpTransportKind, PresetRecord,
+    ProviderKind, ProviderRecord,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -44,6 +44,7 @@ pub struct ProviderView {
     pub default_model: String,
     pub extra_headers: BTreeMap<String, String>,
     pub is_enabled: bool,
+    pub auto_retry: AutoRetry,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -60,6 +61,7 @@ impl From<&ProviderRecord> for ProviderView {
             default_model: p.default_model.clone(),
             extra_headers: secret::mask_map(&p.extra_headers),
             is_enabled: p.is_enabled,
+            auto_retry: p.auto_retry,
             created_at: p.created_at,
             updated_at: p.updated_at,
         }
@@ -76,6 +78,7 @@ pub struct ProviderInput {
     pub default_model: Option<String>,
     pub extra_headers: Option<BTreeMap<String, String>>,
     pub is_enabled: Option<bool>,
+    pub auto_retry: Option<AutoRetry>,
     /// Test only: also send a 1-token chat request.
     #[serde(default)]
     pub ping: bool,
@@ -95,6 +98,7 @@ impl ProviderInput {
             default_model: self.default_model.unwrap_or_default().trim().to_string(),
             extra_headers: secret::merge_map(&BTreeMap::new(), self.extra_headers.as_ref()),
             is_enabled: self.is_enabled.unwrap_or(true),
+            auto_retry: self.auto_retry.unwrap_or_default(),
             created_at: now,
             updated_at: now,
         };
@@ -127,6 +131,7 @@ impl ProviderInput {
                 .unwrap_or_else(|| cur.default_model.clone()),
             extra_headers: secret::merge_map(&cur.extra_headers, self.extra_headers.as_ref()),
             is_enabled: self.is_enabled.unwrap_or(cur.is_enabled),
+            auto_retry: self.auto_retry.unwrap_or(cur.auto_retry),
             created_at: cur.created_at,
             updated_at: now_ms().max(cur.updated_at + 1),
         };
@@ -136,6 +141,11 @@ impl ProviderInput {
 }
 
 fn validate_provider(p: &ProviderRecord) -> Result<(), ApiError> {
+    if !(1..=10).contains(&p.auto_retry.max_attempts) {
+        return Err(ApiError::BadRequest(
+            "`auto_retry.max_attempts` must be between 1 and 10".into(),
+        ));
+    }
     if p.kind == ProviderKind::OpenaiCompatible && p.base_url.is_none() {
         return Err(ApiError::BadRequest(
             "openai_compatible providers need a base_url".into(),

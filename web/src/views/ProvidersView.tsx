@@ -14,9 +14,19 @@ interface Form {
   default_model: string;
   extra_headers: Record<string, string>;
   is_enabled: boolean;
+  auto_retry: { enabled: boolean; max_attempts: number };
 }
 
-const blank: Form = { name: "", kind: "openai", base_url: "", api_key: "", default_model: "", extra_headers: {}, is_enabled: true };
+const blank: Form = {
+  name: "",
+  kind: "openai",
+  base_url: "",
+  api_key: "",
+  default_model: "",
+  extra_headers: {},
+  is_enabled: true,
+  auto_retry: { enabled: false, max_attempts: 3 },
+};
 
 const toForm = (p: Provider): Form => ({
   name: p.name,
@@ -26,6 +36,7 @@ const toForm = (p: Provider): Form => ({
   default_model: p.default_model,
   extra_headers: p.extra_headers,
   is_enabled: p.is_enabled,
+  auto_retry: p.auto_retry ?? { enabled: false, max_attempts: 3 },
 });
 
 const toInput = (f: Form): ProviderInput => ({ ...f, base_url: f.base_url.trim() });
@@ -198,6 +209,29 @@ export function ProvidersView({ selected }: { selected: string | null }) {
             </Field>
             <Field label="追加ヘッダー" hint="認証系の値はマスク表示され、変更しなければそのまま保持されます。">
               <KeyValueEditor value={form.extra_headers} onChange={(v) => set("extra_headers", v)} />
+            </Field>
+            <Field
+              label="自動再試行"
+              hint="レート制限（429）・サーバーエラー（5xx）・接続エラーで応答が止まったとき、プロバイダーが示す待ち時間（なければ 5 秒から倍々）のあとに自動で再試行します。API キーの誤りなどは再試行しません。"
+            >
+              <div className="row">
+                <Toggle
+                  checked={form.auto_retry.enabled}
+                  onChange={(v) => set("auto_retry", { ...form.auto_retry, enabled: v })}
+                  label="自動で再試行する"
+                />
+                <span className="muted">最大</span>
+                <input
+                  type="number"
+                  className="narrow"
+                  min={1}
+                  max={10}
+                  disabled={!form.auto_retry.enabled}
+                  value={form.auto_retry.max_attempts}
+                  onChange={(e) => set("auto_retry", { ...form.auto_retry, max_attempts: Math.min(10, Math.max(1, Number(e.target.value) || 1)) })}
+                />
+                <span className="muted">回</span>
+              </div>
             </Field>
             <Toggle checked={form.is_enabled} onChange={(v) => set("is_enabled", v)} label="有効" />
             <div className="row actions">

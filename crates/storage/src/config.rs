@@ -2,9 +2,9 @@
 
 use async_trait::async_trait;
 use oort_agent::{
-    ApprovalPolicyKind, ConfigStore, McpServerRecord, McpTransportKind, MemoryHit, MemoryQuery,
-    MemoryRecord, MemoryStore, OAuthTokenRecord, OAuthTokenStore, PresetRecord, ProviderKind,
-    ProviderRecord, SkillInvocation, SkillRecord, SkillStore, StoreError,
+    ApprovalPolicyKind, AutoRetry, ConfigStore, McpServerRecord, McpTransportKind, MemoryHit,
+    MemoryQuery, MemoryRecord, MemoryStore, OAuthTokenRecord, OAuthTokenStore, PresetRecord,
+    ProviderKind, ProviderRecord, SkillInvocation, SkillRecord, SkillStore, StoreError,
 };
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
@@ -21,6 +21,10 @@ fn provider_from_row(r: &SqliteRow) -> Result<ProviderRecord, StoreError> {
         default_model: r.get("default_model"),
         extra_headers: from_json(r.get("extra_headers_json"), "extra_headers_json")?,
         is_enabled: r.get("is_enabled"),
+        auto_retry: AutoRetry {
+            enabled: r.get("auto_retry"),
+            max_attempts: r.get::<i64, _>("auto_retry_max").clamp(1, 10) as u32,
+        },
         created_at: r.get("created_at"),
         updated_at: r.get("updated_at"),
     })
@@ -151,7 +155,8 @@ impl ConfigStore for SqliteSessionStore {
     async fn create_provider(&self, p: &ProviderRecord) -> Result<(), StoreError> {
         sqlx::query(
             "INSERT INTO providers (id, name, kind, base_url, api_key, default_model, \
-             extra_headers_json, is_enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             extra_headers_json, is_enabled, auto_retry, auto_retry_max, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&p.id)
         .bind(&p.name)
@@ -161,6 +166,8 @@ impl ConfigStore for SqliteSessionStore {
         .bind(&p.default_model)
         .bind(to_json(&p.extra_headers))
         .bind(p.is_enabled)
+        .bind(p.auto_retry.enabled)
+        .bind(p.auto_retry.max_attempts as i64)
         .bind(p.created_at)
         .bind(p.updated_at)
         .execute(&self.pool)
@@ -172,7 +179,8 @@ impl ConfigStore for SqliteSessionStore {
     async fn update_provider(&self, p: &ProviderRecord) -> Result<(), StoreError> {
         let done = sqlx::query(
             "UPDATE providers SET name = ?, kind = ?, base_url = ?, api_key = ?, default_model = ?, \
-             extra_headers_json = ?, is_enabled = ?, updated_at = ? WHERE id = ?",
+             extra_headers_json = ?, is_enabled = ?, auto_retry = ?, auto_retry_max = ?, updated_at = ? \
+             WHERE id = ?",
         )
         .bind(&p.name)
         .bind(p.kind.as_str())
@@ -181,6 +189,8 @@ impl ConfigStore for SqliteSessionStore {
         .bind(&p.default_model)
         .bind(to_json(&p.extra_headers))
         .bind(p.is_enabled)
+        .bind(p.auto_retry.enabled)
+        .bind(p.auto_retry.max_attempts as i64)
         .bind(p.updated_at)
         .bind(&p.id)
         .execute(&self.pool)

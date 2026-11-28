@@ -25,8 +25,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::api::InvokedSkill;
 use crate::api::{
-    ApiError, CheckpointView, CreateSessionRequest, Envelope, InputRequest, PatchSessionRequest,
-    ProviderSummary, RawMessage, SessionDetail, SessionExport, SessionSummary,
+    ApiError, CheckpointView, CreateSessionRequest, Envelope, InputRequest, LoopError,
+    PatchSessionRequest, ProviderSummary, RawMessage, SessionDetail, SessionExport, SessionSummary,
 };
 use crate::approval::ApprovalHandle;
 use crate::config::{SessionConfig, SkillBinding};
@@ -67,6 +67,10 @@ pub struct SessionManager {
     closing: CancellationToken,
     /// Skill subagents running for a session (cancelled by stop / delete / shutdown).
     skill_runs: Mutex<BTreeMap<String, Vec<CancellationToken>>>,
+    /// The error the last loop of a session exited with (until the loop runs again).
+    errors: Arc<Mutex<BTreeMap<String, LoopError>>>,
+    /// Automatic retries made since the last success or user action, per session.
+    retries: Arc<Mutex<BTreeMap<String, u32>>>,
     me: Weak<SessionManager>,
 }
 
@@ -81,6 +85,8 @@ impl SessionManager {
             boot: crate::new_id(),
             closing: CancellationToken::new(),
             skill_runs: Mutex::default(),
+            errors: Arc::default(),
+            retries: Arc::default(),
             me: me.clone(),
         })
     }
@@ -267,6 +273,7 @@ impl SessionManager {
 
     pub async fn list(&self) -> Result<Vec<SessionSummary>, ApiError> {
         let active = self.active.lock().await;
+        let errors = self.errors.lock().await;
         Ok(self
             .store
             .list_sessions()
@@ -274,6 +281,7 @@ impl SessionManager {
             .into_iter()
             .map(|meta| SessionSummary {
                 active: active.contains_key(&meta.id),
+                failed: errors.contains_key(&meta.id),
                 meta,
             })
             .collect())
@@ -294,6 +302,7 @@ impl SessionManager {
             &stored.message_usage,
             &calls,
         );
+        detail.last_error = self.errors.lock().await.get(id).cloned();
         // What each approval card shows: a diff, the command, the settings, …
         let ctx = self.registry.builtin_context(root.map(Into::into), None);
         for p in &mut detail.pending_approvals {
@@ -306,6 +315,7 @@ impl SessionManager {
     pub async fn children(&self, id: &str) -> Result<Vec<SessionSummary>, ApiError> {
         self.store.load_state(id).await?;
         let active = self.active.lock().await;
+        let errors = self.errors.lock().await;
         Ok(self
             .store
             .list_children(id)
@@ -313,12 +323,14 @@ impl SessionManager {
             .into_iter()
             .map(|meta| SessionSummary {
                 active: active.contains_key(&meta.id),
+                failed: errors.contains_key(&meta.id),
                 meta,
             })
             .collect())
     }
 
     pub async fn input(&self, id: &str, input: InputRequest) -> Result<(), ApiError> {
+        self.retries.lock().await.remove(id);
         let input = match input {
             InputRequest::Steer {
                 text,
@@ -385,6 +397,7 @@ impl SessionManager {
             ));
         }
         self.store.delete_session(id).await?;
+        self.errors.lock().await.remove(id);
         if let Some(hub) = self.hubs.lock().await.remove(id) {
             hub.publish(|seq| Envelope::Deleted { seq });
         }
@@ -447,7 +460,35 @@ impl SessionManager {
         })
     }
 
+    /// Starts the loop again after it exited with an error (e.g. once a rate limit has passed).
+    pub async fn retry(&self, id: &str) -> Result<(), ApiError> {
+        self.store.load_state(id).await?;
+        self.retries.lock().await.remove(id);
+        self.errors.lock().await.remove(id);
+        self.ensure_active(id).await.map(|_| ())
+    }
+
+    /// Called by the retry timer: resumes only if the same failure is still waiting for it.
+    async fn auto_retry(&self, id: &str, at: i64) {
+        {
+            let mut errors = self.errors.lock().await;
+            match errors.get(id) {
+                Some(e) if e.at == at && e.retry_at.is_some() => {
+                    errors.remove(id);
+                }
+                _ => return,
+            }
+        }
+        *self.retries.lock().await.entry(id.to_string()).or_default() += 1;
+        if let Err(e) = self.ensure_active(id).await {
+            tracing::warn!(session = %id, error = %e, "automatic retry could not start");
+        }
+    }
+
     pub async fn cancel(&self, id: &str) -> Result<bool, ApiError> {
+        if let Some(e) = self.errors.lock().await.get_mut(id) {
+            e.retry_at = None;
+        }
         for t in self.skill_runs.lock().await.remove(id).unwrap_or_default() {
             t.cancel();
         }
@@ -473,7 +514,10 @@ impl SessionManager {
             .filter(|(boot, _)| *boot == self.boot)
             .and_then(|(_, seq)| seq.parse::<u64>().ok());
         let sub = self.hub(id).await.subscribe(after);
-        if stored.meta.status == SessionStatus::Running {
+        // A loop that failed (quota, network, …) waits for an explicit retry or new input instead
+        // of being resumed by every reconnect.
+        let failed = self.errors.lock().await.contains_key(id);
+        if stored.meta.status == SessionStatus::Running && !failed {
             self.ensure_active(id).await?;
         }
         let active = self.active.lock().await.contains_key(id);
@@ -582,6 +626,12 @@ impl SessionManager {
         });
 
         let registry = Arc::clone(&self.active);
+        let errors = Arc::clone(&self.errors);
+        errors.lock().await.remove(id);
+        let retries = Arc::clone(&self.retries);
+        let auto = self.registry.auto_retry(&cfg).await;
+        let me = self.me.clone();
+        let closing = self.closing.clone();
         let session_id = id.to_string();
         let mut state = stored.state;
         let done = finished.clone();
@@ -590,8 +640,41 @@ impl SessionManager {
             let result = agent.run_loop(&mut state, &mut inbox).await;
             drop(agent); // closes the event channel so the forwarder drains and ends
             let _ = forwarder.await;
-            if let Err(e) = &result {
-                tracing::warn!(session = %session_id, error = %e, "session loop exited with error");
+            match &result {
+                Ok(_) => {
+                    retries.lock().await.remove(&session_id);
+                }
+                Err(oort_agent::AgentError::Cancelled) => {}
+                Err(e) => {
+                    tracing::warn!(session = %session_id, error = %e, "session loop exited with error");
+                    let message = e.to_string();
+                    let at = crate::now_ms();
+                    let attempt = retries.lock().await.get(&session_id).copied().unwrap_or(0);
+                    let delay = (auto.enabled && attempt < auto.max_attempts && is_transient(e))
+                        .then(|| retry_delay(&message, attempt));
+                    errors.lock().await.insert(
+                        session_id.clone(),
+                        LoopError {
+                            message,
+                            at,
+                            retry_at: delay.map(|d| at + d.as_millis() as i64),
+                            attempt,
+                            max_attempts: auto.max_attempts,
+                        },
+                    );
+                    if let Some(delay) = delay {
+                        let id = session_id.clone();
+                        tokio::spawn(async move {
+                            tokio::select! {
+                                _ = tokio::time::sleep(delay) => {}
+                                _ = closing.cancelled() => return,
+                            }
+                            if let Some(m) = me.upgrade() {
+                                m.auto_retry(&id, at).await;
+                            }
+                        });
+                    }
+                }
             }
             hub.publish(|seq| Envelope::LoopExited {
                 seq,
@@ -618,6 +701,49 @@ impl SessionManager {
             },
         );
         Ok(in_tx)
+    }
+}
+
+/// Rate limits, overloads, server errors and dropped connections: worth retrying unchanged.
+/// Extends [`oort_llm::Error::is_retryable`] with stream drops and status-less quota errors.
+fn is_transient(e: &oort_agent::AgentError) -> bool {
+    let oort_agent::AgentError::Llm(err) = e else {
+        return false;
+    };
+    match err {
+        oort_llm::Error::Stream(_) => true,
+        oort_llm::Error::Api {
+            status: None,
+            message,
+            ..
+        } => {
+            let m = message.to_ascii_lowercase();
+            ["rate limit", "resource_exhausted", "overloaded", "quota"]
+                .iter()
+                .any(|k| m.contains(k))
+        }
+        other => other.is_retryable(),
+    }
+}
+
+/// The provider's hint (`Please retry in 13.09s`, `"retryDelay": "13s"`) plus a second, or an
+/// exponential backoff (5s, 10s, 20s, …, at most 2 minutes).
+fn retry_delay(message: &str, attempt: u32) -> Duration {
+    let hinted = ["retry in ", "retryDelay\": \"", "retryDelay\":\""]
+        .iter()
+        .find_map(|k| {
+            let rest = &message[message.find(k)? + k.len()..];
+            let n: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_digit() || *c == '.')
+                .collect();
+            n.parse::<f64>().ok()
+        });
+    match hinted {
+        Some(secs) if secs.is_finite() && secs >= 0.0 => {
+            Duration::from_secs_f64(secs.min(600.0) + 1.0)
+        }
+        _ => Duration::from_secs(5u64.saturating_mul(1 << attempt.min(5)).min(120)),
     }
 }
 

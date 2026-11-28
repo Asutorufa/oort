@@ -97,7 +97,7 @@ export function Sidebar({
             <div key={s.id}>
               {header}
               <div className={`conv ${s.id === selected && view === "chat" ? "active" : ""}`} onClick={() => navigate("chat", s.id)} title={s.title || "無題の会話"}>
-                {s.status === "running" ? <span className="pulse" /> : s.status === "needs_approval" ? <span className="dot warn" title="承認待ち" /> : null}
+                {s.failed ? <span className="dot error" title="エラーで停止しました" /> : s.status === "running" ? <span className="pulse" /> : s.status === "needs_approval" ? <span className="dot warn" title="承認待ち" /> : null}
                 {renaming === s.id ? (
                   <input
                     autoFocus

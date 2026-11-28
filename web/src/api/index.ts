@@ -35,6 +35,7 @@ export const sessions = {
   exportUrl: (id: string) => `/api/sessions/${id}/export`,
   input: (id: string, input: InputRequest) => request<void>("POST", `/sessions/${id}/input`, input),
   cancel: (id: string) => request<void>("POST", `/sessions/${id}/cancel`),
+  retry: (id: string) => request<void>("POST", `/sessions/${id}/retry`),
   eventsUrl: (id: string) => `/api/sessions/${id}/events`,
   children: (id: string) => request<SessionSummary[]>("GET", `/sessions/${id}/children`),
 };

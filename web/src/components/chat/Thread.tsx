@@ -8,6 +8,7 @@ import { Widget } from "../../widgets/WidgetRegistry";
 import { fmtMs, JsonView } from "../common";
 import { Markdown } from "./LazyMarkdown";
 import { RowCard, SubagentCard } from "./SubagentCard";
+import { LoopErrorCard } from "./LoopErrorCard";
 import { ApprovalCard, AskUserCard, McpConfiguredCard } from "./ToolCards";
 
 const RENDER_WIDGET = "render_widget";
@@ -205,12 +206,14 @@ interface ThreadProps {
   onTrace: (subSessionId: string) => void;
   onAnswer: (callId: string, content: string) => Promise<void>;
   onStartWithMcp: (serverId: string) => Promise<void>;
+  onRetry: () => Promise<void>;
+  onCancelAutoRetry: () => Promise<void>;
 }
 
 /** Calls shown as their own cards (not in the activity line). */
 const CARD_TOOLS = new Set([RENDER_WIDGET, "spawn_subagent", "ask_user", "update_plan", "configure_mcp_server"]);
 
-export function Thread({ detail, live, toolTimes, actions, subagents, children, onTrace, onAnswer, onStartWithMcp }: ThreadProps) {
+export function Thread({ detail, live, toolTimes, actions, subagents, children, onTrace, onAnswer, onStartWithMcp, onRetry, onCancelAutoRetry }: ThreadProps) {
   const box = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const groups = useMemo(() => groupMessages(detail.raw), [detail.raw]);
@@ -233,7 +236,8 @@ export function Thread({ detail, live, toolTimes, actions, subagents, children, 
   const childByCall = new Map(children.filter((c) => c.lineage.parent_tool_call_id).map((c) => [c.lineage.parent_tool_call_id!, c.id]));
   const running = new Set(live.runningTools.map((c) => c.id));
   const cutAt = new Set(detail.checkpoints.map((c) => c.up_to_seq));
-  const busy = detail.status === "running";
+  const failure = detail.last_error ?? null;
+  const busy = detail.status === "running" && !failure;
 
   useEffect(() => {
     const el = box.current;
@@ -311,7 +315,7 @@ export function Thread({ detail, live, toolTimes, actions, subagents, children, 
   const skillRuns = Object.entries(subagents).filter(([id, s]) => id.startsWith("skill:") && !reportsIn.has(s.subSessionId));
 
   const showLive = !!(live.text || live.thinking || (busy && !live.runningTools.length));
-  const hasTail = otherApprovals.length > 0 || skillRuns.length > 0 || showLive;
+  const hasTail = otherApprovals.length > 0 || skillRuns.length > 0 || showLive || !!failure;
   const tailInLast = groups[groups.length - 1]?.kind === "assistant";
   // Steps that belong to the turn in progress: they join the last assistant turn (one mark).
   const tail = (
@@ -329,6 +333,7 @@ export function Thread({ detail, live, toolTimes, actions, subagents, children, 
           onTrace={onTrace}
         />
       ))}
+      {failure && !showLive && <LoopErrorCard error={failure} onRetry={onRetry} onCancelAuto={onCancelAutoRetry} />}
       {showLive && (
         <>
           {live.thinking && !live.text && <div className="activity-row ghost">思考中…</div>}

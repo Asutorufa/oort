@@ -92,6 +92,23 @@ export interface Lineage {
 
 export interface SessionSummary extends SessionMeta {
   active: boolean;
+  /** The last loop exited with an error. */
+  failed?: boolean;
+}
+
+/** Why the loop last stopped with an error; cleared when it runs again. */
+export interface LoopError {
+  message: string;
+  at: number;
+  /** Set while an automatic retry is scheduled (Unix ms). */
+  retry_at: number | null;
+  attempt: number;
+  max_attempts: number;
+}
+
+export interface AutoRetry {
+  enabled: boolean;
+  max_attempts: number;
 }
 
 export interface SessionSettings {
@@ -145,6 +162,7 @@ export interface Checkpoint {
 
 export interface SessionDetail extends SessionMeta {
   active: boolean;
+  last_error?: LoopError | null;
   settings: SessionSettings;
   phase: Phase;
   system_prompt: string;
@@ -286,6 +304,7 @@ export interface Provider {
   default_model: string;
   extra_headers: Record<string, string>;
   is_enabled: boolean;
+  auto_retry: AutoRetry;
   created_at: number;
   updated_at: number;
 }
@@ -299,6 +318,7 @@ export interface ProviderInput {
   default_model?: string;
   extra_headers?: Record<string, string>;
   is_enabled?: boolean;
+  auto_retry?: AutoRetry;
   ping?: boolean;
 }
 

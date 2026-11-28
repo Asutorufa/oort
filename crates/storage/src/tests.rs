@@ -475,6 +475,7 @@ fn provider(id: &str, name: &str) -> ProviderRecord {
         default_model: "gemini-2.5-flash".into(),
         extra_headers: [("x-org".to_string(), "acme".to_string())].into(),
         is_enabled: true,
+        auto_retry: Default::default(),
         created_at: 1,
         updated_at: 1,
     }
@@ -829,7 +830,11 @@ async fn subagent_sessions_form_a_tree_hidden_from_the_list() {
         .into_iter()
         .map(|m| m.id)
         .collect();
-    assert_eq!(top, std::slice::from_ref(&parent), "children are not top-level sessions");
+    assert_eq!(
+        top,
+        std::slice::from_ref(&parent),
+        "children are not top-level sessions"
+    );
     let kids = h.store.list_children(&parent).await.unwrap();
     assert_eq!(kids.len(), 1);
     assert_eq!(kids[0].lineage.depth, 1);

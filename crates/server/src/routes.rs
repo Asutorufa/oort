@@ -46,6 +46,7 @@ pub fn router(manager: Arc<SessionManager>, web_dist: Option<&FsPath>) -> Router
         .route("/sessions/{id}/events", get(session_events))
         .route("/sessions/{id}/input", post(session_input))
         .route("/sessions/{id}/cancel", post(cancel_session))
+        .route("/sessions/{id}/retry", post(retry_session))
         .route("/sessions/{id}/export", get(export_session))
         .route("/sessions/{id}/children", get(session_children))
         .route("/commands", get(list_commands))
@@ -157,6 +158,14 @@ async fn session_input(
     Json(input): Json<InputRequest>,
 ) -> Result<StatusCode, ApiError> {
     m.input(&id, input).await?;
+    Ok(StatusCode::ACCEPTED)
+}
+
+async fn retry_session(
+    State(m): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    m.retry(&id).await?;
     Ok(StatusCode::ACCEPTED)
 }
 

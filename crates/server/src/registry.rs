@@ -260,6 +260,19 @@ impl Registry {
         }
     }
 
+    /// The automatic retry setting of a session's provider (off when unknown).
+    pub async fn auto_retry(&self, cfg: &SessionConfig) -> oort_agent::AutoRetry {
+        match &cfg.provider_id {
+            Some(id) => self
+                .config
+                .get_provider(id)
+                .await
+                .map(|p| p.auto_retry)
+                .unwrap_or_default(),
+            None => Default::default(),
+        }
+    }
+
     /// The model client of a session (current provider record, or env keys for legacy ones).
     pub async fn session_model(
         &self,
