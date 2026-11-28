@@ -454,7 +454,7 @@ export function ProvidersView({ selected }: { selected: string | null }) {
             <ErrorBar error={error} onDismiss={() => setError(null)} />
 
             {!isMock && (
-              <>
+              <div className="pf-vendor">
                 <div className="kind-tiles vendor-grid" role="radiogroup" aria-label={t("prov.kinds")}>
                   {VENDOR_PRESETS.map((v) => {
                     const on = form.vendor === v.id;
@@ -498,7 +498,7 @@ export function ProvidersView({ selected }: { selected: string | null }) {
                   </div>
                 </Collapse>
                 {current && <p className="pf-note">{t("prov.kindLockedNote")}</p>}
-              </>
+              </div>
             )}
 
             <Section title={t("prov.connection")} description={t("prov.connectionSub")}>
