@@ -694,6 +694,24 @@ fn ensure_call_signature(model: &str, parts: &mut [GeminiPart]) {
     }
 }
 
+/// Recovers the last whole signature if an older session stored multiple base64
+/// `thoughtSignature` values concatenated together (e.g. `...=EqrT...==EpAK...`).
+fn sanitize_gemini_signature(sig: Option<&str>) -> Option<String> {
+    let s = sig?.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let trimmed = s.trim_end_matches('=');
+    if let Some(pos) = trimmed.rfind('=') {
+        let tail = &s[pos + 1..];
+        if !tail.is_empty() {
+            return Some(tail.to_string());
+        }
+        return None;
+    }
+    Some(s.to_string())
+}
+
 fn encode_gemini_message(
     msg: &Message,
     call_names: &BTreeMap<String, String>,
@@ -775,7 +793,7 @@ fn encode_gemini_message(
                         Some(thinking.clone())
                     },
                     thought: Some(true),
-                    thought_signature: signature.clone(),
+                    thought_signature: sanitize_gemini_signature(signature.as_deref()),
                     ..Default::default()
                 });
             }
@@ -785,7 +803,7 @@ fn encode_gemini_message(
                     other => json!({ "input": other }),
                 };
                 parts.push(GeminiPart {
-                    thought_signature: call.signature.clone(),
+                    thought_signature: sanitize_gemini_signature(call.signature.as_deref()),
                     function_call: Some(GeminiFunctionCall {
                         id: if call.id.is_empty() {
                             None
@@ -1041,6 +1059,7 @@ struct GeminiStreamState<S> {
     queue: VecDeque<Result<StreamEvent, Error>>,
     started: bool,
     next_tool_index: usize,
+    latest_thinking_signature: Option<String>,
     finish_reason: Option<String>,
     usage: Option<Usage>,
     done: bool,
@@ -1057,6 +1076,7 @@ where
         queue: VecDeque::new(),
         started: false,
         next_tool_index: 0,
+        latest_thinking_signature: None,
         finish_reason: None,
         usage: None,
         done: false,
@@ -1117,13 +1137,14 @@ where
                     if let Some(candidate) = chunk.candidates.into_iter().next() {
                         if let Some(cand_content) = candidate.content {
                             for part in cand_content.parts {
+                                // Gemini emits a complete base64 `thoughtSignature` per part (never
+                                // chunked deltas). Keep only the latest whole signature and emit it
+                                // once at stream end so `StreamCollector` never concatenates them.
                                 let sig = part.thought_signature.filter(|s| !s.is_empty());
                                 if part.function_call.is_none()
                                     && let Some(sig) = &sig
                                 {
-                                    st.queue.push_back(Ok(StreamEvent::ThinkingSignatureDelta(
-                                        sig.clone(),
-                                    )));
+                                    st.latest_thinking_signature = Some(sig.clone());
                                 }
                                 if let Some(text) = part.text
                                     && !text.is_empty()
@@ -1278,6 +1299,10 @@ where
 
 fn finish_gemini_stream<S>(st: &mut GeminiStreamState<S>) {
     st.done = true;
+    if let Some(sig) = st.latest_thinking_signature.take() {
+        st.queue
+            .push_back(Ok(StreamEvent::ThinkingSignatureDelta(sig)));
+    }
     if let Some(usage) = st.usage.take() {
         st.queue.push_back(Ok(StreamEvent::Usage(usage)));
     }

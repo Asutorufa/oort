@@ -319,3 +319,53 @@ async fn parse_citations_and_server_tool_blocks_across_providers() {
     assert_eq!(gresp.citations[0].domain.as_deref(), Some("science.nasa.gov"));
     assert_eq!(gresp.citations[0].title, "Oort Cloud - NASA");
 }
+
+#[tokio::test]
+async fn gemini_stream_keeps_latest_thought_signature_and_sanitizes_concatenated_history() {
+    let mut server = Server::new_async().await;
+    let sse = concat!(
+        "data: {\"responseId\":\"g1\",\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"step 1\",\"thought\":true,\"thoughtSignature\":\"QUFB=\"}]}}]}\n\n",
+        "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"step 2\",\"thought\":true,\"thoughtSignature\":\"QkJC==\"}]}}]}\n\n",
+        "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"final answer\",\"thoughtSignature\":\"Q0NDQw==\"}]},\"finishReason\":\"STOP\"}]}\n\n"
+    );
+    let m = server
+        .mock("POST", "/models/gemini-2.5-flash:streamGenerateContent")
+        .match_query(mockito::Matcher::UrlEncoded("alt".into(), "sse".into()))
+        .with_status(200)
+        .with_header("content-type", "text/event-stream")
+        .with_body(sse)
+        .create_async()
+        .await;
+
+    let client = GeminiClient::new("gk", "gemini-2.5-flash").with_base_url(server.url());
+    let stream = client
+        .chat_stream(ChatRequest::new(vec![Message::user("hi")]))
+        .await
+        .unwrap();
+    let resp = crate::client::collect_stream(stream).await.unwrap();
+    m.assert_async().await;
+    assert_eq!(resp.content, "final answer");
+    assert_eq!(resp.thinking_signature.as_deref(), Some("Q0NDQw=="));
+
+    // Also verify previously persisted concatenated signatures are sanitized on outbound encode.
+    let corrupted_history = Message {
+        role: crate::Role::Assistant,
+        content: vec![
+            ContentPart::Thinking {
+                thinking: "hmm".into(),
+                signature: Some("QUFB=QkJC==Q0NDQw==".into()),
+            },
+            ContentPart::text("ok"),
+        ],
+    };
+    let req = ChatRequest::new(vec![
+        Message::user("q1"),
+        corrupted_history,
+        Message::user("q2"),
+    ]);
+    let (_, body) = client.build_request_json(&req).unwrap();
+    assert_eq!(
+        body["contents"][1]["parts"][0]["thoughtSignature"],
+        "Q0NDQw=="
+    );
+}
